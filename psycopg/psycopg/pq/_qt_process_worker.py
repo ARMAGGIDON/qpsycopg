@@ -88,7 +88,12 @@ class Worker:
         obj = self.objects[request.objectId]
 
         if op == Operation.CALL:
-            return self._normalize(getattr(obj, request.member)(*request.args))
+            return self._normalize(
+                getattr(obj, request.member)(
+                    *request.args,
+                    **dict(request.kwargs),
+                )
+            )
 
         if op == Operation.GET:
             return self._normalize(getattr(obj, request.member))

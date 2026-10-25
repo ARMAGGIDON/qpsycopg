@@ -67,7 +67,7 @@ binary = [
     "psycopg-binary == 3.3.7.dev1; implementation_name != \"pypy\"",
 ]
 qt = [
-    "PySide6 >= 6.8",
+    "PySide6-Essentials >= 6.8",
 ]
 pool = [
     "psycopg-pool",

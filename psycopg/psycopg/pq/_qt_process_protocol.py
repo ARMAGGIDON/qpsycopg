@@ -6,6 +6,7 @@ import pickle
 import socket
 import struct
 from enum import IntEnum
+from array import array
 from typing import Any
 from dataclasses import dataclass
 
@@ -58,13 +59,13 @@ class RemoteError:
 class ResultSnapshot:
     status: int
     errorMessage: bytes
-    errorFields: tuple[tuple[int, bytes | None], ...]
+    errorFields: tuple[tuple[int, bytes], ...]
     columns: tuple[tuple[bytes | None, int, int, int, int, int, int], ...]
     rowCount: int
     columnCount: int
     binaryTuples: int
-    data: bytes
-    cells: tuple[tuple[int, int], ...]
+    data: bytearray
+    cells: array
     paramTypes: tuple[int, ...]
     commandStatus: bytes | None
     commandTuples: int | None
@@ -92,7 +93,7 @@ def recvFrame(sock: socket.socket) -> Any:
     return pickle.loads(_recvExact(sock, size))
 
 
-def _recvExact(sock: socket.socket, size: int) -> bytes:
+def _recvExact(sock: socket.socket, size: int) -> bytearray:
     data = bytearray(size)
     view = memoryview(data)
     offset = 0
@@ -101,4 +102,4 @@ def _recvExact(sock: socket.socket, size: int) -> bytes:
         if not received:
             raise EOFError("qpsycopg worker connection closed")
         offset += received
-    return bytes(data)
+    return data

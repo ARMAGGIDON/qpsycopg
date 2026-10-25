@@ -20,7 +20,6 @@ from .dbapi20 import BINARY, DATETIME, NUMBER, ROWID, STRING, Binary, Date
 from .dbapi20 import DateFromTicks, Time, TimeFromTicks, Timestamp, TimestampFromTicks
 from .version import __version__ as __version__  # noqa: F401
 from ._pipeline import Pipeline
-from .connection import Connection
 from .raw_cursor import AsyncRawCursor, AsyncRawServerCursor, RawCursor, RawServerCursor
 from .transaction import AsyncTransaction, Rollback, Transaction
 from .cursor_async import AsyncCursor
@@ -30,8 +29,13 @@ from ._server_cursor import ServerCursor
 from ._pipeline_async import AsyncPipeline
 from ._connection_base import BaseConnection, Notify
 from ._connection_info import ConnectionInfo
-from .connection_async import AsyncConnection
 from ._server_cursor_async import AsyncServerCursor
+
+if pq.__impl__ == "qt-process":
+    from .connection_qt_process import AsyncConnection, Connection
+else:
+    from .connection import Connection
+    from .connection_async import AsyncConnection
 
 # Set the logger to a quiet default, can be enabled if needed
 if (logger := logging.getLogger("psycopg")).level == logging.NOTSET:

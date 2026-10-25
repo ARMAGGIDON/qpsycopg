@@ -109,9 +109,7 @@ class Worker:
         if op == Operation.ESCAPE:
             escapingConn: Any = obj if request.objectId else None
             escaping = pq.Escaping(escapingConn)
-            return self._normalize(
-                getattr(escaping, request.member)(*request.args)
-            )
+            return self._normalize(getattr(escaping, request.member)(*request.args))
 
         raise ValueError(f"unsupported operation: {op!r}")
 

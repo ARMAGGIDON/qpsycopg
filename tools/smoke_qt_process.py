@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import time
 import asyncio
 import argparse
 import threading
@@ -59,6 +60,56 @@ def syncSmoke(dsn: str) -> None:
             thread.join()
         assert not errors, errors
         assert sorted(values) == list(range(8))
+
+        # Query cancellation must return QueryCanceled without killing the
+        # connection worker.
+        cancelled: list[BaseException] = []
+
+        def sleepQuery() -> None:
+            try:
+                connection.execute("SELECT pg_sleep(30)")
+            except BaseException as error:
+                cancelled.append(error)
+
+        thread = threading.Thread(target=sleepQuery)
+        thread.start()
+        time.sleep(0.3)
+        connection.cancel_safe(timeout=5.0)
+        thread.join(10.0)
+        assert not thread.is_alive()
+        assert len(cancelled) == 1
+        assert isinstance(cancelled[0], psycopg.errors.QueryCanceled)
+        connection.rollback()
+        assert connection.execute("SELECT 1").fetchone() == (1,)
+
+        try:
+            connection.fileno()
+        except psycopg.NotSupportedError:
+            pass
+        else:
+            raise AssertionError("qt-process fileno() must not expose a fake fd")
+
+    fatalConnectionSmoke(dsn)
+
+
+def fatalConnectionSmoke(dsn: str) -> None:
+    victim = psycopg.connect(dsn)
+    killer = psycopg.connect(dsn, autocommit=True)
+    try:
+        pid = victim.info.backend_pid
+        assert killer.execute("SELECT pg_terminate_backend(%s)", (pid,)).fetchone() == (
+            True,
+        )
+        try:
+            victim.execute("SELECT 1")
+        except psycopg.OperationalError:
+            pass
+        else:
+            raise AssertionError("terminated backend didn't break the connection")
+        assert victim.broken
+    finally:
+        victim.close()
+        killer.close()
 
 
 async def asyncSmoke(dsn: str) -> None:

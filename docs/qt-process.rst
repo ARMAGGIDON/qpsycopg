@@ -69,6 +69,10 @@ terminates. Ordinary PostgreSQL errors (for example ``UndefinedTable`` or
 Current limitations
 -------------------
 
+* ``Connection.fileno()`` isn't available: the real PostgreSQL socket belongs to
+  the worker process, so exposing its descriptor in the application process would
+  be invalid. The method raises ``NotSupportedError`` instead of returning the
+  backend's internal remote-wait handle.
 * ``PGconn.trace()`` is not supported because a file descriptor owned by the
   application process isn't valid in the worker process.
 * Result transfer currently uses a framed localhost control connection. Large

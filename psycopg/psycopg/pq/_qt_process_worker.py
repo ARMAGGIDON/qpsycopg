@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import select
 import socket
+from array import array
 from typing import Any
 
 from psycopg import pq
@@ -191,31 +192,33 @@ def _snapshotResult(result: Any) -> ResultSnapshot:
     )
 
     data = bytearray()
-    cells: list[tuple[int, int]] = []
+    cells = array("q")
     for row in range(result.ntuples):
         for column in range(result.nfields):
             value = result.get_value(row, column)
             if value is None:
-                cells.append((-1, 0))
+                cells.extend((-1, 0))
             else:
                 start = len(data)
                 data.extend(value)
-                cells.append((start, len(value)))
+                cells.extend((start, len(value)))
 
-    errorFields = tuple(
-        (int(field), result.error_field(int(field))) for field in pq.DiagnosticField
-    )
+    errorFields: list[tuple[int, bytes]] = []
+    for field in pq.DiagnosticField:
+        value = result.error_field(int(field))
+        if value is not None:
+            errorFields.append((int(field), value))
 
     return ResultSnapshot(
         status=int(result.status),
         errorMessage=result.error_message,
-        errorFields=errorFields,
+        errorFields=tuple(errorFields),
         columns=columns,
         rowCount=result.ntuples,
         columnCount=result.nfields,
         binaryTuples=result.binary_tuples,
-        data=bytes(data),
-        cells=tuple(cells),
+        data=data,
+        cells=cells,
         paramTypes=tuple(result.param_type(i) for i in range(result.nparams)),
         commandStatus=result.command_status,
         commandTuples=result.command_tuples,

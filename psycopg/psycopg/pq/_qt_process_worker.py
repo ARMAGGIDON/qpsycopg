@@ -33,6 +33,7 @@ class Worker:
             stop = request.operation == Operation.CLOSE
             try:
                 value = self._handle(request)
+                stop |= self._connectionBroken()
                 response = Response(
                     requestId=request.requestId,
                     value=value,

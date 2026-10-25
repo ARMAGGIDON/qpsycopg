@@ -102,9 +102,7 @@ def _workerImpl() -> str:
         if requested == "qt-process":
             raise e.InterfaceError("QPSYCOPG_WORKER_IMPL cannot be 'qt-process'")
         if requested not in ("c", "binary", "python"):
-            raise e.InterfaceError(
-                f"unknown QPSYCOPG_WORKER_IMPL value: {requested!r}"
-            )
+            raise e.InterfaceError(f"unknown QPSYCOPG_WORKER_IMPL value: {requested!r}")
         return requested
     return str(_localPq.__impl__)
 
@@ -170,7 +168,10 @@ class _ProcessOwner:
             self.startError = error
             self.started.set()
         finally:
-            if process is not None and process.state() != QProcess.ProcessState.NotRunning:
+            if (
+                process is not None
+                and process.state() != QProcess.ProcessState.NotRunning
+            ):
                 process.kill()
                 process.waitForFinished(5_000)
 
@@ -533,9 +534,7 @@ class PGconn(_RemoteObject):
         return int(size), memoryview(data)
 
     def trace(self, fileno: int) -> None:
-        raise e.NotSupportedError(
-            "trace() cannot use a parent-process file descriptor"
-        )
+        raise e.NotSupportedError("trace() cannot use a parent-process file descriptor")
 
     def set_trace_flags(self, flags: Trace) -> None:
         self._call("set_trace_flags", flags)

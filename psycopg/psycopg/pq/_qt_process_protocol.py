@@ -56,6 +56,15 @@ class RemoteError:
 
 
 @dataclass(slots=True, frozen=True)
+class CellTable:
+    values: array
+
+    def __getitem__(self, index: int) -> tuple[int, int]:
+        offset = index * 2
+        return self.values[offset], self.values[offset + 1]
+
+
+@dataclass(slots=True, frozen=True)
 class ResultSnapshot:
     status: int
     errorMessage: bytes
@@ -65,7 +74,7 @@ class ResultSnapshot:
     columnCount: int
     binaryTuples: int
     data: bytearray
-    cells: array
+    cells: CellTable
     paramTypes: tuple[int, ...]
     commandStatus: bytes | None
     commandTuples: int | None

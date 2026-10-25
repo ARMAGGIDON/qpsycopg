@@ -28,8 +28,9 @@ elif pq.__impl__ == "binary":
     _psycopg = psycopg_binary._psycopg
     __version__ = psycopg_binary.__version__
 
-elif pq.__impl__ == "python":
-
+elif pq.__impl__ in ("python", "qt-process"):
+    # qt-process implements the pq protocol in Python and therefore must use
+    # the Python generator layer instead of C functions expecting a local PGconn.
     _psycopg = None  # type: ignore[assignment]
 
 else:

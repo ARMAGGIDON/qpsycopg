@@ -5,10 +5,9 @@ from __future__ import annotations
 import pickle
 import socket
 import struct
-from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any
-
+from dataclasses import dataclass
 
 _HEADER = struct.Struct("!Q")
 _MAX_FRAME = 1 << 34  # 16 GiB: reject obviously corrupt frame lengths.

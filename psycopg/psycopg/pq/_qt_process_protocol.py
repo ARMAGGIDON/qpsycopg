@@ -38,6 +38,7 @@ class Request:
     objectId: int = 0
     member: str = ""
     args: tuple[Any, ...] = ()
+    kwargs: tuple[tuple[str, Any], ...] = ()
 
 
 @dataclass(slots=True, frozen=True)

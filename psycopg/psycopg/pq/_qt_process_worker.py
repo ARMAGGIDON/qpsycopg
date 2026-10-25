@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
+import sys
 import select
 import socket
-import sys
 from typing import Any
 
 from psycopg import pq
 
 from ._qt_process_protocol import Operation, RemoteError, RemoteKind, RemoteRef
-from ._qt_process_protocol import Request, Response, ResultSnapshot, recvFrame, sendFrame
-
+from ._qt_process_protocol import Request, Response, ResultSnapshot, recvFrame
+from ._qt_process_protocol import sendFrame
 
 READ = 1
 WRITE = 2
@@ -62,7 +62,7 @@ class Worker:
         if conn is None:
             return False
         try:
-            return conn.status == pq.ConnStatus.BAD
+            return bool(conn.status == pq.ConnStatus.BAD)
         except Exception:
             return True
 
@@ -100,9 +100,11 @@ class Worker:
             return self._wait(obj, int(request.args[0]), request.args[1])
 
         if op == Operation.ESCAPE:
-            conn = obj if request.objectId else None
-            escaping = pq.Escaping(conn)
-            return self._normalize(getattr(escaping, request.member)(*request.args))
+            escapingConn: Any = obj if request.objectId else None
+            escaping = pq.Escaping(escapingConn)
+            return self._normalize(
+                getattr(escaping, request.member)(*request.args)
+            )
 
         raise ValueError(f"unsupported operation: {op!r}")
 

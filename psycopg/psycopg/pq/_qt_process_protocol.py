@@ -5,8 +5,8 @@ from __future__ import annotations
 import pickle
 import socket
 import struct
-from enum import IntEnum
 from array import array
+from enum import IntEnum
 from typing import Any
 from dataclasses import dataclass
 
@@ -57,7 +57,7 @@ class RemoteError:
 
 @dataclass(slots=True, frozen=True)
 class CellTable:
-    values: array
+    values: array[int]
 
     def __getitem__(self, index: int) -> tuple[int, int]:
         offset = index * 2

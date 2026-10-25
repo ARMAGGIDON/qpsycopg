@@ -5,22 +5,25 @@ from __future__ import annotations
 import asyncio
 import warnings
 from time import monotonic
+from typing import cast
 
 from . import errors as e
 from .abc import RV, AdaptContext, ConnParam, PQGen, PQGenConn
 from .rows import AsyncRowFactory, Row, RowFactory
 from .adapt import AdaptersMap
 from .cursor import Cursor
-from .cursor_async import AsyncCursor
 from ._compat import Self
 from .conninfo import conninfo_attempts, conninfo_attempts_async, make_conninfo
 from .conninfo import timeout_from_conninfo
+from .connection import _INTERRUPTED as _SYNC_INTERRUPTED
+from .connection import _WAIT_INTERVAL, ACTIVE
+from .connection import Connection as _Connection
+from .connection import logger
+from .cursor_async import AsyncCursor
 from ._capabilities import capabilities
 from ._conninfo_utils import gssapi_requested
-from .connection import ACTIVE, Connection as _Connection, _INTERRUPTED as _SYNC_INTERRUPTED
-from .connection import _WAIT_INTERVAL, logger
-from .connection_async import AsyncConnection as _AsyncConnection
 from .connection_async import _INTERRUPTED as _ASYNC_INTERRUPTED
+from .connection_async import AsyncConnection as _AsyncConnection
 from .pq.pq_qt_process import waitRemote
 
 
@@ -44,7 +47,7 @@ def _waitRemote(
             if deadline is not None and monotonic() >= deadline:
                 raise e._WaitTimeout("wait timeout expired")
     except StopIteration as ex:
-        return ex.value
+        return cast(RV, ex.value)
 
 
 def _waitRemoteConn(
@@ -62,7 +65,7 @@ def _waitRemoteConn(
             if deadline is not None and monotonic() >= deadline:
                 raise e._WaitTimeout("wait timeout expired")
     except StopIteration as ex:
-        return ex.value
+        return cast(RV, ex.value)
 
 
 async def _waitRemoteAsync(
@@ -81,7 +84,7 @@ async def _waitRemoteAsync(
             if deadline is not None and monotonic() >= deadline:
                 raise e._WaitTimeout("wait timeout expired")
     except StopIteration as ex:
-        return ex.value
+        return cast(RV, ex.value)
 
 
 async def _waitRemoteConnAsync(
@@ -99,7 +102,7 @@ async def _waitRemoteConnAsync(
             if deadline is not None and monotonic() >= deadline:
                 raise e._WaitTimeout("wait timeout expired")
     except StopIteration as ex:
-        return ex.value
+        return cast(RV, ex.value)
 
 
 class Connection(_Connection[Row]):
@@ -126,7 +129,11 @@ class Connection(_Connection[Row]):
         conn_errors: list[tuple[e.Error, str]] = []
 
         for attempt in attempts:
-            tdescr = (attempt.get("host"), attempt.get("port"), attempt.get("hostaddr"))
+            tdescr = (
+                attempt.get("host"),
+                attempt.get("port"),
+                attempt.get("hostaddr"),
+            )
             descr = "host: %r, port: %r, hostaddr: %r" % tdescr
             logger.debug("connection attempt: %s", descr)
             try:
@@ -136,7 +143,9 @@ class Connection(_Connection[Row]):
                     timeout=timeout,
                 )
             except e._WaitTimeout:
-                conn_errors.append((e.ConnectionTimeout("connection timeout expired"), descr))
+                conn_errors.append(
+                    (e.ConnectionTimeout("connection timeout expired"), descr)
+                )
             except e.Error as error:
                 conn_errors.append((error, descr))
             except e._NO_TRACEBACK as error:
@@ -152,7 +161,11 @@ class Connection(_Connection[Row]):
             lines.extend(f"- {descr}: {error}" for error, descr in conn_errors)
             raise type(last)("\n".join(lines), pgconn=last.pgconn).with_traceback(None)
 
-        if capabilities.has_used_gssapi() and rv.pgconn.used_gssapi and not gssapi_requested(params):
+        if (
+            capabilities.has_used_gssapi()
+            and rv.pgconn.used_gssapi
+            and not gssapi_requested(params)
+        ):
             warnings.warn(
                 "the connection was obtained using GSSAPI through the libpq default; "
                 "set gssencmode explicitly if this behaviour matters",
@@ -168,6 +181,11 @@ class Connection(_Connection[Row]):
             rv._adapters = AdaptersMap(context.adapters)
         rv.prepare_threshold = prepare_threshold
         return rv
+
+    def fileno(self) -> int:
+        raise e.NotSupportedError(
+            "fileno() is not available for qt-process connections"
+        )
 
     def wait(
         self,
@@ -185,7 +203,9 @@ class Connection(_Connection[Row]):
                 except e.QueryCanceled:
                     pass
                 except e._WaitTimeout:
-                    logger.warning("query not terminated after cancellation: closing connection")
+                    logger.warning(
+                        "query not terminated after cancellation: closing connection"
+                    )
                     self.pgconn.finish()
             raise
 
@@ -226,7 +246,11 @@ class AsyncConnection(_AsyncConnection[Row]):
         conn_errors: list[tuple[e.Error, str]] = []
 
         for attempt in attempts:
-            tdescr = (attempt.get("host"), attempt.get("port"), attempt.get("hostaddr"))
+            tdescr = (
+                attempt.get("host"),
+                attempt.get("port"),
+                attempt.get("hostaddr"),
+            )
             descr = "host: %r, port: %r, hostaddr: %r" % tdescr
             try:
                 rv = await _waitRemoteConnAsync(
@@ -235,7 +259,9 @@ class AsyncConnection(_AsyncConnection[Row]):
                     timeout,
                 )
             except e._WaitTimeout:
-                conn_errors.append((e.ConnectionTimeout("connection timeout expired"), descr))
+                conn_errors.append(
+                    (e.ConnectionTimeout("connection timeout expired"), descr)
+                )
             except e.Error as error:
                 conn_errors.append((error, descr))
             except e._NO_TRACEBACK as error:
@@ -251,7 +277,11 @@ class AsyncConnection(_AsyncConnection[Row]):
             lines.extend(f"- {descr}: {error}" for error, descr in conn_errors)
             raise type(last)("\n".join(lines), pgconn=last.pgconn).with_traceback(None)
 
-        if capabilities.has_used_gssapi() and rv.pgconn.used_gssapi and not gssapi_requested(params):
+        if (
+            capabilities.has_used_gssapi()
+            and rv.pgconn.used_gssapi
+            and not gssapi_requested(params)
+        ):
             warnings.warn(
                 "the connection was obtained using GSSAPI through the libpq default; "
                 "set gssencmode explicitly if this behaviour matters",
@@ -267,6 +297,11 @@ class AsyncConnection(_AsyncConnection[Row]):
             rv._adapters = AdaptersMap(context.adapters)
         rv.prepare_threshold = prepare_threshold
         return rv
+
+    def fileno(self) -> int:
+        raise e.NotSupportedError(
+            "fileno() is not available for qt-process connections"
+        )
 
     async def wait(
         self,
@@ -284,7 +319,9 @@ class AsyncConnection(_AsyncConnection[Row]):
                 except e.QueryCanceled:
                     pass
                 except e._WaitTimeout:
-                    logger.warning("query not terminated after cancellation: closing connection")
+                    logger.warning(
+                        "query not terminated after cancellation: closing connection"
+                    )
                     self.pgconn.finish()
             raise
 
@@ -293,7 +330,9 @@ class AsyncConnection(_AsyncConnection[Row]):
             return
         if capabilities.has_cancel_safe():
             try:
-                await _waitRemoteConnAsync(self._cancel_gen(), _WAIT_INTERVAL, timeout or None)
+                await _waitRemoteConnAsync(
+                    self._cancel_gen(), _WAIT_INTERVAL, timeout or None
+                )
             except e._WaitTimeout:
                 raise e.CancellationTimeout("cancellation timeout expired") from None
         else:

@@ -5,6 +5,7 @@ psycopg -- PostgreSQL database adapter for Python
 # Copyright (C) 2020 The Psycopg Team
 
 import logging
+from typing import TYPE_CHECKING
 
 from . import pq  # noqa: F401 import early to stabilize side effects
 from . import dbapi20, postgres, types
@@ -31,7 +32,10 @@ from ._connection_base import BaseConnection, Notify
 from ._connection_info import ConnectionInfo
 from ._server_cursor_async import AsyncServerCursor
 
-if pq.__impl__ == "qt-process":
+if TYPE_CHECKING:
+    from .connection import Connection
+    from .connection_async import AsyncConnection
+elif pq.__impl__ == "qt-process":
     from .connection_qt_process import AsyncConnection, Connection
 else:
     from .connection import Connection

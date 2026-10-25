@@ -11,6 +11,7 @@ from . import pq  # noqa: F401 import early to stabilize side effects
 from . import dbapi20, postgres, types
 from ._tpc import Xid
 from .copy import AsyncCopy, Copy
+from .types import array as types_array
 from ._enums import IsolationLevel
 from .cursor import Cursor
 from .errors import DatabaseError, DataError, Error, IntegrityError, InterfaceError
@@ -60,7 +61,7 @@ postgres.register_default_adapters(adapters)
 dbapi20.register_dbapi20_adapters(adapters)
 
 # Must come after all the types have been registered
-types.array.register_all_arrays(adapters)
+types_array.register_all_arrays(adapters)
 
 # Note: defining the exported methods helps both Sphynx in documenting that
 # this is the canonical place to obtain them and should be used by MyPy too,

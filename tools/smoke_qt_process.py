@@ -3,11 +3,11 @@
 
 from __future__ import annotations
 
-import argparse
 import asyncio
+import argparse
 import threading
-from datetime import datetime, timezone
 from decimal import Decimal
+from datetime import datetime, timezone
 
 import psycopg
 
@@ -46,7 +46,9 @@ def syncSmoke(dsn: str) -> None:
             try:
                 with connection.cursor() as cursor:
                     cursor.execute("SELECT %s::int", (number,))
-                    values.append(cursor.fetchone()[0])
+                    row = cursor.fetchone()
+                    assert row is not None
+                    values.append(row[0])
             except BaseException as error:
                 errors.append(error)
 

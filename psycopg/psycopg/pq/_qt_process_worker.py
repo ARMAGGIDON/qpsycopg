@@ -10,9 +10,9 @@ from typing import Any
 
 from psycopg import pq
 
-from ._qt_process_protocol import Operation, RemoteError, RemoteKind, RemoteRef
-from ._qt_process_protocol import Request, Response, ResultSnapshot, recvFrame
-from ._qt_process_protocol import sendFrame
+from ._qt_process_protocol import CellTable, Operation, RemoteError, RemoteKind
+from ._qt_process_protocol import RemoteRef, Request, Response, ResultSnapshot
+from ._qt_process_protocol import recvFrame, sendFrame
 
 READ = 1
 WRITE = 2
@@ -218,7 +218,7 @@ def _snapshotResult(result: Any) -> ResultSnapshot:
         columnCount=result.nfields,
         binaryTuples=result.binary_tuples,
         data=data,
-        cells=cells,
+        cells=CellTable(cells),
         paramTypes=tuple(result.param_type(i) for i in range(result.nparams)),
         commandStatus=result.command_status,
         commandTuples=result.command_tuples,

@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 __impl__: str
 """The currently loaded implementation of the `!psycopg.pq` package.
 
-Possible values include ``python``, ``c``, ``binary``.
+Possible values include ``python``, ``c``, ``binary``, ``qt-process``.
 """
 
 __build_version__: int
@@ -54,7 +54,6 @@ def import_from_libpq() -> None:
     If an implementation is requested try to import only it, otherwise
     try to import the best implementation available.
     """
-    # import these names into the module on success as side effect
     global __impl__, version, __build_version__
     global PGconn, PGresult, Conninfo, Escaping, PGcancel, PGcancelConn
 
@@ -62,34 +61,41 @@ def import_from_libpq() -> None:
     module = None
     attempts: list[str] = []
 
-    def handle_error(name: str, e: Exception) -> None:
+    def handle_error(name: str, error: Exception) -> None:
         if not impl:
-            msg = f"couldn't import psycopg '{name}' implementation: {e}"
-            attempts.append(msg)
+            attempts.append(f"couldn't import psycopg '{name}' implementation: {error}")
         else:
-            msg = f"couldn't import requested psycopg '{name}' implementation: {e}"
-            raise ImportError(msg) from e
+            msg = f"couldn't import requested psycopg '{name}' implementation: {error}"
+            raise ImportError(msg) from error
+
+    # qpsycopg opt-in implementation. Never select it implicitly: keeping the
+    # upstream default makes comparison and upstream synchronisation trivial.
+    if impl == "qt-process":
+        try:
+            from . import pq_qt_process as module  # type: ignore[assignment]
+        except Exception as error:
+            handle_error("qt-process", error)
 
     # The best implementation: fast but requires the system libpq installed
-    if not impl or impl == "c":
+    if not module and (not impl or impl == "c"):
         try:
             from psycopg_c import pq as module  # type: ignore
-        except Exception as e:
-            handle_error("c", e)
+        except Exception as error:
+            handle_error("c", error)
 
     # Second best implementation: fast and stand-alone
     if not module and (not impl or impl == "binary"):
         try:
             from psycopg_binary import pq as module  # type: ignore
-        except Exception as e:
-            handle_error("binary", e)
+        except Exception as error:
+            handle_error("binary", error)
 
     # Pure Python implementation, slow and requires the system libpq installed.
     if not module and (not impl or impl == "python"):
         try:
             from . import pq_ctypes as module  # type: ignore[assignment]
-        except Exception as e:
-            handle_error("python", e)
+        except Exception as error:
+            handle_error("python", error)
 
     if module:
         __impl__ = module.__impl__

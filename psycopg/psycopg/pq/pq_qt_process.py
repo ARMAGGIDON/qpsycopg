@@ -33,16 +33,24 @@ except ImportError as ex:  # pragma: no cover - depends on optional dependency
         "install psycopg[qt] or PySide6"
     ) from ex
 
-# Conninfo parsing doesn't own a database session and is safe to keep local.
-# It also avoids spawning a worker only to parse a DSN.
-from .pq_ctypes import Conninfo
-from .pq_ctypes import Escaping as _LocalEscaping
-from .pq_ctypes import __build_version__ as _localBuildVersion
-from .pq_ctypes import version as _localVersion
 
+def _loadLocalPq() -> Any:
+    """Load a stateless local pq implementation without creating a session."""
+    if importlib.util.find_spec("psycopg_c"):
+        from psycopg_c import pq as module
+    elif importlib.util.find_spec("psycopg_binary"):
+        from psycopg_binary import pq as module
+    else:
+        from . import pq_ctypes as module
+    return module
+
+
+_localPq = _loadLocalPq()
+Conninfo = _localPq.Conninfo
+_LocalEscaping = _localPq.Escaping
 
 __impl__ = "qt-process"
-__build_version__ = _localBuildVersion
+__build_version__ = _localPq.__build_version__
 
 _OK = ConnStatus.OK
 _handles: dict[int, tuple["_Transport", int]] = {}
@@ -51,9 +59,8 @@ _nextHandle = itertools.count(1)
 
 
 def version() -> int:
-    # The worker is launched from the same installation/environment. This value
-    # is only capability metadata; no PostgreSQL session is created locally.
-    return _localVersion()
+    # Capability metadata only: the actual PostgreSQL session lives in worker.
+    return _localPq.version()
 
 
 def waitRemote(handle: int, mask: int, timeout: float | None) -> int:

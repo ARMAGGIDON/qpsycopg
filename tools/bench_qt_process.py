@@ -11,20 +11,20 @@ Examples:
 
 from __future__ import annotations
 
-import argparse
-import json
 import os
-import statistics
-import threading
+import json
 import time
-from concurrent.futures import ThreadPoolExecutor
+import argparse
+import threading
+import statistics
+from typing import Any, Callable
 from decimal import Decimal
-from typing import Any
+from concurrent.futures import ThreadPoolExecutor
 
 import psycopg
 
 
-def timed(call, count: int) -> list[float]:
+def timed(call: Callable[[], Any], count: int) -> list[float]:
     samples = []
     for _ in range(count):
         start = time.perf_counter_ns()
@@ -64,7 +64,8 @@ def main() -> int:
     result["connect"] = summary(connectSamples)
 
     with psycopg.connect(args.dsn) as connection:
-        def selectOne():
+
+        def selectOne() -> None:
             with connection.cursor() as cursor:
                 cursor.execute("SELECT 1")
                 assert cursor.fetchone() == (1,)
@@ -79,10 +80,11 @@ def main() -> int:
                 (args.rows,),
             )
             rows = cursor.fetchall()
+        elapsed = time.perf_counter() - start
         result["fetch"] = {
-            "seconds": time.perf_counter() - start,
+            "seconds": elapsed,
             "rows": len(rows),
-            "rows_per_second": len(rows) / max(time.perf_counter() - start, 1e-9),
+            "rows_per_second": len(rows) / max(elapsed, 1e-9),
         }
         assert rows and isinstance(rows[0][1], Decimal)
 
@@ -94,7 +96,9 @@ def main() -> int:
             barrier.wait()
             with connection.cursor() as cursor:
                 cursor.execute("SELECT %s::int + pg_backend_pid() * 0", (index,))
-                return cursor.fetchone()[0]
+                row = cursor.fetchone()
+                assert row is not None
+                return int(row[0])
 
         start = time.perf_counter()
         with ThreadPoolExecutor(max_workers=args.threads) as pool:
@@ -118,7 +122,7 @@ def main() -> int:
         # Cancel is tested from another thread while the query is running.
         cancelled: list[str] = []
 
-        def sleepingQuery():
+        def sleepingQuery() -> None:
             try:
                 with connection.cursor() as cursor:
                     cursor.execute("SELECT pg_sleep(30)")

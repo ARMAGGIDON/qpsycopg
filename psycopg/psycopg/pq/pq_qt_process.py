@@ -227,6 +227,7 @@ class _Transport:
         objectId: int = 0,
         member: str = "",
         args: tuple[Any, ...] = (),
+        kwargs: tuple[tuple[str, Any], ...] = (),
     ) -> Any:
         with self.lock:
             if self.closed:
@@ -239,6 +240,7 @@ class _Transport:
                 objectId,
                 member,
                 _wire(args),
+                tuple((name, _wire(value)) for name, value in kwargs),
             )
             try:
                 sendFrame(self.sock, request)
@@ -328,12 +330,13 @@ class _RemoteObject:
         self._transport = transport
         self._objectId = objectId
 
-    def _call(self, member: str, *args: Any) -> Any:
+    def _call(self, member: str, *args: Any, **kwargs: Any) -> Any:
         return self._transport.request(
             Operation.CALL,
             self._objectId,
             member,
             args,
+            tuple(kwargs.items()),
         )
 
     def _get(self, member: str) -> Any:
@@ -351,8 +354,8 @@ class _RemoteObject:
         if name.startswith("_"):
             raise AttributeError(name)
 
-        def call(*args: Any) -> Any:
-            return self._call(name, *args)
+        def call(*args: Any, **kwargs: Any) -> Any:
+            return self._call(name, *args, **kwargs)
 
         return call
 

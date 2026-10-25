@@ -39,6 +39,7 @@ class Worker:
                     notices=tuple(self.notices),
                 )
             except BaseException as error:
+                stop |= self._connectionBroken()
                 response = Response(
                     requestId=request.requestId,
                     error=RemoteError(
@@ -53,7 +54,17 @@ class Worker:
 
             sendFrame(self.sock, response)
             if stop:
+                self._closeObjects()
                 return
+
+    def _connectionBroken(self) -> bool:
+        conn = self.objects.get(1)
+        if conn is None:
+            return False
+        try:
+            return conn.status == pq.ConnStatus.BAD
+        except Exception:
+            return True
 
     def _handle(self, request: Request) -> Any:
         op = request.operation
@@ -71,7 +82,6 @@ class Worker:
             return pq.PGconn.ping(request.args[0])
 
         if op == Operation.CLOSE:
-            self._closeObjects()
             return None
 
         obj = self.objects[request.objectId]
@@ -110,7 +120,6 @@ class Worker:
         try:
             self.notices.append(_snapshotResult(result))
         except Exception:
-            # Notice handling must never break a database operation.
             pass
 
     def _register(self, value: Any, kind: RemoteKind) -> RemoteRef:

@@ -5,17 +5,16 @@ from __future__ import annotations
 import asyncio
 import warnings
 from time import monotonic
-from typing import Any, cast
 
 from . import errors as e
 from .abc import RV, AdaptContext, ConnParam, PQGen, PQGenConn
-from .rows import AsyncRowFactory, Row, RowFactory, tuple_row
+from .rows import AsyncRowFactory, Row, RowFactory
 from .adapt import AdaptersMap
 from .cursor import Cursor
 from .cursor_async import AsyncCursor
 from ._compat import Self
-from .conninfo import conninfo_attempts, conninfo_attempts_async, conninfo_to_dict
-from .conninfo import make_conninfo, timeout_from_conninfo
+from .conninfo import conninfo_attempts, conninfo_attempts_async, make_conninfo
+from .conninfo import timeout_from_conninfo
 from ._capabilities import capabilities
 from ._conninfo_utils import gssapi_requested
 from .connection import ACTIVE, Connection as _Connection, _INTERRUPTED as _SYNC_INTERRUPTED
@@ -131,11 +130,13 @@ class Connection(_Connection[Row]):
             descr = "host: %r, port: %r, hostaddr: %r" % tdescr
             logger.debug("connection attempt: %s", descr)
             try:
-                gen = cls._connect_gen(make_conninfo("", **attempt))
-                rv = _waitRemoteConn(gen, interval=_WAIT_INTERVAL, timeout=timeout)
+                rv = _waitRemoteConn(
+                    cls._connect_gen(make_conninfo("", **attempt)),
+                    interval=_WAIT_INTERVAL,
+                    timeout=timeout,
+                )
             except e._WaitTimeout:
-                error = e.ConnectionTimeout("connection timeout expired")
-                conn_errors.append((error, descr))
+                conn_errors.append((e.ConnectionTimeout("connection timeout expired"), descr))
             except e.Error as error:
                 conn_errors.append((error, descr))
             except e._NO_TRACEBACK as error:
@@ -151,21 +152,22 @@ class Connection(_Connection[Row]):
             lines.extend(f"- {descr}: {error}" for error, descr in conn_errors)
             raise type(last)("\n".join(lines), pgconn=last.pgconn).with_traceback(None)
 
-        if capabilities.has_used_gssapi() and rv.used_gssapi and not gssapi_requested(params):
+        if capabilities.has_used_gssapi() and rv.pgconn.used_gssapi and not gssapi_requested(params):
             warnings.warn(
                 "the connection was obtained using GSSAPI through the libpq default; "
                 "set gssencmode explicitly if this behaviour matters",
                 RuntimeWarning,
             )
 
-        connection = cls(rv, row_factory or cast(RowFactory[Row], tuple_row))
-        connection._autocommit = bool(autocommit)
+        rv._autocommit = bool(autocommit)
+        if row_factory:
+            rv.row_factory = row_factory
         if cursor_factory:
-            connection.cursor_factory = cursor_factory
+            rv.cursor_factory = cursor_factory
         if context:
-            connection._adapters = AdaptersMap(context.adapters)
-        connection.prepare_threshold = prepare_threshold
-        return connection
+            rv._adapters = AdaptersMap(context.adapters)
+        rv.prepare_threshold = prepare_threshold
+        return rv
 
     def wait(
         self,
@@ -216,8 +218,7 @@ class AsyncConnection(_AsyncConnection[Row]):
         cursor_factory: type[AsyncCursor[Row]] | None = None,
         **kwargs: ConnParam,
     ) -> Self:
-        # Unlike upstream AsyncConnection, this doesn't depend on add_reader(),
-        # so Windows ProactorEventLoop is valid: socket waiting happens in worker.
+        # No add_reader()/add_writer(): Windows ProactorEventLoop is supported.
         params = await cls._get_connection_params(conninfo, **kwargs)
         timeout = timeout_from_conninfo(params)
         rv = None
@@ -228,11 +229,13 @@ class AsyncConnection(_AsyncConnection[Row]):
             tdescr = (attempt.get("host"), attempt.get("port"), attempt.get("hostaddr"))
             descr = "host: %r, port: %r, hostaddr: %r" % tdescr
             try:
-                gen = cls._connect_gen(make_conninfo("", **attempt))
-                rv = await _waitRemoteConnAsync(gen, _WAIT_INTERVAL, timeout)
+                rv = await _waitRemoteConnAsync(
+                    cls._connect_gen(make_conninfo("", **attempt)),
+                    _WAIT_INTERVAL,
+                    timeout,
+                )
             except e._WaitTimeout:
-                error = e.ConnectionTimeout("connection timeout expired")
-                conn_errors.append((error, descr))
+                conn_errors.append((e.ConnectionTimeout("connection timeout expired"), descr))
             except e.Error as error:
                 conn_errors.append((error, descr))
             except e._NO_TRACEBACK as error:
@@ -248,21 +251,22 @@ class AsyncConnection(_AsyncConnection[Row]):
             lines.extend(f"- {descr}: {error}" for error, descr in conn_errors)
             raise type(last)("\n".join(lines), pgconn=last.pgconn).with_traceback(None)
 
-        if capabilities.has_used_gssapi() and rv.used_gssapi and not gssapi_requested(params):
+        if capabilities.has_used_gssapi() and rv.pgconn.used_gssapi and not gssapi_requested(params):
             warnings.warn(
                 "the connection was obtained using GSSAPI through the libpq default; "
                 "set gssencmode explicitly if this behaviour matters",
                 RuntimeWarning,
             )
 
-        connection = cls(rv, row_factory or cast(AsyncRowFactory[Row], tuple_row))
-        connection._autocommit = bool(autocommit)
+        rv._autocommit = bool(autocommit)
+        if row_factory:
+            rv.row_factory = row_factory
         if cursor_factory:
-            connection.cursor_factory = cursor_factory
+            rv.cursor_factory = cursor_factory
         if context:
-            connection._adapters = AdaptersMap(context.adapters)
-        connection.prepare_threshold = prepare_threshold
-        return connection
+            rv._adapters = AdaptersMap(context.adapters)
+        rv.prepare_threshold = prepare_threshold
+        return rv
 
     async def wait(
         self,

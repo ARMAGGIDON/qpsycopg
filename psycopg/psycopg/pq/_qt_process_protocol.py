@@ -11,6 +11,7 @@ from typing import Any
 from dataclasses import dataclass
 
 _HEADER = struct.Struct("!Q")
+_TOKEN_SIZE = 32
 _MAX_FRAME = 1 << 34  # 16 GiB: reject obviously corrupt frame lengths.
 
 
@@ -87,6 +88,16 @@ class Response:
     value: Any = None
     error: RemoteError | None = None
     notices: tuple[ResultSnapshot, ...] = ()
+
+
+def sendToken(sock: socket.socket, token: bytes) -> None:
+    if len(token) != _TOKEN_SIZE:
+        raise ValueError("invalid qpsycopg worker token length")
+    sock.sendall(token)
+
+
+def recvToken(sock: socket.socket) -> bytes:
+    return bytes(_recvExact(sock, _TOKEN_SIZE))
 
 
 def sendFrame(sock: socket.socket, value: Any) -> None:

@@ -3,12 +3,12 @@
 
 from __future__ import annotations
 
-import os
-import json
-import time
 import argparse
-import threading
+import json
+import os
 import statistics
+import threading
+import time
 
 import psycopg
 from PySide6.QtCore import QCoreApplication, QTimer, Qt

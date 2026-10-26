@@ -11,16 +11,16 @@ Examples:
 
 from __future__ import annotations
 
-import os
-import json
-import time
 import argparse
 import importlib
-import threading
+import json
+import os
 import statistics
-from typing import Any, Callable
-from decimal import Decimal
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal
+from typing import Any, Callable
 
 import psycopg
 

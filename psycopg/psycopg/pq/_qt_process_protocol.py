@@ -6,9 +6,9 @@ import pickle
 import socket
 import struct
 from array import array
+from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any
-from dataclasses import dataclass
 
 _HEADER = struct.Struct("!Q")
 _TOKEN_SIZE = 32

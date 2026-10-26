@@ -157,7 +157,10 @@ class Connection(_Connection[Row]):
             last = conn_errors[-1][0]
             if len(conn_errors) == 1:
                 raise last.with_traceback(None)
-            lines = [str(last), "Multiple connection attempts failed. All failures were:"]
+            lines = [
+                str(last),
+                "Multiple connection attempts failed. All failures were:",
+            ]
             lines.extend(f"- {descr}: {error}" for error, descr in conn_errors)
             raise type(last)("\n".join(lines), pgconn=last.pgconn).with_traceback(None)
 
@@ -273,7 +276,10 @@ class AsyncConnection(_AsyncConnection[Row]):
             last = conn_errors[-1][0]
             if len(conn_errors) == 1:
                 raise last.with_traceback(None)
-            lines = [str(last), "Multiple connection attempts failed. All failures were:"]
+            lines = [
+                str(last),
+                "Multiple connection attempts failed. All failures were:",
+            ]
             lines.extend(f"- {descr}: {error}" for error, descr in conn_errors)
             raise type(last)("\n".join(lines), pgconn=last.pgconn).with_traceback(None)
 

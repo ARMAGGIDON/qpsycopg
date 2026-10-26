@@ -15,6 +15,7 @@ import os
 import json
 import time
 import argparse
+import importlib
 import threading
 import statistics
 from typing import Any, Callable
@@ -42,6 +43,23 @@ def summary(samples: list[float]) -> dict[str, float]:
         "min_ms": ordered[0],
         "max_ms": ordered[-1],
     }
+
+
+def processRss() -> int | None:
+    """Return parent + child RSS if optional psutil is installed."""
+    try:
+        psutil = importlib.import_module("psutil")
+    except ImportError:
+        return None
+
+    process = psutil.Process()
+    rss = process.memory_info().rss
+    for child in process.children(recursive=True):
+        try:
+            rss += child.memory_info().rss
+        except psutil.Error:
+            pass
+    return int(rss)
 
 
 def main() -> int:
@@ -72,6 +90,7 @@ def main() -> int:
 
         result["select_1"] = summary(timed(selectOne, args.iterations))
 
+        rssBefore = processRss()
         start = time.perf_counter()
         with connection.cursor() as cursor:
             cursor.execute(
@@ -81,11 +100,20 @@ def main() -> int:
             )
             rows = cursor.fetchall()
         elapsed = time.perf_counter() - start
+        rssAfter = processRss()
         result["fetch"] = {
             "seconds": elapsed,
             "rows": len(rows),
             "rows_per_second": len(rows) / max(elapsed, 1e-9),
         }
+        if rssBefore is not None and rssAfter is not None:
+            result["fetch"].update(
+                {
+                    "rss_before_mb": rssBefore / 1024**2,
+                    "rss_after_mb": rssAfter / 1024**2,
+                    "rss_delta_mb": (rssAfter - rssBefore) / 1024**2,
+                }
+            )
         assert rows and isinstance(rows[0][1], Decimal)
 
         # Same Connection, different Cursor per Python thread: this is the

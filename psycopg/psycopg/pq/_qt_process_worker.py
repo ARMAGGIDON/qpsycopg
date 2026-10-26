@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import sys
 import select
 import socket
+import sys
 from array import array
 from typing import Any
 

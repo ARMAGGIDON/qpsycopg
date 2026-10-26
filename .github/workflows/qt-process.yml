@@ -1,0 +1,51 @@
+name: Qt process backend
+
+on:
+  pull_request:
+    paths:
+      - "psycopg/**"
+      - "tools/smoke_qt_process.py"
+      - ".github/workflows/qt-process.yml"
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install libpq and qpsycopg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpq5
+          python -m pip install --upgrade pip
+          python -m pip install -e './psycopg[qt]'
+
+      - name: Smoke test qt-process backend
+        env:
+          PSYCOPG_IMPL: qt-process
+          QPSYCOPG_WORKER_IMPL: python
+        run: >-
+          python tools/smoke_qt_process.py
+          'postgresql://postgres:postgres@127.0.0.1:5432/postgres'

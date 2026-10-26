@@ -34,6 +34,7 @@ Documentation
     basic/index
     advanced/index
     api/index
+    qt-process
 
 Release notes
 -------------

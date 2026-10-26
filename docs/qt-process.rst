@@ -41,9 +41,10 @@ Architecture
 
 Query parameters are adapted to PostgreSQL representation before crossing the
 process boundary. Result values are copied from ``PGresult`` into one contiguous
-raw data block plus an offset table; the application-side ``PGresult`` exposes
-``memoryview`` slices to Psycopg's normal loaders. This avoids constructing rows
-and Python scalar values in the worker only to serialise them again.
+raw data block plus a packed offset table; the application-side ``PGresult``
+exposes ``memoryview`` slices to Psycopg's normal loaders. This avoids
+constructing rows and Python scalar values in the worker only to serialise them
+again.
 
 Semantics
 ---------
@@ -122,3 +123,25 @@ is selected when Psycopg is imported::
 Compare connection startup, ``SELECT 1`` latency, bulk fetch throughput,
 thread-shared connection behaviour, SQL-error survival and cancellation latency.
 Run several rounds after a warm-up and compare medians rather than a single run.
+
+For aggregate memory measurements install the optional benchmark dependency::
+
+    uv pip install --python .venv\Scripts\python.exe psutil
+
+The benchmark then reports RSS for the parent plus all child worker processes,
+so process isolation can't hide worker memory from the comparison.
+
+Qt responsiveness is measured separately using a precise ``QTimer``::
+
+    set PSYCOPG_IMPL=python
+    .venv\Scripts\python.exe tools\bench_qt_responsiveness.py DSN --caller thread
+
+    set PSYCOPG_IMPL=qt-process
+    set QPSYCOPG_WORKER_IMPL=python
+    .venv\Scripts\python.exe tools\bench_qt_responsiveness.py DSN --caller thread
+
+The ``thread`` mode is the intended way to use the synchronous API without
+blocking the GUI thread. Running the same benchmark with ``--caller main`` is a
+control demonstrating that synchronous ``cursor.execute()`` blocks the caller in
+both upstream Psycopg and qpsycopg; process isolation intentionally doesn't
+change synchronous API semantics.

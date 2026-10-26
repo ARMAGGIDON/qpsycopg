@@ -24,7 +24,7 @@ from .misc import ConninfoOption, PGnotify, PGresAttDesc, _clean_error_message
 from ._enums import ConnStatus, Trace
 from ._qt_process_protocol import Operation, RemoteError, RemoteKind, RemoteRef
 from ._qt_process_protocol import Request, Response, ResultSnapshot, recvFrame
-from ._qt_process_protocol import sendFrame
+from ._qt_process_protocol import recvToken, sendFrame
 
 try:
     from PySide6.QtCore import QProcess, QProcessEnvironment
@@ -196,9 +196,10 @@ class _Transport:
         listener.listen(1)
         listener.settimeout(10.0)
         host, port = listener.getsockname()
-        token = secrets.token_hex(32)
+        tokenHex = secrets.token_hex(32)
+        token = bytes.fromhex(tokenHex)
 
-        self.owner = _ProcessOwner(host, port, token)
+        self.owner = _ProcessOwner(host, port, tokenHex)
         self.owner.waitStarted()
         try:
             sock, _ = listener.accept()
@@ -209,8 +210,8 @@ class _Transport:
             listener.close()
 
         sock.settimeout(10.0)
-        received = recvFrame(sock)
-        if received != token:
+        received = recvToken(sock)
+        if not secrets.compare_digest(received, token):
             sock.close()
             self.owner.kill()
             raise e.OperationalError("qpsycopg worker authentication failed")

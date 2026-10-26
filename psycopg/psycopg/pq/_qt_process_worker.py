@@ -12,7 +12,7 @@ from psycopg import pq
 
 from ._qt_process_protocol import CellTable, Operation, RemoteError, RemoteKind
 from ._qt_process_protocol import RemoteRef, Request, Response, ResultSnapshot
-from ._qt_process_protocol import recvFrame, sendFrame
+from ._qt_process_protocol import recvFrame, sendFrame, sendToken
 
 READ = 1
 WRITE = 2
@@ -228,10 +228,11 @@ def main() -> int:
     if len(sys.argv) != 4:
         return 2
 
-    host, port, token = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+    host, port, tokenHex = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+    token = bytes.fromhex(tokenHex)
     sock = socket.create_connection((host, port), timeout=10.0)
     sock.settimeout(None)
-    sendFrame(sock, token)
+    sendToken(sock, token)
     try:
         Worker(sock).run()
         return 0

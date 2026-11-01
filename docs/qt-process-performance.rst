@@ -1,31 +1,30 @@
 Qt process performance notes
 ============================
 
-This document is a development checkpoint for the experimental ``qt-process``
-backend. It records the acceptance target, the latest reproducible benchmark,
-important optimisation decisions, and experiments which should not be repeated
-without a new reason.
+This document records the current performance state of the experimental
+``qt-process`` backend, the measurements which led to the present architecture,
+and the next optimisation targets. The canonical worker for performance work is
+``QPSYCOPG_WORKER_IMPL=binary``.
 
 Performance target
 ------------------
 
 For frequent database operations the target is approximately ``1x`` the normal
-Psycopg binary implementation. Process startup/connection creation and final
-worker shutdown are structural exceptions: the backend intentionally creates a
-``QProcess`` per PostgreSQL connection.
+Psycopg binary implementation. Connection startup and final worker shutdown are
+structural exceptions because one PostgreSQL connection intentionally owns one
+``QProcess`` worker.
 
-The performance requirement is not satisfied by a backend which is merely
-"fast enough" for a GUI. In particular, stable ``2x`` or ``3x`` regressions on
-normal query/fetch paths are considered unresolved.
+Stable ``2x`` or ``3x`` regressions on normal warmed query/fetch paths remain
+unresolved even if they are acceptable for a GUI workload.
 
-Current full checkpoint: optimized14
+Current full checkpoint: optimized16
 ------------------------------------
 
-The latest full end-to-end benchmark checkpoint is ``optimized14``:
+The latest full end-to-end benchmark checkpoint is ``optimized16``:
 
 * branch: ``feature/qt-process-pq``
-* runtime code commit: ``efc8400e2505889f44d24e8c0b9822dba9964789``
-* timestamp: ``2026-11-01T22:15:55+02:00``
+* measured runtime code commit: ``e24e4169b000ef052f07b90924c45cd625f96791``
+* timestamp: ``2026-11-02T00:44:32+02:00``
 * worker implementation: ``binary``
 * repetitions: ``3``
 * SELECT iterations per run: ``500``
@@ -33,359 +32,282 @@ The latest full end-to-end benchmark checkpoint is ``optimized14``:
 * threading test: ``8`` threads sharing one connection with separate cursors
 * smoke suite: PASS
 
-The summary medians were:
+Summary medians:
 
 ===========================  ============  ============  =============
 Metric                       vanilla       qt-process    summary ratio
 ===========================  ============  ============  =============
-connect                       34.84 ms      636.54 ms     18.27x
-SELECT 1 median               0.967 ms      1.727 ms      1.79x
-SELECT 1 p95                  1.383 ms      2.082 ms      1.51x
-100k execute                  0.170 s       0.431 s       2.53x
-100k fetchall                 0.187 s       0.207 s       1.11x
-100k total                    0.344 s       0.638 s       1.85x
-8 shared-connection threads   14.57 ms      24.04 ms      1.65x
-cancel call                   6.36 ms       13.55 ms      2.13x
-RSS delta for 100k result     39.37 MiB     34.75 MiB     0.88x
-Qt timer median               9.934 ms      9.940 ms      ~=1x
-Qt timer p95                  10.459 ms     10.481 ms     ~=1x
+connect                       34.94 ms      481.94 ms     13.79x
+SELECT 1 median               0.754 ms      1.585 ms      2.10x
+SELECT 1 p95                  1.358 ms      2.123 ms      1.56x
+100k execute                  0.151 s       0.200 s       1.32x
+100k fetchall                 0.156 s       0.153 s       0.98x
+100k total                    0.310 s       0.352 s       1.14x
+8 shared-connection threads   14.32 ms      23.89 ms      1.67x
+cancel call                   5.88 ms       6.12 ms       1.04x
+RSS delta for 100k result     39.39 MiB     34.81 MiB     0.88x
+Qt timer median               9.962 ms      10.004 ms     ~=1x
+Qt timer p95                  10.517 ms     10.597 ms     ~=1x
 ===========================  ============  ============  =============
 
-The runs were noisy, especially for bulk query execution. Paired ratios are
-therefore useful in addition to ratios of the summary medians. The median paired
-ratios were approximately:
+The run-to-run spread is material, especially for bulk execute and cancellation.
+Median paired ratios for the three runs were approximately:
 
-* SELECT median: ``1.76x``
-* SELECT p95: ``1.57x``
-* execute: ``1.95x``
-* fetchall: ``0.83x``
-* total bulk operation: ``1.34x``
-* threads: ``1.70x``
-* cancel: ``2.18x``
-* RSS delta: ``0.88x``
+* connect: ``14.18x``;
+* SELECT median: ``1.88x``;
+* SELECT p95: ``1.50x``;
+* 100k execute: ``1.45x``;
+* 100k fetchall: ``1.05x``;
+* 100k total: ``1.32x``;
+* threads: ``1.69x``;
+* cancel: ``1.04x``.
 
-The three qt-process bulk executions used ``100``, ``91`` and ``82`` remote
-requests respectively. ``fetchall()`` used zero remote requests.
+One qpsycopg cancel run was about ``22 ms`` and one vanilla cancel run was about
+``21 ms``. Do not interpret either outlier as the steady-state cancellation cost;
+the medians and the dedicated cancellation experiment show practical parity.
 
-Latest phase-profile checkpoint
--------------------------------
+Progress since optimized14/optimized15
+--------------------------------------
 
-After ``optimized14``, commit
-``4cef1bf702e4fc4f4c51f2c4a7e8388700a558d8`` added phase instrumentation to
-``tools/profile_qt_process.py`` and the qt-process transport/worker profiling
-hooks. This is a diagnostic checkpoint, not a replacement for the full
-``optimized14`` benchmark baseline.
+``optimized14`` was the last checkpoint before native result packing. It had
+approximately ``1.85x`` bulk-total overhead and ``2.13x`` cancellation overhead.
 
-A representative 100k x 3 ``fetch`` profile with the canonical ``binary`` worker
-reported::
+``optimized15`` measured commit ``cf4d51c`` after the native binary-compatible
+``PGresult -> PackedValues`` packer. Its important result was not one noisy total
+number but the removal of the snapshot bottleneck:
 
-    elapsed_seconds                         0.26264
-    remote_requests                              75
-    WAIT remote requests                         71
-    WAIT remote seconds                     0.11438
+* Python snapshot value packing: about ``108.9 ms``;
+* native snapshot value packing: about ``5.1 ms``;
+* reduction: about ``95%`` / ``21x``;
+* full snapshot total: about ``110.4 -> 5.1 ms``.
 
-    worker libpq_wait_seconds                0.06582
-    worker is_busy_seconds                   0.01541
-    worker consume_input_seconds             0.00580
-    worker snapshot_values_seconds           0.10893
-    worker snapshot_total_seconds            0.11042
-    worker response_pickle_seconds           0.00561
-    worker response_socket_send_seconds      0.00693
+The native path is implemented in the shared Cython ``PGresult`` source so the
+generated ``psycopg_binary`` package receives the same capability. The worker
+uses capability detection and retains a Python fallback.
 
-    parent response_payload_recv_seconds     0.00614
-    parent response_unpickle_seconds         0.00628
+Cancellation was still poor in ``optimized15`` because normal WAIT and cancel
+shared the same transport lock. Collapsing cancellation to one worker RPC reduced
+RPC chatter but did not remove the lock dependency: a targeted checkpoint still
+measured roughly ``15.6 ms`` qpsycopg cancellation versus ``6.5 ms`` vanilla.
+
+Dedicated cancellation control channel
+--------------------------------------
+
+Commits ``f6f62a6``, ``1ffbd3e`` and ``dfa4f46`` introduced a dedicated
+authenticated localhost control socket for safe cancellation.
+
+The main invariants are:
+
+* the normal query/data channel and its lock are not used by ``cancel_safe()``;
+* ``PGcancelConn`` is created by the worker main thread from the real ``PGconn``;
+* only the control thread owns and drives that ``PGcancelConn`` afterwards;
+* repeated cancellation reuses the cancel object through ``reset()``;
+* the control channel is closed before the worker/session is torn down.
+
+The targeted ``cancel-control`` benchmark measured median ``cancel_call`` around
+``6.02 ms`` for qpsycopg versus ``6.56 ms`` for vanilla. The full
+``optimized16`` checkpoint measured ``6.12 ms`` versus ``5.88 ms``. Cancellation
+is therefore no longer the reason to keep the query WAIT drain short.
+
+Commit ``a186786`` subsequently removed the obsolete parent pending-handle gate
+and the old main-channel fast-cancel path. This cleanup was made after the
+``optimized16`` performance checkpoint and should be smoke-tested before the
+next tagged performance checkpoint.
+
+Current phase profile: native packer + 10 ms WAIT drain
+-------------------------------------------------------
+
+A representative 100k x 3 ``fetch`` profile with the binary worker and
+``_WAIT_DRAIN_GRACE = 0.010`` reported::
+
+    elapsed_seconds                         0.15128
+    remote_requests                              15
+    WAIT remote requests                         11
+    WAIT remote seconds                     0.10935
+
+    worker libpq_wait_seconds                0.08587
+    worker is_busy_seconds                   0.01515
+    worker consume_input_seconds             0.00639
+    worker snapshot_values_seconds           0.00510
+    worker snapshot_total_seconds            0.00514
+
+    parent request_pickle_seconds            0.00070
+    parent request_socket_send_seconds       0.00125
+    parent response_header_wait_seconds      0.12711
+    parent response_payload_recv_seconds     0.00564
+    parent response_unpickle_seconds         0.00253
     parent restore_seconds                   0.00003
 
-The dominant directly measured worker CPU phase is therefore currently
-``_snapshotResult()`` value packing: roughly ``0.109 s`` for 300,000 cells. It
-is larger than the measured libpq wait time in that representative run and is
-orders of magnitude larger than pickle, socket transfer, unpickle or restore.
+For comparison, the earlier native-packer profile with a ``1 ms`` WAIT drain had
+approximately ``67`` WAIT RPCs, ``71`` total remote requests and ``0.170 s``
+elapsed time. Increasing the drain to ``10 ms`` therefore reduced WAIT RPC count
+by about ``84%`` and total profiler elapsed time by about ``11%`` while the
+separate control channel kept cancellation near vanilla.
 
-``parent_response_header_wait_seconds`` was about ``0.224 s`` in the same run.
-Do **not** add that value to the worker phase timings: it is parent wall-clock
-waiting which overlaps worker libpq wait, snapshot construction, serialization
-and other worker activity. The profiler contains overlapping views of the same
-execution interval, not an additive critical-path accounting table.
+Do not add ``parent_response_header_wait_seconds`` to worker phase timings. It is
+parent wall-clock waiting which overlaps worker libpq wait, consume/busy work,
+snapshot construction and response serialisation.
 
-This phase profile changes the immediate optimisation priority. The first next
-runtime experiment should be a native worker-side ``PGresult -> PackedValues``
-packer which removes the Python per-cell loop in ``_snapshotResult()``. Only
-after measuring that change should WAIT/cancel architecture become the next
-performance target.
+Interpretation of the current large-result path
+-----------------------------------------------
 
-Interpretation
---------------
+The two large bottlenecks identified by the original phase decomposition have
+now been addressed:
 
-``fetchall()`` is no longer the primary bottleneck. The combination of packed
-result storage and the qt-process C bulk decoder reduced the previous stable
-~``3.4x`` fetch/decode regression to practical parity with the native binary
-backend. A direct decoder microbenchmark measured:
+#. Python per-cell snapshot construction was replaced by native packing.
+#. WAIT RPC count was reduced aggressively after cancellation was isolated from
+   the main transport.
 
-* native binary ``Transformer.load_rows()``: about ``0.1417 s`` for 100k rows;
-* qt-process packed bulk ``load_rows()``: about ``0.1287 s`` in the successful
-  specialised-loader run;
-* packed metadata traversal alone: about ``0.00052 s`` for 300k cells.
+The remaining ``WAIT remote seconds`` is no longer mainly avoidable RPC churn.
+About ``0.086 s`` of the ``0.109 s`` representative WAIT wall time is measured
+inside worker libpq waits. A longer drain may reduce a few more RPCs but is
+unlikely to produce another large step improvement and should not be increased
+without evidence.
 
-The remaining large-result bottleneck is before ``fetchall()``. Phase profiling
-has now separated two substantial components:
+``fetchall()`` is at practical parity in ``optimized16``. The current bulk path
+is noisy but broadly close enough that the next performance investigation should
+not return to row decoding or snapshot packing unless a profile regresses.
 
-* worker snapshot construction: about ``0.109 s`` in the representative run;
-* repeated WAIT activity: about ``0.114 s`` parent-side remote WAIT wall time,
-  with about ``0.066 s`` measured inside worker libpq waits.
+PackedValues and native packing
+-------------------------------
 
-Because snapshot packing is a concrete CPU cost with no cancellation trade-off,
-it is the next target. Do not skip directly to more aggressive WAIT batching
-merely because the request count is visually large.
-
-PackedValues
-------------
-
-``ResultSnapshot`` no longer serialises hundreds of thousands of independent
-``bytes`` objects. ``PackedValues`` carries:
+``ResultSnapshot`` carries cell data as ``PackedValues``:
 
 * one contiguous data buffer;
 * an offset table;
 * a NULL bitmap;
 * the cell count.
 
-For the 100k x 3 benchmark the typical payload is approximately:
+For the 100k x 3 benchmark a typical payload is approximately:
 
 * data: ``5.47 MiB``;
 * offsets: ``2.40 MiB``;
 * NULL bitmap: ``37.5 KiB``.
 
-This representation improved worker snapshot/pickle/transfer time and reduced
-combined parent+worker RSS. Do not revert to ``tuple[bytes | None, ...]`` merely
-to simplify the decoder.
+The binary-compatible native packer writes the same layout directly from
+``PGresult``. Preserve this contract. NULL and empty values are explicitly
+covered by smoke tests.
 
-The current remaining snapshot cost is not evidence that ``PackedValues`` is
-wrong. The expensive part is constructing it in Python by visiting every native
-``PGresult`` cell. The intended next optimisation is to preserve the same wire
-layout while moving that packing loop into native code.
-
-Native row decoding
--------------------
-
-The qt-process ``Transformer`` intentionally remains a Python facade because
-normal C Psycopg generator code expects a local native ``PGconn``. Result rows,
-however, have a separate Cython bulk helper in ``psycopg_c``.
-
-A critical detail is that the normal qt-process adapter map contains Python
-loader instances. Calling those loaders from a C loop still costs a Python call
-per cell and measured roughly ``0.54 s`` for the 100k-row benchmark. The current
-bulk helper therefore recognises exact standard loaders and uses detached native
-C equivalents for the hot decode path. Custom loaders and unsupported cases must
-fall back to the configured Python loader to preserve adaptation semantics.
-
-Do not globally enable the normal ``psycopg_c`` adapter optimiser for
-``qt-process``. Some native datetime loaders expect a native C ``PGconn`` for
-``DateStyle``/``TimeZone`` state, whereas the application process owns a remote
-``PGconn`` proxy.
+The parent Cython bulk decoder reads the packed buffers directly and specialises
+standard loaders. Unsupported/custom loaders retain Python fallback semantics.
+Do not replace the global qt-process adapter map with the native C adapter map:
+connection-sensitive native loaders may assume a local native ``PGconn``.
 
 Small-query RPC reduction
 -------------------------
 
-The normal warmed ``SELECT 1`` path has been reduced to one process-boundary
-request by two mechanisms:
+A warmed ``SELECT 1`` normally uses one process-boundary request through deferred
+``send_query*`` + ``qpsycopg_execute_pending`` coalescing. Parent connection/query
+state caches avoid hot follow-up status/flush/busy requests.
 
-* parent-side connection/query state caching avoids repeated ``status``,
-  ``transaction_status`` and ``parameter_status`` RPCs;
-* lazy send coalescing defers ``send_query*`` and merges it with
-  ``qpsycopg_execute_pending``.
+Despite reaching the one-RPC shape, ``optimized16`` still measures about
+``2.10x`` on the summary SELECT median (paired median about ``1.88x``). This is
+now a more important unresolved hot-path gap than bulk ``fetchall()``.
 
-The lazy-send implementation currently lives in ``pq/_qt_process_lazy.py`` and
-monkey-patches ``_Transport.request``. This should eventually be integrated into
-``_Transport`` after the performance architecture stabilises.
+The next profiling work should therefore concentrate on the fixed cost of a
+warmed one-RPC short query: request framing/pickle/send, worker dispatch, the
+extra parent-worker scheduling hop, worker libpq round trip, response framing and
+parent unpickle/restore. Do not add more caching until a profile identifies a
+specific additional remote request or Python phase.
 
-WAIT batching and cancellation
-------------------------------
+Threaded shared-connection work also remains around ``1.7x`` in ``optimized16``.
+Because Psycopg intentionally serialises operations on one shared connection,
+this may largely reflect the same per-operation fixed IPC cost as short SELECT.
+Profile before introducing thread-specific architecture.
 
-Large query completion originally generated roughly 450 ``WAIT`` RPCs. Worker
-side readable-data draining reduced this dramatically. The current drain budget
-is ``1 ms``.
+Connection startup
+------------------
 
-Observed trade-off during development:
+Connection startup remains structurally expensive: ``481.9 ms`` versus
+``34.9 ms`` in ``optimized16``. This includes QProcess startup, authenticated
+main transport establishment, PostgreSQL connection establishment and the
+cancellation-control setup.
 
-* no extra drain: about 274 WAITs in a representative profiler run;
-* 1 ms drain: about 70--90 WAITs in current runs;
-* 10 ms drain: about 14--15 WAITs, but cancellation latency regressed
-  substantially because the shared transport lock stayed occupied longer.
+Startup is not the current frequent-operation target. Optimise it only if the
+intended application creates connections frequently rather than pooling/reusing
+them. A startup optimisation must preserve process isolation and worker lifecycle
+correctness.
 
-Do not tune ``_WAIT_DRAIN_GRACE`` based only on execute time. Every change must
-be benchmarked together with cancellation and Qt responsiveness.
+Qt responsiveness
+-----------------
 
-More importantly, do not tune WAIT at all as the immediate next experiment while
-snapshot packing still costs roughly ``0.1 s``. First remove or substantially
-reduce the Python snapshot loop, re-profile, and then decide whether WAIT is the
-new dominant remaining cost.
+Thread-caller Qt timer median/p95 remain effectively the same as vanilla. A
+single run may contain scheduler outliers; use repeated medians/p95 rather than
+one maximum stall.
 
-The likely architectural solution for strict low cancellation latency is a
-separate authenticated control/cancel channel so cancellation does not contend
-with the main query-response transport lock.
+``--caller main`` is intentionally a blocking control. Synchronous Psycopg calls
+block whichever thread invokes them; process isolation does not make the API
+asynchronous.
 
-Binary versus C worker
-----------------------
-
-The canonical performance baseline remains ``QPSYCOPG_WORKER_IMPL=binary``.
-Changing the worker to ``c`` is **not** the next performance optimisation.
-
-A diagnostic run with the local C worker, after making PostgreSQL DLLs visible
-to the child process, produced approximately::
-
-    binary worker: elapsed 0.26264 s, snapshot_values 0.10893 s, WAIT 0.11438 s
-    c worker:      elapsed 0.26758 s, snapshot_values 0.10630 s, WAIT 0.12271 s
-
-The difference is noise-level and did not address the snapshot bottleneck. Both
-worker implementations still execute qpsycopg's Python ``_snapshotResult()``
-loop.
-
-The C worker is still useful as a **feasibility/A-B harness** when a local
-``psycopg_c`` object exposes native ``PGresult`` state that is convenient for a
-prototype. A C-only prototype may estimate the best-case speed of direct
-``PQgetisnull``/``PQgetlength``/``PQgetvalue`` packing. However, that result is
-not by itself a production optimisation for qt-process.
-
-Before investing in a C-only fast path, answer how the same optimisation reaches
-the canonical ``binary`` worker. ``psycopg_c.pq.PGresult`` and
-``psycopg_binary.pq.PGresult`` are different extension types; do not assume that
-a helper which relies on ``psycopg_c`` private/native fields can consume a
-``psycopg_binary`` result or that their internal layouts are interchangeable.
-A production proposal must therefore identify one of the following:
-
-* a supported/native-accessible path from the canonical binary ``PGresult``;
-* a worker-agnostic native interface/capsule/buffer contract usable by both
-  implementations;
-* or an explicit architectural decision to change the canonical worker, backed
-  by end-to-end benchmarks and dependency/deployment trade-offs.
-
-If none of those exists yet, keep a ``worker=c`` packer clearly labelled as a
-proof-of-concept and use it only to estimate the performance ceiling. Do not
-build production-grade C-worker bootstrap/DLL infrastructure solely to support
-that experiment before its transfer path to ``binary`` is understood.
-
-On Windows, a worker import failure for ``psycopg_c.pq`` can surface in the
-parent as a later ``listener.accept()`` timeout because the child dies before
-connecting back. Treat the worker's original import/DLL error as the root cause,
-not the parent timeout as a separate transport regression.
-
-Also note that ``psycopg_c`` is designed to be imported after ``psycopg``. A
-standalone ``from psycopg_c import pq`` diagnostic can create misleading import
-or circular-import behaviour in this source checkout. Test the pq implementation
-through ``PSYCOPG_IMPL=c`` followed by ``import psycopg.pq`` when such a test is
-actually required.
-
-Experiments already rejected or deprioritised
----------------------------------------------
+Rejected/deprioritised experiments
+----------------------------------
 
 Protocol 5 out-of-band pickle buffers
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Protocol-5/OOB experiments increased overhead and were rolled back. The current
-framing uses one pickle payload; small frames are coalesced with their header and
-large frames are sent as header + payload.
+Earlier protocol-5/OOB experiments were slower and were rolled back. The current
+framing uses one pickle payload; small frames may coalesce header+payload.
 
 Aggressive result prefetch during WAIT
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Do not call ``get_result()`` speculatively from the worker WAIT path. Earlier
-experiments changed libpq/Psycopg timing semantics and produced incorrect
-behaviour around fatal termination, including duplicate transaction activity.
-WAIT may consume input, inspect busy state and notifications, but result
-boundaries belong to the normal generator/result path.
+Do not speculatively call ``get_result()`` from the WAIT path. Earlier attempts
+changed libpq/Psycopg result timing and broke fatal-termination semantics. WAIT
+may consume input, inspect busy state and collect notifications; result
+boundaries remain in the normal generator/result path.
 
 Python row pre-slicing
 ~~~~~~~~~~~~~~~~~~~~~~
 
-Pre-slicing the flat values into Python row tuples did not help. It added Python
-allocations and was slower than the direct row path. With ``PackedValues`` it is
-especially misleading because slicing intentionally materialises the packed
-cells back into individual ``bytes`` objects.
+Pre-slicing packed cells into Python row tuples recreates allocations that the
+packed representation intentionally avoids and was slower.
 
-Global native adapter substitution
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Do not replace the qt-process global adapter map with the native C adapter map.
-The pq generator layer must remain Python/remote-aware, and connection-sensitive
-native loaders may assume a native ``PGconn``.
-
-Worker implementation switching
+Worker ``binary -> c`` switching
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Do not switch ``binary -> c`` as a generic attempt to improve the current bulk
-execute time. The measured C-worker run did not improve the target path and can
-introduce Windows DLL/bootstrap noise which distracts from the measured qpsycopg
-costs.
-
-A deliberate ``c`` run is acceptable when it answers a narrow feasibility
-question, such as the speed ceiling of a direct native packer. In that case,
-keep the experiment isolated and temporary. Do not promote a ``c``-only result
-to the production plan until a binary-compatible integration route is known.
+A C-worker A/B run did not improve the old snapshot path. The canonical worker
+remains ``binary``. The native packer was deliberately placed in shared Cython
+``PGresult`` code so the generated binary package receives it; do not switch the
+canonical worker merely to reach native state.
 
 Benchmark tools
 ---------------
 
 ``tools/test.ps1``
-    Main reproducible runner. Modes: smoke, bench, qt, gui, all. It alternates
-    vanilla/qt-process order, runs repeated benchmarks, writes JSON plus a
-    ``summary.json`` and ``manifest.json``, and archives the run as a ZIP.
+    Reproducible Windows runner. Modes: smoke, bench, qt, gui, all. It writes
+    per-run JSON, ``summary.json``, ``manifest.json`` and a timestamped ZIP.
 
 ``tools/bench_qt_process.py``
-    Measures connection startup, SELECT latency, bulk execute/fetchall, RSS,
-    shared-connection threads, SQL-error survival, and cancellation.
+    Measures connect, warmed SELECT, bulk execute/fetchall, RSS,
+    shared-connection threads, SQL-error survival and cancellation.
 
 ``tools/bench_qt_responsiveness.py``
-    Measures Qt timer behaviour. The intended synchronous usage is a worker
-    thread; ``--caller main`` is a control showing that a synchronous call blocks
-    whichever thread invokes it.
+    Measures Qt timer behaviour. Thread-caller mode represents the intended
+    synchronous GUI integration pattern.
 
 ``tools/profile_qt_process.py``
-    Low-level profiler for process-boundary requests, large execute behaviour,
-    parent/worker phase timings, result layout, and decoder phases. Use it to
-    identify where time is spent; do not treat overlapping parent/worker timing
-    fields as additive, and do not treat its deliberately repeated decode phases
-    as end-to-end timings.
+    Reports remote operations and parent/worker phase timings. Parent/worker
+    timing views overlap and must not be summed naively.
 
 Next performance work -- follow in this order
 ---------------------------------------------
 
-The large-query phase decomposition is now complete enough to choose the next
-experiment. Do **not** repeat that investigation or switch worker implementation
-before acting on its result.
+#. Smoke-test commit ``a186786`` which removes obsolete cancellation gating.
+#. Profile a warmed short SELECT with the canonical ``binary`` worker and one-RPC
+   lazy-send path. Identify the fixed parent/worker/libpq cost before changing
+   transport architecture.
+#. Inspect the ``8``-thread shared-connection benchmark together with the short
+   SELECT profile; determine whether its remaining overhead is simply repeated
+   fixed IPC cost under Psycopg's normal connection lock.
+#. Keep the current native ``PackedValues`` packer and ``10 ms`` WAIT drain as
+   baselines unless a new profile demonstrates regression.
+#. Do not increase WAIT drain merely to minimise request count: the current
+   profile is already dominated by real libpq wait inside those requests.
+#. Treat connection startup separately from hot-path query latency. Optimise it
+   only if application requirements justify the structural work.
+#. After the next validated runtime improvement, run a full tagged checkpoint
+   and update this document.
 
-#. Before implementing a production native packer, inspect the canonical
-   ``binary`` worker path and identify how native ``PGresult`` data can be
-   accessed without depending on ``psycopg_c``-private object layout. Record the
-   intended binary-compatible integration route.
-#. If useful, implement a small ``worker=c`` Cython packer only as a controlled
-   feasibility experiment to measure the attainable packing speed. Do not spend
-   time productising C-worker bootstrap/DLL handling for this purpose, and do
-   not treat the experiment as complete until the transfer path to ``binary`` is
-   clear.
-#. Implement/prototype the production worker-side packer which converts native
-   ``PGresult`` cell storage directly into the existing ``PackedValues`` layout
-   (data buffer + offsets + NULL bitmap), avoiding 300,000 Python
-   ``result.get_value()``/``bytearray`` iterations for the 100k x 3 benchmark.
-#. Preserve result metadata, NULL semantics, formats and current
-   ``ResultSnapshot``/``PackedValues`` wire compatibility. This is a packing
-   optimisation, not a semantic redesign.
-#. Run smoke before benchmarking. Pay particular attention to multiple result
-   sets, COPY result boundaries, SQL errors and fatal BAD-state handling because
-   snapshot/result ownership is correctness-sensitive.
-#. Re-run ``python tools/profile_qt_process.py fetch`` with the canonical
-   ``binary`` worker and compare ``snapshot_values_seconds``, total elapsed,
-   remote WAIT count/time, pickle/send/recv/unpickle and payload sizes against
-   the ``4cef1bf`` phase-profile checkpoint above.
-#. Only if snapshot packing is no longer a dominant cost should the next work
-   move to WAIT/cancel architecture. If WAIT is then dominant, prefer designing
-   a dedicated authenticated cancel/control path before increasing drain
-   duration aggressively.
-#. After a validated runtime improvement, run a full tagged benchmark
-   ``.\tools\test.ps1 all -Tag optimizedNN`` and update this document with the
-   new reproducible checkpoint.
-
-Decision rule for future sessions: once profiling identifies a concrete dominant
-phase, optimise that phase first unless there is a correctness blocker. A
-backend-specific prototype is allowed only when it answers a narrow feasibility
-question; before promoting it to the production plan, demonstrate how the same
-optimisation applies to the canonical ``binary`` worker or explicitly justify a
-change of canonical worker.
+Decision rule: optimise a measured dominant phase, not the most visually obvious
+request count. Preserve high-level Psycopg semantics in the parent and native
+libpq/session state in the worker.

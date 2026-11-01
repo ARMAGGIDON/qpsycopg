@@ -8,7 +8,6 @@ This module exports the requested implementation to the rest of the package.
 
 from __future__ import annotations
 
-from itertools import batched, islice
 from typing import Any
 from collections.abc import Sequence
 
@@ -79,14 +78,18 @@ elif pq.__impl__ == "qt-process":
                 if not (0 <= row0 <= self._ntuples and 0 <= row1 <= self._ntuples):
                     return super().load_rows(row0, row1, make_row)
 
+                values = res._values  # type: ignore[attr-defined]
                 nfields = self._nfields
-                start = row0 * nfields
-                stop = row1 * nfields
-                records = map(
-                    self._fast.load_sequence,
-                    batched(islice(res._values, start, stop), nfields),  # type: ignore[attr-defined]
-                )
-                return list(records) if make_row is tuple else list(map(make_row, records))
+                load = self._fast.load_sequence
+                if make_row is tuple:
+                    return [
+                        load(values[row * nfields : (row + 1) * nfields])
+                        for row in range(row0, row1)
+                    ]
+                return [
+                    make_row(load(values[row * nfields : (row + 1) * nfields]))
+                    for row in range(row0, row1)
+                ]
 
             def load_row(self, row: int, make_row: Any) -> Any:
                 if not self._fastResult:

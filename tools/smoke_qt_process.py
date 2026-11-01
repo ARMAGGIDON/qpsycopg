@@ -34,6 +34,20 @@ def syncSmoke(dsn: str) -> None:
             assert row[1] == value[1]
             assert row[3] == value[3]
 
+        stage("multiple result sets")
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1; SELECT 2")
+            assert cursor.fetchone() == (1,)
+            assert cursor.nextset()
+            assert cursor.fetchone() == (2,)
+            assert cursor.nextset() is None
+
+        stage("COPY result boundary")
+        with connection.cursor() as cursor:
+            with cursor.copy("COPY (SELECT 1) TO STDOUT") as copy:
+                copied = b"".join(bytes(chunk) for chunk in copy)
+            assert copied == b"1\n", copied
+
         stage("SQL error survival")
         try:
             connection.execute("SELECT * FROM qpsycopg_missing_table")

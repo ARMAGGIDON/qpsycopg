@@ -58,8 +58,10 @@ def _fastExecute(
         raise e.InternalError("invalid fast execute response from qpsycopg worker")
 
     self._updateConnectionState(value)
-    self._flushCache[1] = value.flush
-    self._busyCache[1] = value.busy
+    state = value.value[0] if isinstance(value.value, tuple) and value.value else None
+    if state != "done":
+        self._flushCache[1] = value.flush
+        self._busyCache[1] = value.busy
     return _restore(value.value, self)
 
 

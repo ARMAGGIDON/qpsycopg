@@ -5,7 +5,6 @@ from __future__ import annotations
 import pickle
 import socket
 import struct
-from array import array
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any
@@ -13,6 +12,7 @@ from typing import Any
 _HEADER = struct.Struct("!Q")
 _TOKEN_SIZE = 32
 _MAX_FRAME = 1 << 34  # 16 GiB: reject obviously corrupt frame lengths.
+_COALESCE_FRAME = 64 * 1024
 
 
 class Operation(IntEnum):
@@ -56,13 +56,8 @@ class RemoteError:
     message: str
 
 
-@dataclass(slots=True, frozen=True)
-class CellTable:
-    values: array[int]
-
-    def __getitem__(self, index: int) -> tuple[int, int]:
-        offset = index * 2
-        return self.values[offset], self.values[offset + 1]
+class CellTable(list[tuple[int, int]]):
+    """Compact logical cell table with C-level list indexing in the parent."""
 
 
 @dataclass(slots=True, frozen=True)
@@ -90,20 +85,30 @@ class Response:
     notices: tuple[ResultSnapshot, ...] = ()
 
 
+def _lowLatency(sock: socket.socket) -> None:
+    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+
 def sendToken(sock: socket.socket, token: bytes) -> None:
     if len(token) != _TOKEN_SIZE:
         raise ValueError("invalid qpsycopg worker token length")
+    _lowLatency(sock)
     sock.sendall(token)
 
 
 def recvToken(sock: socket.socket) -> bytes:
+    _lowLatency(sock)
     return bytes(_recvExact(sock, _TOKEN_SIZE))
 
 
 def sendFrame(sock: socket.socket, value: Any) -> None:
     payload = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
-    sock.sendall(_HEADER.pack(len(payload)))
-    sock.sendall(payload)
+    header = _HEADER.pack(len(payload))
+    if len(payload) <= _COALESCE_FRAME:
+        sock.sendall(header + payload)
+    else:
+        sock.sendall(header)
+        sock.sendall(payload)
 
 
 def recvFrame(sock: socket.socket) -> Any:

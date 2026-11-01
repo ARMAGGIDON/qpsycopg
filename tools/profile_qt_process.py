@@ -38,6 +38,10 @@ def main() -> int:
     decodeTimings: dict[str, float] = {}
     decoder: str | None = None
     bulkDecoder = False
+    valueLayout: str | None = None
+    valueDataBytes = 0
+    valueOffsetBytes = 0
+    valueNullBytes = 0
     with psycopg.connect(options.dsn) as connection:
         def selectOne() -> None:
             with connection.cursor() as cursor:
@@ -86,9 +90,13 @@ def main() -> int:
                     assert res is not None and res.ntuples == options.rows
                     decoder = getattr(cursor._tx, "__qpsycopg_decoder__", None)
                     bulkDecoder = getattr(cursor._tx, "_bulkLoadRows", None) is not None
+                    values = res._values
+                    valueLayout = type(values).__name__
+                    valueDataBytes = len(getattr(values, "data", b""))
+                    valueOffsetBytes = len(getattr(values, "offsets", b""))
+                    valueNullBytes = len(getattr(values, "nulls", b""))
 
                     if options.mode == "decode":
-                        values = res._values
                         nfields = res.nfields
                         fast = getattr(cursor._tx, "_fast", None)
                         if fast is None:
@@ -148,6 +156,10 @@ def main() -> int:
             "rows": options.rows,
             "decoder": decoder,
             "bulk_decoder": bulkDecoder,
+            "value_layout": valueLayout,
+            "value_data_bytes": valueDataBytes,
+            "value_offset_bytes": valueOffsetBytes,
+            "value_null_bytes": valueNullBytes,
             "first_events": events[:20],
         })
         result.update(decodeTimings)

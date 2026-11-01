@@ -77,6 +77,9 @@ class SendSnapshot:
     value: Any
     flush: int
     busy: int
+    status: int | None = None
+    transactionStatus: int | None = None
+    clientEncoding: bytes | None = None
 
 
 @dataclass(slots=True, frozen=True)

@@ -23,8 +23,8 @@ from .. import errors as e
 from .misc import ConninfoOption, PGnotify, PGresAttDesc, _clean_error_message
 from ._enums import ConnStatus, Trace
 from ._qt_process_protocol import Operation, RemoteError, RemoteKind, RemoteRef
-from ._qt_process_protocol import Request, Response, ResultSnapshot, recvFrame
-from ._qt_process_protocol import recvToken, sendFrame
+from ._qt_process_protocol import Request, Response, ResultSnapshot, SendSnapshot
+from ._qt_process_protocol import WaitSnapshot, recvFrame, recvToken, sendFrame
 
 try:
     from PySide6.QtCore import QProcess, QProcessEnvironment
@@ -59,6 +59,16 @@ _OK = ConnStatus.OK
 _handles: dict[int, tuple[_Transport, int]] = {}
 _handlesLock = threading.Lock()
 _nextHandle = itertools.count(1)
+_SEND_MEMBERS = {
+    "send_query",
+    "send_query_params",
+    "send_prepare",
+    "send_query_prepared",
+    "send_describe_prepared",
+    "send_describe_portal",
+    "send_close_prepared",
+    "send_close_portal",
+}
 
 
 def version() -> int:
@@ -222,7 +232,54 @@ class _Transport:
         self.requestId = 0
         self.closed = False
         self.connection: PGconn | None = None
-        self._waitCache: dict[int, list[int | bool | None]] = {}
+        self._flushCache: dict[int, int] = {}
+        self._busyCache: dict[int, int] = {}
+        self._consumeCache: set[int] = set()
+        self._notifyCache: dict[int, list[PGnotify | None]] = {}
+        self._resultCache: dict[int, list[PGresult | None]] = {}
+
+    def _clearQueryCache(self, objectId: int) -> None:
+        self._flushCache.pop(objectId, None)
+        self._busyCache.pop(objectId, None)
+        self._consumeCache.discard(objectId)
+        self._notifyCache.pop(objectId, None)
+        self._resultCache.pop(objectId, None)
+
+    def _clearCaches(self) -> None:
+        self._flushCache.clear()
+        self._busyCache.clear()
+        self._consumeCache.clear()
+        self._notifyCache.clear()
+        self._resultCache.clear()
+
+    def _cachedCall(self, objectId: int, member: str) -> tuple[bool, Any]:
+        if member == "flush" and objectId in self._flushCache:
+            return True, self._flushCache.pop(objectId)
+        if member == "consume_input" and objectId in self._consumeCache:
+            self._consumeCache.discard(objectId)
+            return True, None
+        if member == "is_busy":
+            if self._resultCache.get(objectId):
+                return True, 0
+            if objectId in self._busyCache:
+                return True, self._busyCache.pop(objectId)
+        if member == "notifies":
+            cache = self._notifyCache.get(objectId)
+            if cache:
+                value = cache.pop(0)
+                if not cache:
+                    self._notifyCache.pop(objectId, None)
+                return True, value
+            if self._resultCache.get(objectId):
+                return True, None
+        if member == "get_result":
+            cache = self._resultCache.get(objectId)
+            if cache:
+                value = cache.pop(0)
+                if not cache:
+                    self._resultCache.pop(objectId, None)
+                return True, value
+        return False, None
 
     def request(
         self,
@@ -236,17 +293,12 @@ class _Transport:
             if self.closed:
                 raise e.OperationalError("qpsycopg worker process is closed")
 
-            cached = self._waitCache.get(objectId)
-            if cached is not None and operation == Operation.CALL:
-                if member == "consume_input" and cached[0]:
-                    cached[0] = False
-                    return None
-                if member == "is_busy" and cached[1] is not None:
-                    busy = int(cached[1])
-                    self._waitCache.pop(objectId, None)
-                    return busy
-            if operation != Operation.WAIT:
-                self._waitCache.pop(objectId, None)
+            if operation == Operation.CALL:
+                cached, value = self._cachedCall(objectId, member)
+                if cached:
+                    return value
+                if member in _SEND_MEMBERS:
+                    self._clearQueryCache(objectId)
 
             self.requestId += 1
             request = Request(
@@ -281,21 +333,35 @@ class _Transport:
                         )
 
             if response.error is not None:
+                self._clearQueryCache(objectId)
                 _raiseRemote(response.error)
 
-            value = _restore(response.value, self)
-            if operation == Operation.WAIT and isinstance(value, tuple):
-                ready, consumed, busy = value
-                if consumed:
-                    self._waitCache[objectId] = [True, int(busy)]
-                return int(ready)
-            return value
+            value = response.value
+            if isinstance(value, SendSnapshot):
+                self._flushCache[objectId] = value.flush
+                self._busyCache[objectId] = value.busy
+                return _restore(value.value, self)
+
+            if isinstance(value, WaitSnapshot):
+                if value.consumed:
+                    self._consumeCache.add(objectId)
+                    if value.busy is not None:
+                        self._busyCache[objectId] = value.busy
+                    self._notifyCache[objectId] = [*value.notifies, None]
+                    if value.results:
+                        self._resultCache[objectId] = [
+                            cast(PGresult | None, _restore(item, self))
+                            for item in value.results
+                        ]
+                return value.ready
+
+            return _restore(value, self)
 
     def _markBroken(self) -> None:
         if self.closed:
             return
         self.closed = True
-        self._waitCache.clear()
+        self._clearCaches()
         try:
             self.sock.close()
         finally:
@@ -313,7 +379,7 @@ class _Transport:
                 self.owner.kill()
             finally:
                 self.closed = True
-                self._waitCache.clear()
+                self._clearCaches()
                 self.sock.close()
                 self.owner.close()
 

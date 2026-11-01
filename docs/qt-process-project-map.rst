@@ -41,11 +41,20 @@ measured approximately:
 * parent restore: negligible.
 
 The immediate runtime target is therefore **worker-side snapshot packing**, not
-WAIT tuning and not ``binary -> c`` worker switching. Implement/prototype a
-native ``PGresult -> PackedValues`` packer which preserves the existing wire
-layout and result semantics while removing the Python per-cell loop. Re-profile
-with ``binary`` after that change. Only if snapshot packing ceases to dominate
-should work move to WAIT/cancel architecture.
+WAIT tuning and not ``binary -> c`` worker switching.
+
+A ``worker=c`` native packer is permitted as a narrow feasibility/A-B experiment
+because local ``psycopg_c`` may expose native ``PGresult`` state conveniently.
+It is not automatically the production solution. Before investing in such a
+path, identify how the same optimisation reaches the canonical ``binary``
+worker. Do not assume that ``psycopg_c.pq.PGresult`` private/native fields are
+available or layout-compatible in ``psycopg_binary.pq.PGresult``.
+
+The production target is a binary-compatible native ``PGresult -> PackedValues``
+path which preserves the existing wire layout and result semantics while
+removing the Python per-cell loop. Re-profile with ``binary`` after that change.
+Only if snapshot packing ceases to dominate should work move to WAIT/cancel
+architecture.
 
 Architectural invariants
 ------------------------
@@ -239,9 +248,11 @@ Transformer and row decode
     once per cell is still slow. The successful 100k-row decode path reduced
     ``load_rows`` from roughly 0.54 s to 0.13 s.
 
-    This module is the natural location to investigate a native
-    ``PGresult -> PackedValues`` helper, provided the worker can call it without
-    importing/activating the parent-side native generator architecture.
+    This module is a natural place for a ``worker=c`` direct-PGresult packing
+    feasibility prototype. Such a helper is not automatically usable by the
+    canonical ``binary`` worker: first establish a supported binary-compatible
+    native-data interface instead of assuming extension-object internals are
+    interchangeable.
 
 ``psycopg_c/psycopg_c/_psycopg.pyx``
     Includes ``qt_bulk.pyx`` after the normal Transformer definitions.
@@ -425,6 +436,13 @@ a generic optimisation experiment. A measured C-worker run was effectively the
 same speed on the current large-result path because both workers still execute
 the same Python snapshot-packing loop.
 
+A temporary C-worker run is acceptable when it answers a narrow feasibility
+question, for example the best-case speed of a direct native packer. Keep such a
+run isolated from the production architecture. Before making its bootstrap,
+DLL handling or helper interface permanent, demonstrate how the optimisation
+can be used by the canonical ``binary`` worker or explicitly justify changing
+the canonical worker.
+
 If intentionally testing the C worker on Windows, remember that the child
 ``QProcess`` needs the PostgreSQL DLL search path too. A child import/DLL failure
 may appear in the parent as a later listener ``accept()`` timeout because the
@@ -483,14 +501,20 @@ Do not reintroduce pickle protocol-5 OOB without evidence
 
 Earlier OOB experiments were slower and were rolled back.
 
-Do not switch worker implementation without a profile reason
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+C-worker experiments need a binary transfer plan
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``binary -> c`` was tested after the latest phase profiler and did not improve
 the target path: total time and snapshot/WAIT timings remained effectively the
-same. Worker implementation switching can add Windows DLL/bootstrap debugging
-without removing qpsycopg's Python snapshot loop. Keep ``binary`` as the
-canonical baseline unless a profile identifies worker-specific overhead.
+same. Keep ``binary`` as the canonical baseline unless a profile identifies
+worker-specific overhead.
+
+A C-worker direct-PGresult packer can still be useful as a controlled
+proof-of-concept. The error is not running such an experiment; the error is
+promoting a ``psycopg_c``-specific result to the production plan without first
+showing how it reaches ``psycopg_binary``. Do not assume the two extension types
+share private object layout. Avoid productionising C-worker DLL/bootstrap work
+solely to support a feasibility test.
 
 Do not add overlapping profiler timings
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -535,7 +559,9 @@ SELECT suddenly uses >1 remote RPC        ``_qt_process_lazy.py`` and transport
 Large execute is slow                     worker ``_snapshotResult()`` and phase
                                           profiler first; WAIT path second
 Snapshot time ~0.1 s for 100k x 3         native ``PGresult -> PackedValues``
-                                          packing helper
+                                          path; verify binary compatibility
+C packer is fast but binary unchanged     integration contract between native
+                                          result type and packing helper
 Cancellation regresses                    ``connection_qt_process._cancelRemote``
                                           and WAIT drain duration
 COPY hangs after query optimisation       parent flush/busy caches and
@@ -556,10 +582,18 @@ Intentional C-worker import fails         child DLL search path; diagnose worker
 Immediate next work -- do not reorder without evidence
 ------------------------------------------------------
 
-#. Implement/prototype a native worker-side ``PGresult -> PackedValues`` packer
-   for the existing data/offset/NULL-bitmap representation. The goal is to
-   eliminate the Python per-cell ``result.get_value()`` and bytearray packing
-   loop, not to redesign the protocol.
+#. Inspect the canonical ``binary`` worker result object/API and determine a
+   supported route for native/bulk access to ``PGresult`` cell storage. Do not
+   assume ``psycopg_c`` private fields or layout are reusable by
+   ``psycopg_binary``.
+#. If useful for sizing the opportunity, implement a minimal ``worker=c`` native
+   packer as a feasibility experiment only. Use temporary local bootstrap/DLL
+   setup if needed; do not productise that infrastructure merely to run the
+   experiment.
+#. Implement/prototype the production ``PGresult -> PackedValues`` packer for the
+   existing data/offset/NULL-bitmap representation through the identified
+   binary-compatible route. The goal is to eliminate the Python per-cell
+   ``result.get_value()`` and bytearray packing loop, not redesign the protocol.
 #. Preserve metadata, NULL handling, column formats and current result-set/COPY
    semantics. Keep the existing parent ``PackedValues`` and C bulk decoder path.
 #. Run ``.\tools\test.ps1 smoke`` before performance conclusions.
@@ -574,8 +608,10 @@ Immediate next work -- do not reorder without evidence
    ``.\tools\test.ps1 all -Tag optimizedNN`` and update the performance notes.
 
 Decision rule: when phase profiling identifies a concrete dominant cost, work on
-that cost first unless correctness blocks it. Do not branch into unrelated
-backend/environment experiments simply because they are available.
+that cost first unless correctness blocks it. Backend-specific prototypes are
+allowed when they answer a narrow feasibility question, but they are not a
+production direction until their optimisation is shown to work with the
+canonical ``binary`` worker or a canonical-worker change is explicitly justified.
 
 When resuming in a new chat/session
 -----------------------------------

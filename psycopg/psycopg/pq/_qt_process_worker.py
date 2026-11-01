@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import select
 import socket
 import struct
 import sys
-from time import monotonic
+from time import monotonic, perf_counter
 from typing import Any
 
 from psycopg import errors as e
@@ -41,6 +42,7 @@ _COPY_RESULTS = {
     pq.ExecStatus.COPY_BOTH,
 }
 _FAST_EXECUTE = "qpsycopg_execute_pending"
+_PROFILE_TAKE = "qpsycopg_profile_take"
 _WAIT_DRAIN_GRACE = 0.001
 
 
@@ -50,6 +52,18 @@ class Worker:
         self.objects: dict[int, Any] = {}
         self.nextObjectId = 2
         self.notices: list[ResultSnapshot] = []
+        self.profile: dict[str, float | int] | None = {} if os.environ.get("QPSYCOPG_PROFILE_PHASES") else None
+
+    def _profile(self, key: str, value: float | int) -> None:
+        if self.profile is not None:
+            self.profile[key] = self.profile.get(key, 0) + value
+
+    def _takeProfile(self) -> dict[str, float | int]:
+        if self.profile is None:
+            return {}
+        value = self.profile
+        self.profile = {}
+        return value
 
     def run(self) -> None:
         while True:
@@ -80,7 +94,7 @@ class Worker:
             finally:
                 self.notices.clear()
 
-            sendFrame(self.sock, response)
+            sendFrame(self.sock, response, self.profile, "worker_response")
             if stop:
                 self._closeObjects()
                 return
@@ -115,6 +129,9 @@ class Worker:
         obj = self.objects[request.objectId]
 
         if op == Operation.CALL:
+            if request.objectId == 1 and request.member == _PROFILE_TAKE:
+                return self._takeProfile()
+
             if request.objectId == 1 and request.member == _FAST_EXECUTE:
                 timeout = float(request.args[0])
                 if len(request.args) > 1:
@@ -126,7 +143,7 @@ class Worker:
 
             value = getattr(obj, request.member)(*request.args, **dict(request.kwargs))
             if request.objectId == 1 and request.member == "get_result" and value is not None:
-                snapshot = _snapshotResult(value)
+                snapshot = _snapshotResult(value, self.profile)
                 following: list[ResultSnapshot | None] = []
                 if (
                     value.status in _SUCCESS_RESULTS
@@ -136,7 +153,7 @@ class Worker:
                 ):
                     nextResult = obj.get_result()
                     following.append(
-                        None if nextResult is None else _snapshotResult(nextResult)
+                        None if nextResult is None else _snapshotResult(nextResult, self.profile)
                     )
                 return ResultReadSnapshot(snapshot, tuple(following))
 
@@ -188,9 +205,18 @@ class Worker:
             busy: int | None = None
             notifies = []
             while ready & READ:
+                start = perf_counter() if self.profile is not None else 0.0
                 obj.consume_input()
+                if self.profile is not None:
+                    self._profile("consume_input_seconds", perf_counter() - start)
+                    self._profile("consume_input_calls", 1)
                 consumed = True
+
+                start = perf_counter() if self.profile is not None else 0.0
                 busy = int(obj.is_busy())
+                if self.profile is not None:
+                    self._profile("is_busy_seconds", perf_counter() - start)
+                    self._profile("is_busy_calls", 1)
                 while notify := obj.notifies():
                     notifies.append(notify)
                 if not busy:
@@ -237,12 +263,24 @@ class Worker:
             if not ready:
                 return self._sendSnapshot(obj, ("pending", (), ()), 1, int(obj.is_busy()))
             if ready & READ:
+                start = perf_counter() if self.profile is not None else 0.0
                 obj.consume_input()
+                if self.profile is not None:
+                    self._profile("consume_input_seconds", perf_counter() - start)
+                    self._profile("consume_input_calls", 1)
 
         results: list[ResultSnapshot] = []
         notifies: list[Any] = []
         while True:
-            while obj.is_busy():
+            while True:
+                start = perf_counter() if self.profile is not None else 0.0
+                busy = obj.is_busy()
+                if self.profile is not None:
+                    self._profile("is_busy_seconds", perf_counter() - start)
+                    self._profile("is_busy_calls", 1)
+                if not busy:
+                    break
+
                 remaining = deadline - monotonic()
                 if remaining <= 0:
                     state = "partial" if results else "pending"
@@ -251,7 +289,11 @@ class Worker:
                 if not ready:
                     state = "partial" if results else "pending"
                     return self._sendSnapshot(obj, (state, tuple(results), tuple(notifies)), 0, 1)
+                start = perf_counter() if self.profile is not None else 0.0
                 obj.consume_input()
+                if self.profile is not None:
+                    self._profile("consume_input_seconds", perf_counter() - start)
+                    self._profile("consume_input_calls", 1)
 
             while notify := obj.notifies():
                 notifies.append(notify)
@@ -266,7 +308,7 @@ class Worker:
             if result is None:
                 return self._sendSnapshot(obj, ("done", tuple(results), tuple(notifies)), 0, 0)
 
-            snapshot = _snapshotResult(result)
+            snapshot = _snapshotResult(result, self.profile)
             results.append(snapshot)
             status = result.status
             if status in _COPY_RESULTS:
@@ -290,7 +332,7 @@ class Worker:
 
     def _notice(self, result: Any) -> None:
         try:
-            self.notices.append(_snapshotResult(result))
+            self.notices.append(_snapshotResult(result, self.profile))
         except Exception:
             pass
 
@@ -302,7 +344,7 @@ class Worker:
 
     def _normalize(self, value: Any) -> Any:
         if isinstance(value, pq.PGresult):
-            return _snapshotResult(value)
+            return _snapshotResult(value, self.profile)
         if isinstance(value, pq.PGcancelConn):
             return self._register(value, RemoteKind.PGCANCEL_CONN)
         if isinstance(value, pq.PGcancel):
@@ -315,12 +357,15 @@ class Worker:
             return [self._normalize(item) for item in value]
         return value
 
-    @staticmethod
-    def _wait(obj: Any, mask: int, timeout: float | None) -> int:
+    def _wait(self, obj: Any, mask: int, timeout: float | None) -> int:
+        start = perf_counter() if self.profile is not None else 0.0
         fd = obj.socket
         readers = [fd] if mask & READ else []
         writers = [fd] if mask & WRITE else []
         readable, writable, _ = select.select(readers, writers, [], timeout)
+        if self.profile is not None:
+            self._profile("libpq_wait_seconds", perf_counter() - start)
+            self._profile("libpq_wait_calls", 1)
         ready = 0
         if readable:
             ready |= READ
@@ -340,7 +385,8 @@ class Worker:
                 pass
 
 
-def _snapshotResult(result: Any) -> ResultSnapshot:
+def _snapshotResult(result: Any, profile: dict[str, float | int] | None = None) -> ResultSnapshot:
+    totalStart = perf_counter() if profile is not None else 0.0
     nfields = result.nfields
     ntuples = result.ntuples
     fname = result.fname
@@ -363,6 +409,7 @@ def _snapshotResult(result: Any) -> ResultSnapshot:
         for i in range(nfields)
     )
 
+    packStart = perf_counter() if profile is not None else 0.0
     cellCount = ntuples * nfields
     valueData = bytearray()
     valueOffsets = bytearray((cellCount + 1) * _VALUE_OFFSET.size)
@@ -379,6 +426,9 @@ def _snapshotResult(result: Any) -> ResultSnapshot:
                 valueData.extend(value)
             cellIndex += 1
     _VALUE_OFFSET.pack_into(valueOffsets, cellIndex * _VALUE_OFFSET.size, len(valueData))
+    if profile is not None:
+        profile["snapshot_values_seconds"] = profile.get("snapshot_values_seconds", 0) + perf_counter() - packStart
+        profile["snapshot_cells"] = profile.get("snapshot_cells", 0) + cellCount
 
     errorFields: list[tuple[int, bytes]] = []
     errorField = result.error_field
@@ -388,7 +438,7 @@ def _snapshotResult(result: Any) -> ResultSnapshot:
         if value is not None:
             errorFields.append((code, value))
 
-    return ResultSnapshot(
+    snapshot = ResultSnapshot(
         status=int(result.status),
         errorMessage=result.error_message,
         errorFields=tuple(errorFields),
@@ -402,6 +452,10 @@ def _snapshotResult(result: Any) -> ResultSnapshot:
         commandTuples=result.command_tuples,
         oidValue=result.oid_value,
     )
+    if profile is not None:
+        profile["snapshot_total_seconds"] = profile.get("snapshot_total_seconds", 0) + perf_counter() - totalStart
+        profile["snapshot_results"] = profile.get("snapshot_results", 0) + 1
+    return snapshot
 
 
 def main() -> int:

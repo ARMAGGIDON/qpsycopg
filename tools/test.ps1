@@ -129,6 +129,9 @@ function BenchSummary([string] $backend) {
         fetch_execute_seconds = Median @($runs | ForEach-Object { $_.fetch.execute_seconds })
         fetchall_seconds = Median @($runs | ForEach-Object { $_.fetch.fetchall_seconds })
         fetch_rows_per_second = Median @($runs | ForEach-Object { $_.fetch.rows_per_second })
+        fetch_rss_before_mb = Median @($runs | ForEach-Object { $_.fetch.rss_before_mb })
+        fetch_rss_after_mb = Median @($runs | ForEach-Object { $_.fetch.rss_after_mb })
+        fetch_rss_delta_mb = Median @($runs | ForEach-Object { $_.fetch.rss_delta_mb })
         threads_seconds = Median @($runs | ForEach-Object { $_.threads.seconds })
         cancel_call_seconds = Median @($runs | ForEach-Object { $_.cancel.call_seconds })
     }

@@ -16,7 +16,6 @@ from ._qt_process_protocol import recvFrame, sendFrame, sendToken
 
 READ = 1
 WRITE = 2
-_COPY_RESULTS = {pq.ExecStatus.COPY_IN, pq.ExecStatus.COPY_OUT, pq.ExecStatus.COPY_BOTH}
 _SEND_MEMBERS = {
     "send_query",
     "send_query_params",
@@ -131,23 +130,15 @@ class Worker:
                         while notify := obj.notifies():
                             notifies.append(notify)
 
-                        results: list[ResultSnapshot | None] = []
-                        if not busy and obj.pipeline_status == pq.PipelineStatus.OFF:
-                            # Preserve libpq's one-result-at-a-time state machine.
-                            # The parent generator decides what to do after every
-                            # PGresult (especially on SQL/fatal errors), so the
-                            # worker must never greedily drain subsequent results.
-                            result = obj.get_result()
-                            results.append(
-                                None if result is None else _snapshotResult(result)
-                            )
-
+                        # Keep PGresult retrieval parent-driven. Calling
+                        # get_result() here changes when libpq transitions to
+                        # BAD and breaks Psycopg's one-result-at-a-time error
+                        # semantics (notably after pg_terminate_backend()).
                         return WaitSnapshot(
                             ready=ready,
                             consumed=True,
                             busy=busy,
                             notifies=tuple(notifies),
-                            results=tuple(results),
                         )
                 except Exception:
                     pass

@@ -43,7 +43,6 @@ _COPY_RESULTS = {
     pq.ExecStatus.COPY_BOTH,
 }
 _FAST_EXECUTE = "qpsycopg_execute_pending"
-_FAST_CANCEL = "qpsycopg_cancel"
 _PROFILE_TAKE = "qpsycopg_profile_take"
 _WAIT_DRAIN_GRACE = 0.010
 
@@ -140,9 +139,6 @@ class Worker:
                     self.cancelControl = CancelControlServer(obj)
                 return self.cancelControl.info
 
-            if request.objectId == 1 and request.member == _FAST_CANCEL:
-                return self._cancelPending(obj, float(request.args[0]))
-
             if request.objectId == 1 and request.member == _FAST_EXECUTE:
                 timeout = float(request.args[0])
                 if len(request.args) > 1:
@@ -201,34 +197,6 @@ class Worker:
             return self._normalize(getattr(escaping, request.member)(*request.args))
 
         raise ValueError(f"unsupported operation: {op!r}")
-
-    def _cancelPending(self, obj: Any, timeout: float) -> None:
-        cancelConn = obj.cancel_conn()
-        deadline = monotonic() + timeout if timeout else None
-        try:
-            cancelConn.start()
-            while True:
-                status = cancelConn.poll()
-                if status == pq.PollingStatus.OK:
-                    return
-                if status == pq.PollingStatus.FAILED:
-                    raise e.OperationalError(
-                        f"cancellation failed: {cancelConn.get_error_message()}"
-                    )
-                if status not in (pq.PollingStatus.READING, pq.PollingStatus.WRITING):
-                    raise e.InternalError(f"unexpected poll status: {status}")
-
-                remaining = None if deadline is None else deadline - monotonic()
-                if remaining is not None and remaining <= 0:
-                    raise e._WaitTimeout("wait timeout expired")
-                fd = cancelConn.socket
-                readers = [fd] if status == pq.PollingStatus.READING else []
-                writers = [fd] if status == pq.PollingStatus.WRITING else []
-                readable, writable, _ = select.select(readers, writers, [], remaining)
-                if not readable and not writable:
-                    raise e._WaitTimeout("wait timeout expired")
-        finally:
-            cancelConn.finish()
 
     def _waitConnection(self, obj: Any, mask: int, timeout: float | None) -> WaitSnapshot:
         ready = self._wait(obj, mask, timeout)

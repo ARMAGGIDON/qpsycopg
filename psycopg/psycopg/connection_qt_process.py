@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import threading
 import warnings
 from time import monotonic, sleep
 from typing import cast
@@ -31,25 +30,10 @@ from .pq.pq_qt_process import PGconn as QtPGconn
 from .pq.pq_qt_process import waitRemote
 
 _REMOTE_WAIT_INTERVAL = 0.01
-_cancelPendingHandles: set[int] = set()
-_cancelPendingLock = threading.Lock()
 
 
 def _waitTime(interval: float, deadline: float) -> float:
     return max(0.0, min(interval, deadline - monotonic()))
-
-
-def _setCancelPending(handle: int, pending: bool) -> None:
-    with _cancelPendingLock:
-        if pending:
-            _cancelPendingHandles.add(handle)
-        else:
-            _cancelPendingHandles.discard(handle)
-
-
-def _isCancelPending(handle: int) -> bool:
-    with _cancelPendingLock:
-        return handle in _cancelPendingHandles
 
 
 def _openCancelControl(pgconn: QtPGconn) -> None:
@@ -92,7 +76,7 @@ def _waitRemote(
         state = next(gen)
         while True:
             wait = interval if deadline is None else _waitTime(interval, deadline)
-            ready = 0 if _isCancelPending(handle) else waitRemote(handle, int(state), wait)
+            ready = waitRemote(handle, int(state), wait)
             if not ready:
                 sleep(0)
             state = gen.send(ready)
@@ -125,13 +109,7 @@ def _cancelRemote(connection: BaseConnection[Row], timeout: float) -> None:
     control = getattr(pgconn._transport, "_cancelControl", None)
     if control is None:
         raise e.OperationalError("qpsycopg cancellation channel is not available")
-
-    handle = pgconn.socket
-    _setCancelPending(handle, True)
-    try:
-        control.cancel(timeout)
-    finally:
-        _setCancelPending(handle, False)
+    control.cancel(timeout)
 
 
 async def _waitRemoteAsync(
@@ -145,10 +123,7 @@ async def _waitRemoteAsync(
         state = next(gen)
         while True:
             wait = interval if deadline is None else _waitTime(interval, deadline)
-            if _isCancelPending(handle):
-                ready = 0
-            else:
-                ready = await asyncio.to_thread(waitRemote, handle, int(state), wait)
+            ready = await asyncio.to_thread(waitRemote, handle, int(state), wait)
             if not ready:
                 await asyncio.sleep(0)
             state = gen.send(ready)

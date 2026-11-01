@@ -35,6 +35,8 @@ elif pq.__impl__ == "qt-process":
         class Transformer(_py_transformer.Transformer):  # type: ignore[no-redef]
             """Python pq facade with native value decoding for remote snapshots."""
 
+            __qpsycopg_decoder__ = _qt_fast.__name__
+
             def __init__(self, context: abc.AdaptContext | None = None):
                 super().__init__(context)
                 self._fast = _qt_fast.Transformer(context)

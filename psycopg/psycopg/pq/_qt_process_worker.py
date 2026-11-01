@@ -158,29 +158,11 @@ class Worker:
             return None
 
         if op == Operation.WAIT:
-            ready = self._wait(obj, int(request.args[0]), request.args[1])
-            if request.objectId == 1 and ready & READ:
-                try:
-                    if obj.status == pq.ConnStatus.OK:
-                        obj.consume_input()
-                        busy = int(obj.is_busy())
-                        notifies = []
-                        while notify := obj.notifies():
-                            notifies.append(notify)
-
-                        # Keep PGresult retrieval parent-driven. Calling
-                        # get_result() here changes when libpq transitions to
-                        # BAD and breaks Psycopg's one-result-at-a-time error
-                        # semantics (notably after pg_terminate_backend()).
-                        return WaitSnapshot(
-                            ready=ready,
-                            consumed=True,
-                            busy=busy,
-                            notifies=tuple(notifies),
-                        )
-                except Exception:
-                    pass
-            return WaitSnapshot(ready=ready)
+            mask = int(request.args[0])
+            timeout = request.args[1]
+            if request.objectId == 1 and mask & READ:
+                return self._waitConnection(obj, mask, timeout)
+            return WaitSnapshot(ready=self._wait(obj, mask, timeout))
 
         if op == Operation.ESCAPE:
             escapingConn: Any = obj if request.objectId else None
@@ -188,6 +170,45 @@ class Worker:
             return self._normalize(getattr(escaping, request.member)(*request.args))
 
         raise ValueError(f"unsupported operation: {op!r}")
+
+    def _waitConnection(self, obj: Any, mask: int, timeout: float | None) -> WaitSnapshot:
+        deadline = monotonic() + timeout if timeout is not None else None
+        ready = self._wait(obj, mask, timeout)
+        if not ready & READ:
+            return WaitSnapshot(ready=ready)
+
+        try:
+            if obj.status != pq.ConnStatus.OK:
+                return WaitSnapshot(ready=ready)
+
+            consumed = False
+            busy: int | None = None
+            notifies = []
+            while ready & READ:
+                obj.consume_input()
+                consumed = True
+                busy = int(obj.is_busy())
+                while notify := obj.notifies():
+                    notifies.append(notify)
+                if not busy or deadline is None:
+                    break
+
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    break
+                nextReady = self._wait(obj, READ, remaining)
+                if not nextReady & READ:
+                    break
+                ready |= nextReady
+
+            return WaitSnapshot(
+                ready=ready,
+                consumed=consumed,
+                busy=busy,
+                notifies=tuple(notifies),
+            )
+        except Exception:
+            return WaitSnapshot(ready=ready)
 
     def _sendSnapshot(self, obj: Any, value: Any, flush: int, busy: int) -> SendSnapshot:
         status = int(obj.status)

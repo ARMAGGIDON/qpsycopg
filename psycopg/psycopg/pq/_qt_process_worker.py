@@ -136,7 +136,8 @@ class Worker:
                 and request.member in _SEND_MEMBERS
                 and obj.pipeline_status == pq.PipelineStatus.OFF
             ):
-                return SendSnapshot(
+                return self._sendSnapshot(
+                    obj,
                     self._normalize(value),
                     int(obj.flush()),
                     int(obj.is_busy()),
@@ -182,19 +183,29 @@ class Worker:
 
         raise ValueError(f"unsupported operation: {op!r}")
 
+    def _sendSnapshot(self, obj: Any, value: Any, flush: int, busy: int) -> SendSnapshot:
+        status = int(obj.status)
+        transactionStatus = int(obj.transaction_status)
+        clientEncoding: bytes | None = None
+        if status == int(pq.ConnStatus.OK):
+            encoding = obj.parameter_status(b"client_encoding")
+            if encoding is not None:
+                clientEncoding = bytes(encoding)
+        return SendSnapshot(value, flush, busy, status, transactionStatus, clientEncoding)
+
     def _executePending(self, obj: Any, timeout: float) -> SendSnapshot:
         """Try to finish a normal query in one bounded worker round-trip."""
         if obj.pipeline_status != pq.PipelineStatus.OFF:
-            return SendSnapshot(("pending", (), ()), int(obj.flush()), int(obj.is_busy()))
+            return self._sendSnapshot(obj, ("pending", (), ()), int(obj.flush()), int(obj.is_busy()))
 
         deadline = monotonic() + max(0.0, timeout)
         while obj.flush() != 0:
             remaining = deadline - monotonic()
             if remaining <= 0:
-                return SendSnapshot(("pending", (), ()), 1, int(obj.is_busy()))
+                return self._sendSnapshot(obj, ("pending", (), ()), 1, int(obj.is_busy()))
             ready = self._wait(obj, READ | WRITE, remaining)
             if not ready:
-                return SendSnapshot(("pending", (), ()), 1, int(obj.is_busy()))
+                return self._sendSnapshot(obj, ("pending", (), ()), 1, int(obj.is_busy()))
             if ready & READ:
                 obj.consume_input()
 
@@ -205,11 +216,11 @@ class Worker:
                 remaining = deadline - monotonic()
                 if remaining <= 0:
                     state = "partial" if results else "pending"
-                    return SendSnapshot((state, tuple(results), tuple(notifies)), 0, 1)
+                    return self._sendSnapshot(obj, (state, tuple(results), tuple(notifies)), 0, 1)
                 ready = self._wait(obj, READ, remaining)
                 if not ready:
                     state = "partial" if results else "pending"
-                    return SendSnapshot((state, tuple(results), tuple(notifies)), 0, 1)
+                    return self._sendSnapshot(obj, (state, tuple(results), tuple(notifies)), 0, 1)
                 obj.consume_input()
 
             while notify := obj.notifies():
@@ -219,11 +230,11 @@ class Worker:
                 result = obj.get_result()
             except e.DatabaseError:
                 if any(item.status == int(pq.ExecStatus.FATAL_ERROR) for item in results):
-                    return SendSnapshot(("done", tuple(results), tuple(notifies)), 0, 0)
+                    return self._sendSnapshot(obj, ("done", tuple(results), tuple(notifies)), 0, 0)
                 raise
 
             if result is None:
-                return SendSnapshot(("done", tuple(results), tuple(notifies)), 0, 0)
+                return self._sendSnapshot(obj, ("done", tuple(results), tuple(notifies)), 0, 0)
 
             snapshot = _snapshotResult(result)
             results.append(snapshot)
@@ -232,15 +243,15 @@ class Worker:
                 # COPY switches libpq into a separate data-transfer state. Keep
                 # the parent-side flush/busy cache synchronized with that new
                 # state so copy_from() doesn't wait on stale pre-COPY values.
-                return SendSnapshot(("done", tuple(results), tuple(notifies)), 0, 0)
+                return self._sendSnapshot(obj, ("done", tuple(results), tuple(notifies)), 0, 0)
             if status == pq.ExecStatus.PIPELINE_SYNC:
                 if len(results) != 1:
                     raise AssertionError(results)
-                return SendSnapshot(("done", tuple(results), tuple(notifies)), 0, 0)
+                return self._sendSnapshot(obj, ("done", tuple(results), tuple(notifies)), 0, 0)
             if status == pq.ExecStatus.FATAL_ERROR and obj.status == pq.ConnStatus.BAD:
                 # Upstream _fetch_many() would catch the next read error and
                 # stop because it has already received a fatal result.
-                return SendSnapshot(("done", tuple(results), tuple(notifies)), 0, 0)
+                return self._sendSnapshot(obj, ("done", tuple(results), tuple(notifies)), 0, 0)
 
     def _setConnection(self, conn: Any) -> None:
         old = self.objects.get(1)

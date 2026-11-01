@@ -35,6 +35,8 @@ Documentation
     advanced/index
     api/index
     qt-process
+    qt-process-project-map
+    qt-process-performance
 
 Release notes
 -------------

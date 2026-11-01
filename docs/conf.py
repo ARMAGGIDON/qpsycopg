@@ -53,7 +53,7 @@ maximum_signature_line_length = 100
 
 # The announcement may be in the website but not shipped with the docs
 if (ann_file := (docs_dir / "../../templates/docs3-announcement.html")).exists():
-    with ann_file.open() as f:
+    with ann_file.open(encoding="utf-8") as f:
         announcement = f.read()
 else:
     announcement = ""

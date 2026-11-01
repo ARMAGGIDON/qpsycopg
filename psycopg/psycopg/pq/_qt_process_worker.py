@@ -11,7 +11,7 @@ from psycopg import pq
 
 from ._qt_process_protocol import Operation, RemoteError, RemoteKind
 from ._qt_process_protocol import RemoteRef, Request, Response, ResultSnapshot
-from ._qt_process_protocol import SendSnapshot, WaitSnapshot
+from ._qt_process_protocol import ResultReadSnapshot, SendSnapshot, WaitSnapshot
 from ._qt_process_protocol import recvFrame, sendFrame, sendToken
 
 READ = 1
@@ -25,6 +25,11 @@ _SEND_MEMBERS = {
     "send_describe_portal",
     "send_close_prepared",
     "send_close_portal",
+}
+_SUCCESS_RESULTS = {
+    pq.ExecStatus.EMPTY_QUERY,
+    pq.ExecStatus.COMMAND_OK,
+    pq.ExecStatus.TUPLES_OK,
 }
 
 
@@ -100,6 +105,21 @@ class Worker:
 
         if op == Operation.CALL:
             value = getattr(obj, request.member)(*request.args, **dict(request.kwargs))
+            if request.objectId == 1 and request.member == "get_result" and value is not None:
+                snapshot = _snapshotResult(value)
+                following: list[ResultSnapshot | None] = []
+                if (
+                    value.status in _SUCCESS_RESULTS
+                    and obj.pipeline_status == pq.PipelineStatus.OFF
+                    and obj.status == pq.ConnStatus.OK
+                    and not obj.is_busy()
+                ):
+                    nextResult = obj.get_result()
+                    following.append(
+                        None if nextResult is None else _snapshotResult(nextResult)
+                    )
+                return ResultReadSnapshot(snapshot, tuple(following))
+
             if (
                 request.objectId == 1
                 and request.member in _SEND_MEMBERS

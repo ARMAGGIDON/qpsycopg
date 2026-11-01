@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Show which low-level qt-process calls cross the process boundary."""
+"""Profile qt-process IPC and row decoding against native Psycopg."""
 
 from __future__ import annotations
 
 import argparse
 import gc
+import importlib
 import json
 import os
 import time
@@ -32,16 +33,16 @@ def main() -> int:
     parser.add_argument("--rows", type=int, default=100_000)
     options = parser.parse_args()
 
-    if psycopg.pq.__impl__ != "qt-process":
-        raise SystemExit("set PSYCOPG_IMPL=qt-process")
-
     decodeTimings: dict[str, float] = {}
     decoder: str | None = None
     bulkDecoder = False
+    loaderTypes: list[str] = []
     valueLayout: str | None = None
     valueDataBytes = 0
     valueOffsetBytes = 0
     valueNullBytes = 0
+    events: list[dict[str, Any]] = []
+
     with psycopg.connect(options.dsn) as connection:
         def selectOne() -> None:
             with connection.cursor() as cursor:
@@ -51,9 +52,8 @@ def main() -> int:
         for _ in range(options.warmup):
             selectOne()
 
-        transport = connection.pgconn._transport
-        original = transport.request
-        events: list[dict[str, Any]] = []
+        transport = getattr(connection.pgconn, "_transport", None)
+        original = transport.request if transport is not None else None
 
         def traced(
             operation: Any,
@@ -62,6 +62,7 @@ def main() -> int:
             args: tuple[Any, ...] = (),
             kwargs: tuple[tuple[str, Any], ...] = (),
         ) -> Any:
+            assert transport is not None and original is not None
             before = transport.requestId
             value = original(operation, objectId, member, args, kwargs)
             after = transport.requestId
@@ -73,7 +74,8 @@ def main() -> int:
             })
             return value
 
-        transport.request = traced
+        if transport is not None:
+            transport.request = traced
         try:
             start = time.perf_counter()
             if options.mode == "select":
@@ -88,47 +90,73 @@ def main() -> int:
                     cursor.execute(_QUERY, (options.rows,))
                     res = cursor.pgresult
                     assert res is not None and res.ntuples == options.rows
-                    decoder = getattr(cursor._tx, "__qpsycopg_decoder__", None)
-                    bulkDecoder = getattr(cursor._tx, "_bulkLoadRows", None) is not None
-                    values = res._values
-                    valueLayout = type(values).__name__
-                    valueDataBytes = len(getattr(values, "data", b""))
-                    valueOffsetBytes = len(getattr(values, "offsets", b""))
-                    valueNullBytes = len(getattr(values, "nulls", b""))
+
+                    tx = cursor._tx
+                    fast = getattr(tx, "_fast", None)
+                    decoder = getattr(tx, "__qpsycopg_decoder__", None)
+                    if decoder is None:
+                        decoder = f"{type(tx).__module__}.{type(tx).__qualname__}"
+                    bulkDecoder = getattr(tx, "_bulkLoadRows", None) is not None
+
+                    loaderOwner = fast if fast is not None else tx
+                    loaderTypes = [
+                        f"{type(loader).__module__}.{type(loader).__qualname__}"
+                        for loader in (
+                            loaderOwner.get_loader(res.ftype(column), psycopg.pq.Format(res.fformat(column)))
+                            for column in range(res.nfields)
+                        )
+                    ]
+
+                    values = getattr(res, "_values", None)
+                    if values is not None:
+                        valueLayout = type(values).__name__
+                        valueDataBytes = len(getattr(values, "data", b""))
+                        valueOffsetBytes = len(getattr(values, "offsets", b""))
+                        valueNullBytes = len(getattr(values, "nulls", b""))
+                    else:
+                        valueLayout = f"{type(res).__module__}.{type(res).__qualname__}"
 
                     if options.mode == "decode":
                         nfields = res.nfields
-                        fast = getattr(cursor._tx, "_fast", None)
-                        if fast is None:
-                            raise RuntimeError("native qt-process decoder unavailable")
+                        if values is not None and fast is not None:
+                            fastModule = importlib.import_module(type(fast).__module__)
+                            scanPacked = getattr(fastModule, "qpsycopg_scan_packed", None)
+                            if scanPacked is not None and hasattr(values, "data"):
+                                gc.collect()
+                                phase = time.perf_counter()
+                                totalBytes, nonnull = scanPacked(values, 0, options.rows, nfields)
+                                decodeTimings["packed_scan_seconds"] = time.perf_counter() - phase
+                                decodeTimings["packed_scan_bytes"] = int(totalBytes)
+                                decodeTimings["packed_scan_nonnull"] = int(nonnull)
+
+                            gc.collect()
+                            phase = time.perf_counter()
+                            rowSlices = [
+                                values[offset : offset + nfields]
+                                for offset in range(0, len(values), nfields)
+                            ]
+                            decodeTimings["slice_rows_seconds"] = time.perf_counter() - phase
+
+                            gc.collect()
+                            phase = time.perf_counter()
+                            decoded = [fast.load_sequence(row) for row in rowSlices]
+                            decodeTimings["decode_presliced_seconds"] = time.perf_counter() - phase
+                            assert len(decoded) == options.rows
+                            decodeTimings["presliced_total_seconds"] = (
+                                decodeTimings["slice_rows_seconds"]
+                                + decodeTimings["decode_presliced_seconds"]
+                            )
+                            del decoded, rowSlices
 
                         gc.collect()
                         phase = time.perf_counter()
-                        rowSlices = [
-                            values[offset : offset + nfields]
-                            for offset in range(0, len(values), nfields)
-                        ]
-                        decodeTimings["slice_rows_seconds"] = time.perf_counter() - phase
-
-                        gc.collect()
-                        phase = time.perf_counter()
-                        decoded = [fast.load_sequence(row) for row in rowSlices]
-                        decodeTimings["decode_presliced_seconds"] = time.perf_counter() - phase
-                        assert len(decoded) == options.rows
-                        decodeTimings["presliced_total_seconds"] = (
-                            decodeTimings["slice_rows_seconds"]
-                            + decodeTimings["decode_presliced_seconds"]
-                        )
-
-                        del decoded, rowSlices
-                        gc.collect()
-                        phase = time.perf_counter()
-                        decoded = cursor._tx.load_rows(0, options.rows, tuple)
+                        decoded = tx.load_rows(0, options.rows, tuple)
                         decodeTimings["current_load_rows_seconds"] = time.perf_counter() - phase
                         assert len(decoded) == options.rows
             elapsed = time.perf_counter() - start
         finally:
-            transport.request = original
+            if transport is not None and original is not None:
+                transport.request = original
 
     remoteCounts = Counter(
         f"{event['operation']}:{event['member'] or '-'}"
@@ -140,6 +168,7 @@ def main() -> int:
     )
     result: dict[str, Any] = {
         "mode": options.mode,
+        "impl": psycopg.pq.__impl__,
         "elapsed_seconds": elapsed,
         "remote_requests": sum(remoteCounts.values()),
         "remote_counts": dict(remoteCounts),
@@ -156,6 +185,7 @@ def main() -> int:
             "rows": options.rows,
             "decoder": decoder,
             "bulk_decoder": bulkDecoder,
+            "loader_types": loaderTypes,
             "value_layout": valueLayout,
             "value_data_bytes": valueDataBytes,
             "value_offset_bytes": valueOffsetBytes,

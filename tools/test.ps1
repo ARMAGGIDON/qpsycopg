@@ -63,7 +63,9 @@ function Invoke-BackendTest(
 function Smoke {
     Write-Host "[smoke] qt-process/$Worker"
     Set-Backend "qt-process" $Worker
-    Invoke-Python @((Join-Path $repoRoot "tools\smoke_qt_process.py"), $Dsn) (Result "smoke" "log")
+    $outFile = Result "smoke" "log"
+    & $python (Join-Path $repoRoot "tools\smoke_qt_process.py") $Dsn 2>&1 | Tee-Object -FilePath $outFile
+    if ($LASTEXITCODE -ne 0) { throw "Python exited with code $LASTEXITCODE" }
 }
 
 function Bench {

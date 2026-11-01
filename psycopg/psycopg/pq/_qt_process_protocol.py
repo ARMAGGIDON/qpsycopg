@@ -89,6 +89,12 @@ class WaitSnapshot:
 
 
 @dataclass(slots=True, frozen=True)
+class ResultReadSnapshot:
+    value: ResultSnapshot
+    following: tuple[ResultSnapshot | None, ...] = ()
+
+
+@dataclass(slots=True, frozen=True)
 class Response:
     requestId: int
     value: Any = None

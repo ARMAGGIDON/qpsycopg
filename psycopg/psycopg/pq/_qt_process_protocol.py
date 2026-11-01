@@ -15,6 +15,7 @@ _TOKEN_SIZE = 32
 _MAX_FRAME = 1 << 34  # 16 GiB: reject obviously corrupt frame lengths.
 _COALESCE_FRAME = 64 * 1024
 _Profile = dict[str, float | int]
+_FAST_EXECUTE = "qpsycopg_execute_pending"
 
 
 class Operation(IntEnum):
@@ -120,11 +121,31 @@ class ResultReadSnapshot(NamedTuple):
     following: tuple[ResultSnapshot | None, ...] = ()
 
 
+def _identity(value: Any) -> Any:
+    return value
+
+
 class Response(NamedTuple):
     requestId: int
     value: Any = None
     error: RemoteError | None = None
     notices: tuple[ResultSnapshot, ...] = ()
+
+    def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
+        # Fast execute uses requestId 0. For the overwhelmingly common success
+        # case, don't serialize the generic response envelope at all.
+        if self.requestId == 0 and self.error is None and not self.notices and isinstance(self.value, SendSnapshot):
+            return _identity, (self.value,)
+        return type(self), tuple(self)
+
+
+def _makeFastExecuteRequest(
+    timeout: float,
+    sendMember: str,
+    sendArgs: tuple[Any, ...],
+    sendKwargs: tuple[tuple[str, Any], ...],
+) -> Request:
+    return Request(0, Operation.CALL, 1, _FAST_EXECUTE, (timeout, sendMember, sendArgs, sendKwargs))
 
 
 class FastExecuteRequest(NamedTuple):
@@ -132,6 +153,11 @@ class FastExecuteRequest(NamedTuple):
     sendMember: str
     sendArgs: tuple[Any, ...]
     sendKwargs: tuple[tuple[str, Any], ...]
+
+    def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
+        # The worker receives an ordinary Request, but fixed routing fields
+        # never travel over the wire.
+        return _makeFastExecuteRequest, tuple(self)
 
 
 class FastExecuteResponse(NamedTuple):

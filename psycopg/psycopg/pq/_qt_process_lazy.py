@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import errors as e
-from ._qt_process_protocol import Operation, Request, Response, SendSnapshot
+from ._qt_process_protocol import FastExecuteRequest, FastExecuteResponse, Operation, SendSnapshot
 from .pq_qt_process import PGresult, _SEND_MEMBERS, _Transport, _raiseRemote, _restore, _wire
 from . import pq_qt_process as _pq
 
@@ -20,17 +20,18 @@ def _fastExecute(
     sendArgs: tuple[Any, ...],
     sendKwargs: tuple[tuple[str, Any], ...],
 ) -> Any:
-    """Run the coalesced send/execute hot path without generic request dispatch."""
+    """Run the coalesced send/execute hot path with a compact wire message."""
     if self.closed:
         raise e.OperationalError("qpsycopg worker process is closed")
 
+    # Keep requestId as a local transport counter used by profiling/benchmarks.
+    # The synchronous fast frame itself doesn't need an id on the wire.
     self.requestId += 1
-    request = Request(
-        self.requestId,
-        Operation.CALL,
-        1,
-        _FAST_EXECUTE,
-        _wire((timeout, sendMember, sendArgs, sendKwargs)),
+    request = FastExecuteRequest(
+        float(timeout),
+        sendMember,
+        _wire(sendArgs),
+        tuple((name, _wire(value)) for name, value in sendKwargs),
     )
     try:
         _pq.sendFrame(self.sock, request)
@@ -39,23 +40,26 @@ def _fastExecute(
         self._markBroken()
         raise e.OperationalError("qpsycopg worker process disconnected") from error
 
-    if not isinstance(response, Response) or response.requestId != request.requestId:
-        self._markBroken()
-        raise e.InternalError("invalid response from qpsycopg worker")
-
-    if self.connection is not None and self.connection.notice_handler:
-        for notice in response.notices:
-            self.connection.notice_handler(PGresult(notice))
-
-    if response.error is not None:
-        self._clearQueryCache(1)
-        self._clearConnectionState()
-        _raiseRemote(response.error)
-
-    value = response.value
-    if not isinstance(value, SendSnapshot):
+    notices = ()
+    if isinstance(response, SendSnapshot):
+        value = response
+    elif isinstance(response, FastExecuteResponse):
+        notices = response.notices
+        if response.error is not None:
+            self._clearQueryCache(1)
+            self._clearConnectionState()
+            _raiseRemote(response.error)
+        value = response.value
+        if value is None:
+            self._markBroken()
+            raise e.InternalError("missing fast execute response value")
+    else:
         self._markBroken()
         raise e.InternalError("invalid fast execute response from qpsycopg worker")
+
+    if self.connection is not None and self.connection.notice_handler:
+        for notice in notices:
+            self.connection.notice_handler(PGresult(notice))
 
     self._updateConnectionState(value)
     state = value.value[0] if isinstance(value.value, tuple) and value.value else None

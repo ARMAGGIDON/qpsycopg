@@ -7,6 +7,7 @@ import socket
 import struct
 from dataclasses import dataclass
 from enum import IntEnum
+from time import perf_counter
 from typing import Any
 
 _HEADER = struct.Struct("!Q")
@@ -14,6 +15,7 @@ _VALUE_OFFSET = struct.Struct("=Q")
 _TOKEN_SIZE = 32
 _MAX_FRAME = 1 << 34  # 16 GiB: reject obviously corrupt frame lengths.
 _COALESCE_FRAME = 64 * 1024
+_Profile = dict[str, float | int]
 
 
 class Operation(IntEnum):
@@ -139,6 +141,11 @@ def _lowLatency(sock: socket.socket) -> None:
     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
 
+def _addProfile(profile: _Profile | None, key: str, value: float | int) -> None:
+    if profile is not None:
+        profile[key] = profile.get(key, 0) + value
+
+
 def sendToken(sock: socket.socket, token: bytes) -> None:
     if len(token) != _TOKEN_SIZE:
         raise ValueError("invalid qpsycopg worker token length")
@@ -151,21 +158,56 @@ def recvToken(sock: socket.socket) -> bytes:
     return bytes(_recvExact(sock, _TOKEN_SIZE))
 
 
-def sendFrame(sock: socket.socket, value: Any) -> None:
+def sendFrame(sock: socket.socket, value: Any, profile: _Profile | None = None, prefix: str = "frame") -> None:
+    if profile is None:
+        payload = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+        header = _HEADER.pack(len(payload))
+        if len(payload) <= _COALESCE_FRAME:
+            sock.sendall(header + payload)
+        else:
+            sock.sendall(header)
+            sock.sendall(payload)
+        return
+
+    start = perf_counter()
     payload = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+    _addProfile(profile, f"{prefix}_pickle_seconds", perf_counter() - start)
+
     header = _HEADER.pack(len(payload))
+    start = perf_counter()
     if len(payload) <= _COALESCE_FRAME:
         sock.sendall(header + payload)
     else:
         sock.sendall(header)
         sock.sendall(payload)
+    _addProfile(profile, f"{prefix}_socket_send_seconds", perf_counter() - start)
+    _addProfile(profile, f"{prefix}_payload_bytes", len(payload))
+    _addProfile(profile, f"{prefix}_frames", 1)
 
 
-def recvFrame(sock: socket.socket) -> Any:
+def recvFrame(sock: socket.socket, profile: _Profile | None = None, prefix: str = "frame") -> Any:
+    if profile is None:
+        size = _HEADER.unpack(_recvExact(sock, _HEADER.size))[0]
+        if size > _MAX_FRAME:
+            raise ValueError(f"invalid qpsycopg frame size: {size}")
+        return pickle.loads(_recvExact(sock, size))
+
+    start = perf_counter()
     size = _HEADER.unpack(_recvExact(sock, _HEADER.size))[0]
+    _addProfile(profile, f"{prefix}_header_wait_seconds", perf_counter() - start)
     if size > _MAX_FRAME:
         raise ValueError(f"invalid qpsycopg frame size: {size}")
-    return pickle.loads(_recvExact(sock, size))
+
+    start = perf_counter()
+    payload = _recvExact(sock, size)
+    _addProfile(profile, f"{prefix}_payload_recv_seconds", perf_counter() - start)
+
+    start = perf_counter()
+    value = pickle.loads(payload)
+    _addProfile(profile, f"{prefix}_unpickle_seconds", perf_counter() - start)
+    _addProfile(profile, f"{prefix}_payload_bytes", size)
+    _addProfile(profile, f"{prefix}_frames", 1)
+    return value
 
 
 def _recvExact(sock: socket.socket, size: int) -> bytearray:

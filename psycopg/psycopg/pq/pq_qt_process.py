@@ -695,7 +695,7 @@ class Escaping:
     def _escape(self, member: str, data: abc.Buffer) -> bytes:
         if self.conn is None:
             assert self._local is not None
-            return getattr(self._local, member)(data)
+            return getattr(self._local, member)(_wire(data))
         return self.conn._transport.request(
             Operation.ESCAPE,
             self.conn._objectId,

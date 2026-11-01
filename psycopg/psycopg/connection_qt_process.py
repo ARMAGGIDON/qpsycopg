@@ -108,10 +108,10 @@ def _cancelRemote(connection: BaseConnection[Row], timeout: float) -> None:
     handle = pgconn.socket
     deadline = monotonic() + timeout if timeout else None
 
-    # Once cancellation is pending, the main query wait loop stops entering the
-    # shared transport lock. The cancellation thread can therefore acquire it
-    # after at most the currently running short WAIT instead of being starved by
-    # the query thread repeatedly reacquiring the RLock.
+    # Stop the query thread from starting another WAIT while the cancelling
+    # thread acquires the shared transport. Once acquired, cancellation itself
+    # is one RPC: the worker drives PGcancelConn locally instead of bouncing
+    # poll/socket/wait calls across the process boundary.
     _setCancelPending(handle, True)
     try:
         if deadline is None:
@@ -125,7 +125,7 @@ def _cancelRemote(connection: BaseConnection[Row], timeout: float) -> None:
             remaining = None if deadline is None else max(0.0, deadline - monotonic())
             if remaining == 0.0:
                 raise e._WaitTimeout("wait timeout expired")
-            _waitRemoteConn(connection._cancel_gen(), _CANCEL_WAIT_INTERVAL, remaining)
+            pgconn._call("qpsycopg_cancel", 0.0 if remaining is None else remaining)
         finally:
             transport.lock.release()
     finally:

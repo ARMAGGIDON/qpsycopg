@@ -133,22 +133,14 @@ class Worker:
 
                         results: list[ResultSnapshot | None] = []
                         if not busy and obj.pipeline_status == pq.PipelineStatus.OFF:
-                            while True:
-                                result = obj.get_result()
-                                if result is None:
-                                    results.append(None)
-                                    break
-                                results.append(_snapshotResult(result))
-                                status = result.status
-                                if status == pq.ExecStatus.FATAL_ERROR and obj.status == pq.ConnStatus.BAD:
-                                    # A broken connection may produce additional
-                                    # libpq results after the fatal one. Preserve
-                                    # the parent's command boundary locally and
-                                    # let the worker shut down after this response.
-                                    results.append(None)
-                                    break
-                                if status in _COPY_RESULTS or status == pq.ExecStatus.PIPELINE_SYNC:
-                                    break
+                            # Preserve libpq's one-result-at-a-time state machine.
+                            # The parent generator decides what to do after every
+                            # PGresult (especially on SQL/fatal errors), so the
+                            # worker must never greedily drain subsequent results.
+                            result = obj.get_result()
+                            results.append(
+                                None if result is None else _snapshotResult(result)
+                            )
 
                         return WaitSnapshot(
                             ready=ready,

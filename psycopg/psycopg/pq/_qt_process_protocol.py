@@ -5,10 +5,9 @@ from __future__ import annotations
 import pickle
 import socket
 import struct
-from dataclasses import dataclass
 from enum import IntEnum
 from time import perf_counter
-from typing import Any
+from typing import Any, NamedTuple
 
 _HEADER = struct.Struct("!Q")
 _VALUE_OFFSET = struct.Struct("=Q")
@@ -36,8 +35,7 @@ class RemoteKind(IntEnum):
     PGCANCEL = 3
 
 
-@dataclass(slots=True, frozen=True)
-class Request:
+class Request(NamedTuple):
     requestId: int
     operation: Operation
     objectId: int = 0
@@ -46,21 +44,18 @@ class Request:
     kwargs: tuple[tuple[str, Any], ...] = ()
 
 
-@dataclass(slots=True, frozen=True)
-class RemoteRef:
+class RemoteRef(NamedTuple):
     kind: RemoteKind
     objectId: int
 
 
-@dataclass(slots=True, frozen=True)
-class RemoteError:
+class RemoteError(NamedTuple):
     module: str
     name: str
     message: str
 
 
-@dataclass(slots=True, frozen=True)
-class PackedValues:
+class PackedValues(NamedTuple):
     """Contiguous result cells with offsets and a NULL bitmap."""
 
     data: bytes
@@ -88,8 +83,7 @@ class PackedValues:
         return self.data[start:end]
 
 
-@dataclass(slots=True, frozen=True)
-class ResultSnapshot:
+class ResultSnapshot(NamedTuple):
     status: int
     errorMessage: bytes
     errorFields: tuple[tuple[int, bytes], ...]
@@ -104,8 +98,7 @@ class ResultSnapshot:
     oidValue: int
 
 
-@dataclass(slots=True, frozen=True)
-class SendSnapshot:
+class SendSnapshot(NamedTuple):
     value: Any
     flush: int
     busy: int
@@ -114,8 +107,7 @@ class SendSnapshot:
     clientEncoding: bytes | None = None
 
 
-@dataclass(slots=True, frozen=True)
-class WaitSnapshot:
+class WaitSnapshot(NamedTuple):
     ready: int
     consumed: bool = False
     busy: int | None = None
@@ -123,14 +115,12 @@ class WaitSnapshot:
     results: tuple[ResultSnapshot | None, ...] = ()
 
 
-@dataclass(slots=True, frozen=True)
-class ResultReadSnapshot:
+class ResultReadSnapshot(NamedTuple):
     value: ResultSnapshot
     following: tuple[ResultSnapshot | None, ...] = ()
 
 
-@dataclass(slots=True, frozen=True)
-class Response:
+class Response(NamedTuple):
     requestId: int
     value: Any = None
     error: RemoteError | None = None

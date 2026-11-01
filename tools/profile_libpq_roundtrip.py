@@ -9,7 +9,9 @@ import select
 import statistics
 import time
 
-from psycopg_binary import pq
+os.environ["PSYCOPG_IMPL"] = "binary"
+
+from psycopg import pq
 
 
 def _report(name: str, values: list[float]) -> None:

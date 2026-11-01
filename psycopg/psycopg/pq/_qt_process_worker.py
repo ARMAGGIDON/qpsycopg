@@ -140,12 +140,11 @@ class Worker:
                                     break
                                 results.append(_snapshotResult(result))
                                 status = result.status
-                                if status == pq.ExecStatus.FATAL_ERROR:
-                                    # The parent must observe the fatal result and
-                                    # then the normal end-of-results sentinel. Do
-                                    # not make it call back into a worker which may
-                                    # already be shutting down because the PGconn
-                                    # became BAD.
+                                if status == pq.ExecStatus.FATAL_ERROR and obj.status == pq.ConnStatus.BAD:
+                                    # A broken connection may produce additional
+                                    # libpq results after the fatal one. Preserve
+                                    # the parent's command boundary locally and
+                                    # let the worker shut down after this response.
                                     results.append(None)
                                     break
                                 if status in _COPY_RESULTS or status == pq.ExecStatus.PIPELINE_SYNC:

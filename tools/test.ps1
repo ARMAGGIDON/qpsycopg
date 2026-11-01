@@ -67,27 +67,35 @@ function Smoke {
 }
 
 function Bench {
-    $args = @(
+    $benchArgs = @(
         (Join-Path $repoRoot "tools\bench_qt_process.py"), $Dsn,
         "--iterations", $Iterations, "--rows", $Rows, "--threads", $Threads
     )
 
     for ($i = 1; $i -le $Repeat; $i++) {
         $n = "{0:D2}" -f $i
-        $vanilla = { Invoke-BackendTest "[$i/$Repeat] vanilla bench" $Worker $args (Result "bench-$n-vanilla") }
-        $qt = { Invoke-BackendTest "[$i/$Repeat] qpsycopg bench" "qt-process" $args (Result "bench-$n-qpsycopg") }
-        if ($i % 2) { & $vanilla; & $qt } else { & $qt; & $vanilla }
+        if ($i % 2) {
+            Invoke-BackendTest "[$i/$Repeat] vanilla bench" $Worker $benchArgs (Result "bench-$n-vanilla")
+            Invoke-BackendTest "[$i/$Repeat] qpsycopg bench" "qt-process" $benchArgs (Result "bench-$n-qpsycopg")
+        } else {
+            Invoke-BackendTest "[$i/$Repeat] qpsycopg bench" "qt-process" $benchArgs (Result "bench-$n-qpsycopg")
+            Invoke-BackendTest "[$i/$Repeat] vanilla bench" $Worker $benchArgs (Result "bench-$n-vanilla")
+        }
     }
 }
 
 function QtBench {
-    $args = @((Join-Path $repoRoot "tools\bench_qt_responsiveness.py"), $Dsn, "--caller", "thread")
+    $qtArgs = @((Join-Path $repoRoot "tools\bench_qt_responsiveness.py"), $Dsn, "--caller", "thread")
 
     for ($i = 1; $i -le $Repeat; $i++) {
         $n = "{0:D2}" -f $i
-        $vanilla = { Invoke-BackendTest "[$i/$Repeat] vanilla Qt" $Worker $args (Result "qt-$n-vanilla") }
-        $qt = { Invoke-BackendTest "[$i/$Repeat] qpsycopg Qt" "qt-process" $args (Result "qt-$n-qpsycopg") }
-        if ($i % 2) { & $vanilla; & $qt } else { & $qt; & $vanilla }
+        if ($i % 2) {
+            Invoke-BackendTest "[$i/$Repeat] vanilla Qt" $Worker $qtArgs (Result "qt-$n-vanilla")
+            Invoke-BackendTest "[$i/$Repeat] qpsycopg Qt" "qt-process" $qtArgs (Result "qt-$n-qpsycopg")
+        } else {
+            Invoke-BackendTest "[$i/$Repeat] qpsycopg Qt" "qt-process" $qtArgs (Result "qt-$n-qpsycopg")
+            Invoke-BackendTest "[$i/$Repeat] vanilla Qt" $Worker $qtArgs (Result "qt-$n-vanilla")
+        }
     }
 }
 

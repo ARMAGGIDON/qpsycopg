@@ -73,6 +73,22 @@ class ResultSnapshot:
 
 
 @dataclass(slots=True, frozen=True)
+class SendSnapshot:
+    value: Any
+    flush: int
+    busy: int
+
+
+@dataclass(slots=True, frozen=True)
+class WaitSnapshot:
+    ready: int
+    consumed: bool = False
+    busy: int | None = None
+    notifies: tuple[Any, ...] = ()
+    results: tuple[ResultSnapshot | None, ...] = ()
+
+
+@dataclass(slots=True, frozen=True)
 class Response:
     requestId: int
     value: Any = None

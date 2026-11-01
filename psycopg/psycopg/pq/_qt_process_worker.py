@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import select
 import socket
+import struct
 import sys
 from time import monotonic
 from typing import Any
@@ -11,13 +12,14 @@ from typing import Any
 from psycopg import errors as e
 from psycopg import pq
 
-from ._qt_process_protocol import Operation, RemoteError, RemoteKind
+from ._qt_process_protocol import Operation, PackedValues, RemoteError, RemoteKind
 from ._qt_process_protocol import RemoteRef, Request, Response, ResultSnapshot
 from ._qt_process_protocol import ResultReadSnapshot, SendSnapshot, WaitSnapshot
 from ._qt_process_protocol import recvFrame, sendFrame, sendToken
 
 READ = 1
 WRITE = 2
+_VALUE_OFFSET = struct.Struct("=Q")
 _SEND_MEMBERS = {
     "send_query",
     "send_query_params",
@@ -361,15 +363,22 @@ def _snapshotResult(result: Any) -> ResultSnapshot:
         for i in range(nfields)
     )
 
+    cellCount = ntuples * nfields
+    valueData = bytearray()
+    valueOffsets = bytearray((cellCount + 1) * _VALUE_OFFSET.size)
+    nulls = bytearray((cellCount + 7) // 8)
     getValue = result.get_value
-    values: list[bytes | None] = [None] * (ntuples * nfields)
     cellIndex = 0
     for row in range(ntuples):
         for column in range(nfields):
+            _VALUE_OFFSET.pack_into(valueOffsets, cellIndex * _VALUE_OFFSET.size, len(valueData))
             value = getValue(row, column)
-            if value is not None:
-                values[cellIndex] = bytes(value)
+            if value is None:
+                nulls[cellIndex >> 3] |= 1 << (cellIndex & 7)
+            else:
+                valueData.extend(value)
             cellIndex += 1
+    _VALUE_OFFSET.pack_into(valueOffsets, cellIndex * _VALUE_OFFSET.size, len(valueData))
 
     errorFields: list[tuple[int, bytes]] = []
     errorField = result.error_field
@@ -387,7 +396,7 @@ def _snapshotResult(result: Any) -> ResultSnapshot:
         rowCount=ntuples,
         columnCount=nfields,
         binaryTuples=result.binary_tuples,
-        values=tuple(values),
+        values=PackedValues(bytes(valueData), bytes(valueOffsets), bytes(nulls), cellCount),
         paramTypes=tuple(result.param_type(i) for i in range(result.nparams)),
         commandStatus=result.command_status,
         commandTuples=result.command_tuples,

@@ -66,6 +66,41 @@ def qpsycopg_scan_packed(object values, int row0, int row1, int nfields):
     return total_bytes, nonnull
 
 
+cdef list _qt_native_loaders(list row_loaders):
+    """Create safe C equivalents for default parent-side loader instances."""
+    cdef Py_ssize_t nfields = PyList_GET_SIZE(row_loaders)
+    cdef list native_loaders = PyList_New(nfields)
+    cdef PyObject *row_loader
+    cdef object pyloader
+    cdef object cls
+    cdef object native
+    cdef TimestamptzLoader timestamptz
+    cdef Py_ssize_t col
+
+    for col in range(nfields):
+        row_loader = PyList_GET_ITEM(row_loaders, col)
+        pyloader = (<RowLoader>row_loader).pyloader
+        cls = type(pyloader)
+        native = None
+
+        if cls.__module__ == "psycopg.types.numeric":
+            if cls.__name__ == "IntLoader":
+                native = IntLoader(pyloader.oid, None)
+            elif cls.__name__ == "NumericLoader":
+                native = NumericLoader(pyloader.oid, None)
+        elif cls.__module__ == "psycopg.types.datetime" and cls.__name__ == "TimestamptzLoader":
+            if getattr(pyloader._load_method, "__name__", "") == "_load_iso":
+                timestamptz = TimestamptzLoader(pyloader.oid, None)
+                timestamptz._time_zone = pyloader._timezone
+                timestamptz._order = ORDER_YMD
+                native = timestamptz
+
+        Py_INCREF(native)
+        PyList_SET_ITEM(native_loaders, col, native)
+
+    return native_loaders
+
+
 cdef object _load_packed_rows(
     Transformer tx,
     object values,
@@ -78,6 +113,7 @@ cdef object _load_packed_rows(
     cdef object nulls = values.nulls
     cdef object data_view = memoryview(data)
     cdef list row_loaders = tx._row_loaders
+    cdef list native_loaders = _qt_native_loaders(row_loaders)
     cdef Py_ssize_t nfields = PyList_GET_SIZE(row_loaders)
     cdef Py_ssize_t required_cells = row1 * nfields
     cdef Py_ssize_t required_offsets = (required_cells + 1) * sizeof(uint64_t)
@@ -95,6 +131,7 @@ cdef object _load_packed_rows(
     cdef uint64_t start_offset
     cdef uint64_t end_offset
     cdef PyObject *loader
+    cdef PyObject *native_loader
     cdef object item
     cdef object record
     cdef object pyval
@@ -138,16 +175,22 @@ cdef object _load_packed_rows(
                 if end_offset < start_offset or end_offset > <uint64_t>data_size:
                     raise e.InterfaceError("invalid packed result offsets")
 
-                loader = PyList_GET_ITEM(row_loaders, col)
-                if (<RowLoader>loader).cloader is not None:
-                    pyval = (<RowLoader>loader).cloader.cload(
+                native_loader = PyList_GET_ITEM(native_loaders, col)
+                if native_loader != <PyObject *>None:
+                    pyval = (<CLoader>native_loader).cload(
                         data_ptr + start_offset, end_offset - start_offset
                     )
                 else:
-                    item = data_view[start_offset:end_offset]
-                    pyval = PyObject_CallFunctionObjArgs(
-                        (<RowLoader>loader).loadfunc, <PyObject *>item, NULL
-                    )
+                    loader = PyList_GET_ITEM(row_loaders, col)
+                    if (<RowLoader>loader).cloader is not None:
+                        pyval = (<RowLoader>loader).cloader.cload(
+                            data_ptr + start_offset, end_offset - start_offset
+                        )
+                    else:
+                        item = data_view[start_offset:end_offset]
+                        pyval = PyObject_CallFunctionObjArgs(
+                            (<RowLoader>loader).loadfunc, <PyObject *>item, NULL
+                        )
 
             Py_INCREF(pyval)
             PyTuple_SET_ITEM(record, col, pyval)
@@ -171,6 +214,7 @@ cdef object _load_sequence_rows(
     cdef values_fast = PySequence_Fast(values, "'values' is not a valid sequence")
     cdef Py_ssize_t nvalues = PySequence_Fast_GET_SIZE(values_fast)
     cdef list row_loaders = tx._row_loaders
+    cdef list native_loaders = _qt_native_loaders(row_loaders)
     cdef Py_ssize_t nfields = PyList_GET_SIZE(row_loaders)
     cdef Py_ssize_t required = row1 * nfields
     cdef Py_ssize_t row
@@ -178,6 +222,7 @@ cdef object _load_sequence_rows(
     cdef Py_ssize_t index
     cdef PyObject *item
     cdef PyObject *loader
+    cdef PyObject *native_loader
     cdef char *ptr
     cdef Py_ssize_t size
     cdef object record
@@ -198,14 +243,19 @@ cdef object _load_sequence_rows(
             if item == <PyObject *>None:
                 pyval = None
             else:
-                loader = PyList_GET_ITEM(row_loaders, col)
-                if (<RowLoader>loader).cloader is not None:
+                native_loader = PyList_GET_ITEM(native_loaders, col)
+                if native_loader != <PyObject *>None:
                     _buffer_as_string_and_size(<object>item, &ptr, &size)
-                    pyval = (<RowLoader>loader).cloader.cload(ptr, size)
+                    pyval = (<CLoader>native_loader).cload(ptr, size)
                 else:
-                    pyval = PyObject_CallFunctionObjArgs(
-                        (<RowLoader>loader).loadfunc, item, NULL
-                    )
+                    loader = PyList_GET_ITEM(row_loaders, col)
+                    if (<RowLoader>loader).cloader is not None:
+                        _buffer_as_string_and_size(<object>item, &ptr, &size)
+                        pyval = (<RowLoader>loader).cloader.cload(ptr, size)
+                    else:
+                        pyval = PyObject_CallFunctionObjArgs(
+                            (<RowLoader>loader).loadfunc, item, NULL
+                        )
 
             Py_INCREF(pyval)
             PyTuple_SET_ITEM(record, col, pyval)

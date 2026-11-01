@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pickle
 import select
 import socket
 import sys
@@ -105,7 +104,15 @@ class Worker:
             return None
 
         if op == Operation.WAIT:
-            return self._wait(obj, int(request.args[0]), request.args[1])
+            ready = self._wait(obj, int(request.args[0]), request.args[1])
+            if request.objectId == 1 and ready & READ:
+                try:
+                    if obj.status == pq.ConnStatus.OK:
+                        consumed = obj.consume_input()
+                        return ready, consumed, obj.is_busy()
+                except Exception:
+                    pass
+            return ready, None, None
 
         if op == Operation.ESCAPE:
             escapingConn: Any = obj if request.objectId else None
@@ -177,46 +184,63 @@ class Worker:
 
 
 def _snapshotResult(result: Any) -> ResultSnapshot:
+    nfields = result.nfields
+    ntuples = result.ntuples
+    fname = result.fname
+    ftable = result.ftable
+    ftablecol = result.ftablecol
+    fformat = result.fformat
+    ftype = result.ftype
+    fmod = result.fmod
+    fsize = result.fsize
     columns = tuple(
         (
-            result.fname(i),
-            result.ftable(i),
-            result.ftablecol(i),
-            result.fformat(i),
-            result.ftype(i),
-            result.fmod(i),
-            result.fsize(i),
+            fname(i),
+            ftable(i),
+            ftablecol(i),
+            fformat(i),
+            ftype(i),
+            fmod(i),
+            fsize(i),
         )
-        for i in range(result.nfields)
+        for i in range(nfields)
     )
 
     data = bytearray()
-    cells = array("q")
-    for row in range(result.ntuples):
-        for column in range(result.nfields):
-            value = result.get_value(row, column)
+    dataExtend = data.extend
+    getValue = result.get_value
+    cells = array("q", [0]) * (ntuples * nfields * 2)
+    cellIndex = 0
+    for row in range(ntuples):
+        for column in range(nfields):
+            value = getValue(row, column)
             if value is None:
-                cells.extend((-1, 0))
+                cells[cellIndex] = -1
             else:
                 start = len(data)
-                data.extend(value)
-                cells.extend((start, len(value)))
+                size = len(value)
+                dataExtend(value)
+                cells[cellIndex] = start
+                cells[cellIndex + 1] = size
+            cellIndex += 2
 
     errorFields: list[tuple[int, bytes]] = []
+    errorField = result.error_field
     for field in pq.DiagnosticField:
-        value = result.error_field(int(field))
+        code = int(field)
+        value = errorField(code)
         if value is not None:
-            errorFields.append((int(field), value))
+            errorFields.append((code, value))
 
     return ResultSnapshot(
         status=int(result.status),
         errorMessage=result.error_message,
         errorFields=tuple(errorFields),
         columns=columns,
-        rowCount=result.ntuples,
-        columnCount=result.nfields,
+        rowCount=ntuples,
+        columnCount=nfields,
         binaryTuples=result.binary_tuples,
-        data=pickle.PickleBuffer(data),
+        data=data,
         cells=CellTable(cells),
         paramTypes=tuple(result.param_type(i) for i in range(result.nparams)),
         commandStatus=result.command_status,

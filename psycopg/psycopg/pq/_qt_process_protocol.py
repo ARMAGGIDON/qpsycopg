@@ -56,10 +56,6 @@ class RemoteError:
     message: str
 
 
-class CellTable(list[tuple[int, int]]):
-    """Compact logical cell table with C-level list indexing in the parent."""
-
-
 @dataclass(slots=True, frozen=True)
 class ResultSnapshot:
     status: int
@@ -69,8 +65,7 @@ class ResultSnapshot:
     rowCount: int
     columnCount: int
     binaryTuples: int
-    data: bytearray
-    cells: CellTable
+    values: tuple[bytes | None, ...]
     paramTypes: tuple[int, ...]
     commandStatus: bytes | None
     commandTuples: int | None

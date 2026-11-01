@@ -52,11 +52,6 @@ apilevel = "2.0"
 threadsafety = 2
 paramstyle = "pyformat"
 
-if pq.__impl__ == "qt-process":
-    from ._qt_process_adapters import enableNativeAdapters
-
-    enableNativeAdapters()
-
 # register default adapters for PostgreSQL
 adapters = postgres.adapters  # exposed by the package
 postgres.register_default_types(adapters.types)

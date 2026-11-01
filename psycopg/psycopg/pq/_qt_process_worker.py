@@ -5,7 +5,6 @@ from __future__ import annotations
 import select
 import socket
 import sys
-from array import array
 from typing import Any
 
 from psycopg import pq
@@ -209,20 +208,17 @@ def _snapshotResult(result: Any) -> ResultSnapshot:
     data = bytearray()
     dataExtend = data.extend
     getValue = result.get_value
-    cells = array("q", [0]) * (ntuples * nfields * 2)
+    cells = CellTable([(-1, 0)] * (ntuples * nfields))
     cellIndex = 0
     for row in range(ntuples):
         for column in range(nfields):
             value = getValue(row, column)
-            if value is None:
-                cells[cellIndex] = -1
-            else:
+            if value is not None:
                 start = len(data)
                 size = len(value)
                 dataExtend(value)
-                cells[cellIndex] = start
-                cells[cellIndex + 1] = size
-            cellIndex += 2
+                cells[cellIndex] = (start, size)
+            cellIndex += 1
 
     errorFields: list[tuple[int, bytes]] = []
     errorField = result.error_field
@@ -241,7 +237,7 @@ def _snapshotResult(result: Any) -> ResultSnapshot:
         columnCount=nfields,
         binaryTuples=result.binary_tuples,
         data=data,
-        cells=CellTable(cells),
+        cells=cells,
         paramTypes=tuple(result.param_type(i) for i in range(result.nparams)),
         commandStatus=result.command_status,
         commandTuples=result.command_tuples,

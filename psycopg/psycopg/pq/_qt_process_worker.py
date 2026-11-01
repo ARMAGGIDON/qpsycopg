@@ -9,7 +9,7 @@ from typing import Any
 
 from psycopg import pq
 
-from ._qt_process_protocol import CellTable, Operation, RemoteError, RemoteKind
+from ._qt_process_protocol import Operation, RemoteError, RemoteKind
 from ._qt_process_protocol import RemoteRef, Request, Response, ResultSnapshot
 from ._qt_process_protocol import recvFrame, sendFrame, sendToken
 
@@ -205,19 +205,14 @@ def _snapshotResult(result: Any) -> ResultSnapshot:
         for i in range(nfields)
     )
 
-    data = bytearray()
-    dataExtend = data.extend
     getValue = result.get_value
-    cells = CellTable([(-1, 0)] * (ntuples * nfields))
+    values: list[bytes | None] = [None] * (ntuples * nfields)
     cellIndex = 0
     for row in range(ntuples):
         for column in range(nfields):
             value = getValue(row, column)
             if value is not None:
-                start = len(data)
-                size = len(value)
-                dataExtend(value)
-                cells[cellIndex] = (start, size)
+                values[cellIndex] = bytes(value)
             cellIndex += 1
 
     errorFields: list[tuple[int, bytes]] = []
@@ -236,8 +231,7 @@ def _snapshotResult(result: Any) -> ResultSnapshot:
         rowCount=ntuples,
         columnCount=nfields,
         binaryTuples=result.binary_tuples,
-        data=data,
-        cells=cells,
+        values=tuple(values),
         paramTypes=tuple(result.param_type(i) for i in range(result.nparams)),
         commandStatus=result.command_status,
         commandTuples=result.command_tuples,

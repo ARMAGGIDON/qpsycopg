@@ -140,6 +140,13 @@ class Worker:
                                     break
                                 results.append(_snapshotResult(result))
                                 status = result.status
+                                if status == pq.ExecStatus.FATAL_ERROR:
+                                    # Preserve Psycopg's failure sequencing: the
+                                    # parent must observe the fatal result first,
+                                    # then let the next fetch notice the broken
+                                    # connection. Draining past FATAL_ERROR can
+                                    # manufacture extra results for one command.
+                                    break
                                 if status in _COPY_RESULTS or status == pq.ExecStatus.PIPELINE_SYNC:
                                     break
 

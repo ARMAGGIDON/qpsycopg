@@ -1,4 +1,5 @@
 /*.so
+/*.pyd
 _psycopg.c
 pq.c
 *.html

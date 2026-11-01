@@ -238,6 +238,9 @@ class _Transport:
         self._consumeCache: set[int] = set()
         self._notifyCache: dict[int, list[PGnotify | None]] = {}
         self._resultCache: dict[int, list[PGresult | None]] = {}
+        self._statusCache: int | None = None
+        self._transactionStatusCache: int | None = None
+        self._clientEncodingCache: bytes | None = None
 
     def _clearQueryCache(self, objectId: int) -> None:
         self._flushCache.pop(objectId, None)
@@ -245,6 +248,19 @@ class _Transport:
         self._consumeCache.discard(objectId)
         self._notifyCache.pop(objectId, None)
         self._resultCache.pop(objectId, None)
+
+    def _clearConnectionState(self) -> None:
+        self._statusCache = None
+        self._transactionStatusCache = None
+        self._clientEncodingCache = None
+
+    def _updateConnectionState(self, snapshot: SendSnapshot) -> None:
+        if snapshot.status is not None:
+            self._statusCache = snapshot.status
+        if snapshot.transactionStatus is not None:
+            self._transactionStatusCache = snapshot.transactionStatus
+        if snapshot.clientEncoding is not None:
+            self._clientEncodingCache = snapshot.clientEncoding
 
     def _clearCaches(self) -> None:
         self._flushCache.clear()
@@ -335,15 +351,18 @@ class _Transport:
 
             if response.error is not None:
                 self._clearQueryCache(objectId)
+                self._clearConnectionState()
                 _raiseRemote(response.error)
 
             value = response.value
             if isinstance(value, SendSnapshot):
+                self._updateConnectionState(value)
                 self._flushCache[objectId] = value.flush
                 self._busyCache[objectId] = value.busy
                 return _restore(value.value, self)
 
             if isinstance(value, ResultReadSnapshot):
+                self._clearConnectionState()
                 if value.following:
                     self._resultCache[objectId] = [
                         cast(PGresult | None, _restore(item, self))
@@ -353,6 +372,7 @@ class _Transport:
 
             if isinstance(value, WaitSnapshot):
                 if value.consumed:
+                    self._clearConnectionState()
                     self._consumeCache.add(objectId)
                     if value.busy is not None:
                         self._busyCache[objectId] = value.busy
@@ -370,6 +390,9 @@ class _Transport:
         if self.closed:
             return
         self.closed = True
+        self._statusCache = int(ConnStatus.BAD)
+        self._transactionStatusCache = None
+        self._clientEncodingCache = None
         self._clearCaches()
         try:
             self.sock.close()
@@ -388,6 +411,9 @@ class _Transport:
                 self.owner.kill()
             finally:
                 self.closed = True
+                self._statusCache = int(ConnStatus.BAD)
+                self._transactionStatusCache = None
+                self._clientEncodingCache = None
                 self._clearCaches()
                 self.sock.close()
                 self.owner.close()
@@ -509,6 +535,11 @@ class PGconn(_RemoteObject):
             self._handle = 0
         self._transport.close()
 
+    def connect_poll(self) -> int:
+        value = int(self._call("connect_poll"))
+        self._transport._statusCache = None
+        return value
+
     @property
     def info(self) -> list[ConninfoOption]:
         return self._get("info")
@@ -549,17 +580,30 @@ class PGconn(_RemoteObject):
     def status(self) -> int:
         if self._transport.closed:
             return int(ConnStatus.BAD)
+        if self._transport._statusCache is not None:
+            return self._transport._statusCache
         try:
-            return int(self._get("status"))
+            value = int(self._get("status"))
+            self._transport._statusCache = value
+            return value
         except e.OperationalError:
             return int(ConnStatus.BAD)
 
     @property
     def transaction_status(self) -> int:
-        return int(self._get("transaction_status"))
+        if self._transport._transactionStatusCache is not None:
+            return self._transport._transactionStatusCache
+        value = int(self._get("transaction_status"))
+        self._transport._transactionStatusCache = value
+        return value
 
     def parameter_status(self, name: bytes) -> bytes | None:
-        return self._call("parameter_status", name)
+        if name == b"client_encoding" and self._transport._clientEncodingCache is not None:
+            return self._transport._clientEncodingCache
+        value = self._call("parameter_status", name)
+        if name == b"client_encoding" and value is not None:
+            self._transport._clientEncodingCache = bytes(value)
+        return value
 
     @property
     def error_message(self) -> bytes:

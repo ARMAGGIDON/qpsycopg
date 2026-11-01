@@ -18,13 +18,13 @@ The performance requirement is not satisfied by a backend which is merely
 "fast enough" for a GUI. In particular, stable ``2x`` or ``3x`` regressions on
 normal query/fetch paths are considered unresolved.
 
-Current checkpoint: optimized14
--------------------------------
+Current full checkpoint: optimized14
+------------------------------------
 
-The latest full benchmark checkpoint is ``optimized14``:
+The latest full end-to-end benchmark checkpoint is ``optimized14``:
 
 * branch: ``feature/qt-process-pq``
-* code commit: ``efc8400e2505889f44d24e8c0b9822dba9964789``
+* runtime code commit: ``efc8400e2505889f44d24e8c0b9822dba9964789``
 * timestamp: ``2026-11-01T22:15:55+02:00``
 * worker implementation: ``binary``
 * repetitions: ``3``
@@ -67,6 +67,52 @@ ratios were approximately:
 The three qt-process bulk executions used ``100``, ``91`` and ``82`` remote
 requests respectively. ``fetchall()`` used zero remote requests.
 
+Latest phase-profile checkpoint
+-------------------------------
+
+After ``optimized14``, commit
+``4cef1bf702e4fc4f4c51f2c4a7e8388700a558d8`` added phase instrumentation to
+``tools/profile_qt_process.py`` and the qt-process transport/worker profiling
+hooks. This is a diagnostic checkpoint, not a replacement for the full
+``optimized14`` benchmark baseline.
+
+A representative 100k x 3 ``fetch`` profile with the canonical ``binary`` worker
+reported::
+
+    elapsed_seconds                         0.26264
+    remote_requests                              75
+    WAIT remote requests                         71
+    WAIT remote seconds                     0.11438
+
+    worker libpq_wait_seconds                0.06582
+    worker is_busy_seconds                   0.01541
+    worker consume_input_seconds             0.00580
+    worker snapshot_values_seconds           0.10893
+    worker snapshot_total_seconds            0.11042
+    worker response_pickle_seconds           0.00561
+    worker response_socket_send_seconds      0.00693
+
+    parent response_payload_recv_seconds     0.00614
+    parent response_unpickle_seconds         0.00628
+    parent restore_seconds                   0.00003
+
+The dominant directly measured worker CPU phase is therefore currently
+``_snapshotResult()`` value packing: roughly ``0.109 s`` for 300,000 cells. It
+is larger than the measured libpq wait time in that representative run and is
+orders of magnitude larger than pickle, socket transfer, unpickle or restore.
+
+``parent_response_header_wait_seconds`` was about ``0.224 s`` in the same run.
+Do **not** add that value to the worker phase timings: it is parent wall-clock
+waiting which overlaps worker libpq wait, snapshot construction, serialization
+and other worker activity. The profiler contains overlapping views of the same
+execution interval, not an additive critical-path accounting table.
+
+This phase profile changes the immediate optimisation priority. The first next
+runtime experiment should be a native worker-side ``PGresult -> PackedValues``
+packer which removes the Python per-cell loop in ``_snapshotResult()``. Only
+after measuring that change should WAIT/cancel architecture become the next
+performance target.
+
 Interpretation
 --------------
 
@@ -80,10 +126,16 @@ backend. A direct decoder microbenchmark measured:
   specialised-loader run;
 * packed metadata traversal alone: about ``0.00052 s`` for 300k cells.
 
-The remaining large-result bottleneck is now query completion/``execute()``.
-The current path still crosses the process boundary roughly 80--100 times for a
-100k-row query, mostly through ``WAIT`` operations, before the packed result is
-available to the parent.
+The remaining large-result bottleneck is before ``fetchall()``. Phase profiling
+has now separated two substantial components:
+
+* worker snapshot construction: about ``0.109 s`` in the representative run;
+* repeated WAIT activity: about ``0.114 s`` parent-side remote WAIT wall time,
+  with about ``0.066 s`` measured inside worker libpq waits.
+
+Because snapshot packing is a concrete CPU cost with no cancellation trade-off,
+it is the next target. Do not skip directly to more aggressive WAIT batching
+merely because the request count is visually large.
 
 PackedValues
 ------------
@@ -105,6 +157,11 @@ For the 100k x 3 benchmark the typical payload is approximately:
 This representation improved worker snapshot/pickle/transfer time and reduced
 combined parent+worker RSS. Do not revert to ``tuple[bytes | None, ...]`` merely
 to simplify the decoder.
+
+The current remaining snapshot cost is not evidence that ``PackedValues`` is
+wrong. The expensive part is constructing it in Python by visiting every native
+``PGresult`` cell. The intended next optimisation is to preserve the same wire
+layout while moving that packing loop into native code.
 
 Native row decoding
 -------------------
@@ -157,12 +214,45 @@ Observed trade-off during development:
 Do not tune ``_WAIT_DRAIN_GRACE`` based only on execute time. Every change must
 be benchmarked together with cancellation and Qt responsiveness.
 
+More importantly, do not tune WAIT at all as the immediate next experiment while
+snapshot packing still costs roughly ``0.1 s``. First remove or substantially
+reduce the Python snapshot loop, re-profile, and then decide whether WAIT is the
+new dominant remaining cost.
+
 The likely architectural solution for strict low cancellation latency is a
 separate authenticated control/cancel channel so cancellation does not contend
 with the main query-response transport lock.
 
-Experiments already rejected
-----------------------------
+Binary versus C worker
+----------------------
+
+The canonical performance baseline remains ``QPSYCOPG_WORKER_IMPL=binary``.
+Changing the worker to ``c`` is **not** the next performance optimisation.
+
+A diagnostic run with the local C worker, after making PostgreSQL DLLs visible
+to the child process, produced approximately::
+
+    binary worker: elapsed 0.26264 s, snapshot_values 0.10893 s, WAIT 0.11438 s
+    c worker:      elapsed 0.26758 s, snapshot_values 0.10630 s, WAIT 0.12271 s
+
+The difference is noise-level and did not address the snapshot bottleneck. Both
+worker implementations still execute qpsycopg's Python ``_snapshotResult()``
+loop. Do not spend optimisation time switching worker implementation unless a
+new profile demonstrates an implementation-specific cost.
+
+On Windows, a worker import failure for ``psycopg_c.pq`` can surface in the
+parent as a later ``listener.accept()`` timeout because the child dies before
+connecting back. Treat the worker's original import/DLL error as the root cause,
+not the parent timeout as a separate transport regression.
+
+Also note that ``psycopg_c`` is designed to be imported after ``psycopg``. A
+standalone ``from psycopg_c import pq`` diagnostic can create misleading import
+or circular-import behaviour in this source checkout. Test the pq implementation
+through ``PSYCOPG_IMPL=c`` followed by ``import psycopg.pq`` when such a test is
+actually required.
+
+Experiments already rejected or deprioritised
+---------------------------------------------
 
 Protocol 5 out-of-band pickle buffers
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -195,6 +285,14 @@ Do not replace the qt-process global adapter map with the native C adapter map.
 The pq generator layer must remain Python/remote-aware, and connection-sensitive
 native loaders may assume a native ``PGconn``.
 
+Worker implementation switching
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Do not switch ``binary -> c`` as a generic attempt to improve the current bulk
+execute time. The measured C-worker run did not improve the target path and can
+introduce Windows DLL/bootstrap noise which distracts from the measured qpsycopg
+costs.
+
 Benchmark tools
 ---------------
 
@@ -214,22 +312,41 @@ Benchmark tools
 
 ``tools/profile_qt_process.py``
     Low-level profiler for process-boundary requests, large execute behaviour,
-    result layout, and decoder phases. Use it to identify where time is spent;
-    do not treat its deliberately repeated decode phases as end-to-end timings.
+    parent/worker phase timings, result layout, and decoder phases. Use it to
+    identify where time is spent; do not treat overlapping parent/worker timing
+    fields as additive, and do not treat its deliberately repeated decode phases
+    as end-to-end timings.
 
-Next performance work
----------------------
+Next performance work -- follow in this order
+---------------------------------------------
 
-The next investigation should decompose the large-query ``execute`` path into:
+The large-query phase decomposition is now complete enough to choose the next
+experiment. Do **not** repeat that investigation or switch worker implementation
+before acting on its result.
 
-#. PostgreSQL/libpq wait time;
-#. worker ``consume_input`` / busy polling;
-#. result snapshot packing;
-#. pickle serialization;
-#. socket transfer;
-#. parent unpickle/restore.
+#. Implement/prototype a native worker-side packer which converts native
+   ``PGresult`` cell storage directly into the existing ``PackedValues`` layout
+   (data buffer + offsets + NULL bitmap), avoiding 300,000 Python
+   ``result.get_value()``/``bytearray`` iterations for the 100k x 3 benchmark.
+#. Preserve result metadata, NULL semantics, formats and current
+   ``ResultSnapshot``/``PackedValues`` wire compatibility. This is a packing
+   optimisation, not a semantic redesign.
+#. Run smoke before benchmarking. Pay particular attention to multiple result
+   sets, COPY result boundaries, SQL errors and fatal BAD-state handling because
+   snapshot/result ownership is correctness-sensitive.
+#. Re-run ``python tools/profile_qt_process.py fetch`` with the canonical
+   ``binary`` worker and compare ``snapshot_values_seconds``, total elapsed,
+   remote WAIT count/time, pickle/send/recv/unpickle and payload sizes against
+   the ``4cef1bf`` phase-profile checkpoint above.
+#. Only if snapshot packing is no longer a dominant cost should the next work
+   move to WAIT/cancel architecture. If WAIT is then dominant, prefer designing
+   a dedicated authenticated cancel/control path before increasing drain
+   duration aggressively.
+#. After a validated runtime improvement, run a full tagged benchmark
+   ``.\tools\test.ps1 all -Tag optimizedNN`` and update this document with the
+   new reproducible checkpoint.
 
-The immediate goal is to determine how much of the remaining execute overhead is
-caused by repeated WAIT round-trips versus snapshot/transport work. Only then
-choose between adaptive WAIT batching, a dedicated control/cancel channel, or a
-further snapshot/transport optimisation.
+Decision rule for future sessions: once profiling identifies a concrete dominant
+phase, optimise that phase first unless there is a correctness blocker. Do not
+branch into unrelated implementation/environment experiments merely because
+another backend option exists.

@@ -182,21 +182,19 @@ class Worker:
 
         raise ValueError(f"unsupported operation: {op!r}")
 
-    def _executePending(
-        self, obj: Any, timeout: float
-    ) -> tuple[str, tuple[ResultSnapshot, ...], tuple[Any, ...]]:
+    def _executePending(self, obj: Any, timeout: float) -> SendSnapshot:
         """Try to finish a normal query in one bounded worker round-trip."""
         if obj.pipeline_status != pq.PipelineStatus.OFF:
-            return "pending", (), ()
+            return SendSnapshot(("pending", (), ()), int(obj.flush()), int(obj.is_busy()))
 
         deadline = monotonic() + max(0.0, timeout)
         while obj.flush() != 0:
             remaining = deadline - monotonic()
             if remaining <= 0:
-                return "pending", (), ()
+                return SendSnapshot(("pending", (), ()), 1, int(obj.is_busy()))
             ready = self._wait(obj, READ | WRITE, remaining)
             if not ready:
-                return "pending", (), ()
+                return SendSnapshot(("pending", (), ()), 1, int(obj.is_busy()))
             if ready & READ:
                 obj.consume_input()
 
@@ -206,10 +204,12 @@ class Worker:
             while obj.is_busy():
                 remaining = deadline - monotonic()
                 if remaining <= 0:
-                    return ("partial" if results else "pending"), tuple(results), tuple(notifies)
+                    state = "partial" if results else "pending"
+                    return SendSnapshot((state, tuple(results), tuple(notifies)), 0, 1)
                 ready = self._wait(obj, READ, remaining)
                 if not ready:
-                    return ("partial" if results else "pending"), tuple(results), tuple(notifies)
+                    state = "partial" if results else "pending"
+                    return SendSnapshot((state, tuple(results), tuple(notifies)), 0, 1)
                 obj.consume_input()
 
             while notify := obj.notifies():
@@ -219,25 +219,28 @@ class Worker:
                 result = obj.get_result()
             except e.DatabaseError:
                 if any(item.status == int(pq.ExecStatus.FATAL_ERROR) for item in results):
-                    return "done", tuple(results), tuple(notifies)
+                    return SendSnapshot(("done", tuple(results), tuple(notifies)), 0, 0)
                 raise
 
             if result is None:
-                return "done", tuple(results), tuple(notifies)
+                return SendSnapshot(("done", tuple(results), tuple(notifies)), 0, 0)
 
             snapshot = _snapshotResult(result)
             results.append(snapshot)
             status = result.status
             if status in _COPY_RESULTS:
-                return "done", tuple(results), tuple(notifies)
+                # COPY switches libpq into a separate data-transfer state. Keep
+                # the parent-side flush/busy cache synchronized with that new
+                # state so copy_from() doesn't wait on stale pre-COPY values.
+                return SendSnapshot(("done", tuple(results), tuple(notifies)), 0, 0)
             if status == pq.ExecStatus.PIPELINE_SYNC:
                 if len(results) != 1:
                     raise AssertionError(results)
-                return "done", tuple(results), tuple(notifies)
+                return SendSnapshot(("done", tuple(results), tuple(notifies)), 0, 0)
             if status == pq.ExecStatus.FATAL_ERROR and obj.status == pq.ConnStatus.BAD:
                 # Upstream _fetch_many() would catch the next read error and
                 # stop because it has already received a fatal result.
-                return "done", tuple(results), tuple(notifies)
+                return SendSnapshot(("done", tuple(results), tuple(notifies)), 0, 0)
 
     def _setConnection(self, conn: Any) -> None:
         old = self.objects.get(1)

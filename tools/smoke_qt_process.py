@@ -34,6 +34,11 @@ def syncSmoke(dsn: str) -> None:
             assert row[1] == value[1]
             assert row[3] == value[3]
 
+        stage("packed NULL / empty semantics")
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT NULL::text, ''::text, NULL::bytea, ''::bytea")
+            assert cursor.fetchone() == (None, "", None, b"")
+
         stage("multiple result sets")
         with connection.cursor() as cursor:
             cursor.execute("SELECT 1; SELECT 2")

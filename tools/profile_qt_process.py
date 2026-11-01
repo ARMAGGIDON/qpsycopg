@@ -25,18 +25,18 @@ def main() -> int:
     parser.add_argument("--warmup", type=int, default=20)
     parser.add_argument("--calls", type=int, default=5)
     parser.add_argument("--rows", type=int, default=100_000)
-    args = parser.parse_args()
+    options = parser.parse_args()
 
     if psycopg.pq.__impl__ != "qt-process":
         raise SystemExit("set PSYCOPG_IMPL=qt-process")
 
-    with psycopg.connect(args.dsn) as connection:
+    with psycopg.connect(options.dsn) as connection:
         def selectOne() -> None:
             with connection.cursor() as cursor:
                 cursor.execute("SELECT 1")
                 assert cursor.fetchone() == (1,)
 
-        for _ in range(args.warmup):
+        for _ in range(options.warmup):
             selectOne()
 
         transport = connection.pgconn._transport
@@ -47,11 +47,11 @@ def main() -> int:
             operation: Any,
             objectId: int = 0,
             member: str = "",
-            callArgs: tuple[Any, ...] = (),
+            args: tuple[Any, ...] = (),
             kwargs: tuple[tuple[str, Any], ...] = (),
         ) -> Any:
             before = transport.requestId
-            value = original(operation, objectId, member, callArgs, kwargs)
+            value = original(operation, objectId, member, args, kwargs)
             after = transport.requestId
             events.append({
                 "operation": getattr(operation, "name", str(operation)),
@@ -64,9 +64,9 @@ def main() -> int:
         transport.request = traced
         try:
             start = time.perf_counter()
-            if args.mode == "select":
+            if options.mode == "select":
                 perCall: list[list[dict[str, Any]]] = []
-                for _ in range(args.calls):
+                for _ in range(options.calls):
                     offset = len(events)
                     selectOne()
                     perCall.append(events[offset:])
@@ -76,9 +76,9 @@ def main() -> int:
                     cursor.execute(
                         "SELECT i, i::numeric / 10, clock_timestamp() "
                         "FROM generate_series(1, %s) AS s(i)",
-                        (args.rows,),
+                        (options.rows,),
                     )
-                    assert cursor.pgresult is not None and cursor.pgresult.ntuples == args.rows
+                    assert cursor.pgresult is not None and cursor.pgresult.ntuples == options.rows
             elapsed = time.perf_counter() - start
         finally:
             transport.request = original
@@ -92,20 +92,20 @@ def main() -> int:
         for event in events if not event["remote"]
     )
     result: dict[str, Any] = {
-        "mode": args.mode,
+        "mode": options.mode,
         "elapsed_seconds": elapsed,
         "remote_requests": sum(remoteCounts.values()),
         "remote_counts": dict(remoteCounts),
         "cached_counts": dict(cachedCounts),
     }
-    if args.mode == "select":
+    if options.mode == "select":
         result.update({
-            "calls": args.calls,
-            "remote_per_call": sum(remoteCounts.values()) / args.calls,
+            "calls": options.calls,
+            "remote_per_call": sum(remoteCounts.values()) / options.calls,
             "first_call": perCall[0] if perCall else [],
         })
     else:
-        result.update({"rows": args.rows, "first_events": events[:20]})
+        result.update({"rows": options.rows, "first_events": events[:20]})
 
     print(json.dumps(result, indent=2))
     return 0

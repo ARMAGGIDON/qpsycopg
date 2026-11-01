@@ -16,6 +16,56 @@ def qpsycopg_load_rows_sequence(
     return _load_sequence_rows(tx, values, row0, row1, make_row)
 
 
+def qpsycopg_scan_packed(object values, int row0, int row1, int nfields):
+    """Scan packed cell metadata without decoding values."""
+    cdef object data = values.data
+    cdef object offsets = values.offsets
+    cdef object nulls = values.nulls
+    cdef Py_ssize_t first_cell = row0 * nfields
+    cdef Py_ssize_t last_cell = row1 * nfields
+    cdef Py_ssize_t required_offsets = (last_cell + 1) * sizeof(uint64_t)
+    cdef Py_ssize_t required_nulls = (last_cell + 7) // 8
+    cdef Py_ssize_t data_size
+    cdef Py_ssize_t offsets_size
+    cdef Py_ssize_t nulls_size
+    cdef Py_ssize_t index
+    cdef Py_ssize_t nonnull = 0
+    cdef char *data_ptr
+    cdef char *offsets_ptr
+    cdef char *nulls_raw
+    cdef unsigned char *nulls_ptr
+    cdef uint64_t start_offset
+    cdef uint64_t end_offset
+    cdef uint64_t total_bytes = 0
+
+    if row0 < 0 or row1 < row0 or nfields < 0:
+        raise e.InterfaceError(f"invalid packed scan: rows {row0}..{row1}, fields {nfields}")
+
+    _buffer_as_string_and_size(data, &data_ptr, &data_size)
+    _buffer_as_string_and_size(offsets, &offsets_ptr, &offsets_size)
+    _buffer_as_string_and_size(nulls, &nulls_raw, &nulls_size)
+    nulls_ptr = <unsigned char *>nulls_raw
+
+    if required_offsets > offsets_size:
+        raise e.InterfaceError(
+            f"scan requires {required_offsets} offset bytes, got {offsets_size}"
+        )
+    if required_nulls > nulls_size:
+        raise e.InterfaceError(f"scan requires {required_nulls} null bytes, got {nulls_size}")
+
+    for index in range(first_cell, last_cell):
+        if nulls_ptr[index >> 3] & (1 << (index & 7)):
+            continue
+        memcpy(&start_offset, offsets_ptr + index * sizeof(uint64_t), sizeof(uint64_t))
+        memcpy(&end_offset, offsets_ptr + (index + 1) * sizeof(uint64_t), sizeof(uint64_t))
+        if end_offset < start_offset or end_offset > <uint64_t>data_size:
+            raise e.InterfaceError("invalid packed result offsets")
+        total_bytes += end_offset - start_offset
+        nonnull += 1
+
+    return total_bytes, nonnull
+
+
 cdef object _load_packed_rows(
     Transformer tx,
     object values,
@@ -103,9 +153,7 @@ cdef object _load_packed_rows(
             PyTuple_SET_ITEM(record, col, pyval)
 
         if make_row is not tuple:
-            record = PyObject_CallFunctionObjArgs(
-                make_row, <PyObject *>record, NULL
-            )
+            record = PyObject_CallFunctionObjArgs(make_row, <PyObject *>record, NULL)
 
         Py_INCREF(record)
         PyList_SET_ITEM(records, row - row0, record)
@@ -139,9 +187,7 @@ cdef object _load_sequence_rows(
     if row0 < 0 or row1 < row0:
         raise e.InterfaceError(f"invalid row range: {row0}..{row1}")
     if required > nvalues:
-        raise e.InterfaceError(
-            f"row range requires {required} values, got {nvalues}"
-        )
+        raise e.InterfaceError(f"row range requires {required} values, got {nvalues}")
 
     records = PyList_New(row1 - row0)
     for row in range(row0, row1):
@@ -165,9 +211,7 @@ cdef object _load_sequence_rows(
             PyTuple_SET_ITEM(record, col, pyval)
 
         if make_row is not tuple:
-            record = PyObject_CallFunctionObjArgs(
-                make_row, <PyObject *>record, NULL
-            )
+            record = PyObject_CallFunctionObjArgs(make_row, <PyObject *>record, NULL)
 
         Py_INCREF(record)
         PyList_SET_ITEM(records, row - row0, record)

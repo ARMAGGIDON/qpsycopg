@@ -103,7 +103,7 @@ try {
         "bench" { Bench }
         "qt" { QtBench }
         "gui" { GuiBlock }
-        "all" { Smoke; Bench; QtBench }
+        "all" { Smoke; Bench; QtBench; GuiBlock }
     }
     Save-Results
 } finally {

@@ -36,6 +36,8 @@ def main() -> int:
         raise SystemExit("set PSYCOPG_IMPL=qt-process")
 
     decodeTimings: dict[str, float] = {}
+    decoder: str | None = None
+    bulkDecoder = False
     with psycopg.connect(options.dsn) as connection:
         def selectOne() -> None:
             with connection.cursor() as cursor:
@@ -82,6 +84,8 @@ def main() -> int:
                     cursor.execute(_QUERY, (options.rows,))
                     res = cursor.pgresult
                     assert res is not None and res.ntuples == options.rows
+                    decoder = getattr(cursor._tx, "__qpsycopg_decoder__", None)
+                    bulkDecoder = getattr(cursor._tx, "_bulkLoadRows", None) is not None
 
                     if options.mode == "decode":
                         values = res._values
@@ -140,7 +144,12 @@ def main() -> int:
             "first_call": perCall[0] if perCall else [],
         })
     else:
-        result.update({"rows": options.rows, "first_events": events[:20]})
+        result.update({
+            "rows": options.rows,
+            "decoder": decoder,
+            "bulk_decoder": bulkDecoder,
+            "first_events": events[:20],
+        })
         result.update(decodeTimings)
 
     print(json.dumps(result, indent=2))

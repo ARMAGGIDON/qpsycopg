@@ -13,6 +13,7 @@ from typing import Any
 from psycopg import errors as e
 from psycopg import pq
 
+from ._qt_process_cancel import CONTROL_OPEN, CancelControlServer
 from ._qt_process_protocol import Operation, PackedValues, RemoteError, RemoteKind
 from ._qt_process_protocol import RemoteRef, Request, Response, ResultSnapshot
 from ._qt_process_protocol import ResultReadSnapshot, SendSnapshot, WaitSnapshot
@@ -53,6 +54,7 @@ class Worker:
         self.objects: dict[int, Any] = {}
         self.nextObjectId = 2
         self.notices: list[ResultSnapshot] = []
+        self.cancelControl: CancelControlServer | None = None
         self.profile: dict[str, float | int] | None = {} if os.environ.get("QPSYCOPG_PROFILE_PHASES") else None
 
     def _profile(self, key: str, value: float | int) -> None:
@@ -132,6 +134,11 @@ class Worker:
         if op == Operation.CALL:
             if request.objectId == 1 and request.member == _PROFILE_TAKE:
                 return self._takeProfile()
+
+            if request.objectId == 1 and request.member == CONTROL_OPEN:
+                if self.cancelControl is None:
+                    self.cancelControl = CancelControlServer(obj)
+                return self.cancelControl.info
 
             if request.objectId == 1 and request.member == _FAST_CANCEL:
                 return self._cancelPending(obj, float(request.args[0]))

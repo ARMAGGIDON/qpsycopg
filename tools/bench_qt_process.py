@@ -63,6 +63,15 @@ def processRss() -> int | None:
     return int(rss)
 
 
+def remoteRequests(connection: Any) -> int | None:
+    transport = getattr(connection.pgconn, "_transport", None)
+    return getattr(transport, "requestId", None)
+
+
+def remoteDelta(before: int | None, after: int | None) -> int | None:
+    return None if before is None or after is None else after - before
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("dsn")
@@ -93,9 +102,20 @@ def main() -> int:
                 cursor.execute("SELECT 1")
                 assert cursor.fetchone() == (1,)
 
-        result["select_1"] = summary(timed(selectOne, args.iterations))
+        requestsBefore = remoteRequests(connection)
+        selectSamples = timed(selectOne, args.iterations)
+        requestsAfter = remoteRequests(connection)
+        result["select_1"] = summary(selectSamples)
+        if (requestCount := remoteDelta(requestsBefore, requestsAfter)) is not None:
+            result["select_1"].update(
+                {
+                    "remote_requests": requestCount,
+                    "remote_requests_per_call": requestCount / args.iterations,
+                }
+            )
 
         rssBefore = processRss()
+        requestsBefore = remoteRequests(connection)
         start = time.perf_counter()
         with connection.cursor() as cursor:
             executeStart = time.perf_counter()
@@ -105,9 +125,11 @@ def main() -> int:
                 (args.rows,),
             )
             executeElapsed = time.perf_counter() - executeStart
+            requestsAfterExecute = remoteRequests(connection)
             fetchStart = time.perf_counter()
             rows = cursor.fetchall()
             fetchallElapsed = time.perf_counter() - fetchStart
+            requestsAfterFetch = remoteRequests(connection)
         elapsed = time.perf_counter() - start
         rssAfter = processRss()
         result["fetch"] = {
@@ -117,6 +139,10 @@ def main() -> int:
             "rows": len(rows),
             "rows_per_second": len(rows) / max(elapsed, 1e-9),
         }
+        if (count := remoteDelta(requestsBefore, requestsAfterExecute)) is not None:
+            result["fetch"]["execute_remote_requests"] = count
+        if (count := remoteDelta(requestsAfterExecute, requestsAfterFetch)) is not None:
+            result["fetch"]["fetchall_remote_requests"] = count
         if rssBefore is not None and rssAfter is not None:
             result["fetch"].update(
                 {
@@ -139,13 +165,17 @@ def main() -> int:
                 assert row is not None
                 return int(row[0])
 
+        requestsBefore = remoteRequests(connection)
         start = time.perf_counter()
         with ThreadPoolExecutor(max_workers=args.threads) as pool:
             values = list(pool.map(threaded, range(args.threads)))
+        requestsAfter = remoteRequests(connection)
         result["threads"] = {
             "seconds": time.perf_counter() - start,
             "values": values,
         }
+        if (requestCount := remoteDelta(requestsBefore, requestsAfter)) is not None:
+            result["threads"]["remote_requests"] = requestCount
 
         # A normal PostgreSQL error must not kill the worker/session.
         try:
@@ -172,11 +202,13 @@ def main() -> int:
         thread = threading.Thread(target=sleepingQuery)
         thread.start()
         time.sleep(0.5)
+        requestsBefore = remoteRequests(connection)
         start = time.perf_counter()
         connection.cancel_safe(timeout=5.0)
         cancelReturned = time.perf_counter()
         thread.join(10.0)
         finished = time.perf_counter()
+        requestsAfter = remoteRequests(connection)
         result["cancel"] = {
             "seconds": finished - start,
             "call_seconds": cancelReturned - start,
@@ -184,6 +216,8 @@ def main() -> int:
             "exception": cancelled[0] if cancelled else None,
             "thread_alive": thread.is_alive(),
         }
+        if (requestCount := remoteDelta(requestsBefore, requestsAfter)) is not None:
+            result["cancel"]["remote_requests"] = requestCount
 
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0

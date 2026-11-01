@@ -9,6 +9,8 @@ param(
     [int] $Iterations = 500,
     [int] $Rows = 100000,
     [int] $Threads = 8,
+    [ValidateRange(1, 20)]
+    [int] $Repeat = 3,
     [string] $Tag = "",
     [switch] $KeepResults
 )
@@ -37,7 +39,7 @@ function Set-Backend([string] $impl, [string] $worker = "") {
 }
 
 function Invoke-Python([string[]] $arguments, [string] $outFile = "") {
-    if ($outFile) { & $python @arguments | Tee-Object -FilePath $outFile }
+    if ($outFile) { & $python @arguments > $outFile }
     else { & $python @arguments }
     if ($LASTEXITCODE -ne 0) { throw "Python exited with code $LASTEXITCODE" }
 }
@@ -46,7 +48,20 @@ function Result([string] $name, [string] $extension = "json") {
     return Join-Path $runDir "$name.$extension"
 }
 
+function Invoke-BackendTest(
+    [string] $label,
+    [string] $impl,
+    [string[]] $arguments,
+    [string] $outFile
+) {
+    Write-Host $label
+    if ($impl -eq "qt-process") { Set-Backend $impl $Worker }
+    else { Set-Backend $impl }
+    Invoke-Python $arguments $outFile
+}
+
 function Smoke {
+    Write-Host "[smoke] qt-process/$Worker"
     Set-Backend "qt-process" $Worker
     Invoke-Python @((Join-Path $repoRoot "tools\smoke_qt_process.py"), $Dsn) (Result "smoke" "log")
 }
@@ -57,26 +72,69 @@ function Bench {
         "--iterations", $Iterations, "--rows", $Rows, "--threads", $Threads
     )
 
-    Set-Backend $Worker
-    Invoke-Python $args (Result "vanilla")
-
-    Set-Backend "qt-process" $Worker
-    Invoke-Python $args (Result "qpsycopg")
+    for ($i = 1; $i -le $Repeat; $i++) {
+        $n = "{0:D2}" -f $i
+        $vanilla = { Invoke-BackendTest "[$i/$Repeat] vanilla bench" $Worker $args (Result "bench-$n-vanilla") }
+        $qt = { Invoke-BackendTest "[$i/$Repeat] qpsycopg bench" "qt-process" $args (Result "bench-$n-qpsycopg") }
+        if ($i % 2) { & $vanilla; & $qt } else { & $qt; & $vanilla }
+    }
 }
 
 function QtBench {
-    $script = Join-Path $repoRoot "tools\bench_qt_responsiveness.py"
+    $args = @((Join-Path $repoRoot "tools\bench_qt_responsiveness.py"), $Dsn, "--caller", "thread")
 
-    Set-Backend $Worker
-    Invoke-Python @($script, $Dsn, "--caller", "thread") (Result "vanilla-qt")
-
-    Set-Backend "qt-process" $Worker
-    Invoke-Python @($script, $Dsn, "--caller", "thread") (Result "qpsycopg-qt")
+    for ($i = 1; $i -le $Repeat; $i++) {
+        $n = "{0:D2}" -f $i
+        $vanilla = { Invoke-BackendTest "[$i/$Repeat] vanilla Qt" $Worker $args (Result "qt-$n-vanilla") }
+        $qt = { Invoke-BackendTest "[$i/$Repeat] qpsycopg Qt" "qt-process" $args (Result "qt-$n-qpsycopg") }
+        if ($i % 2) { & $vanilla; & $qt } else { & $qt; & $vanilla }
+    }
 }
 
 function GuiBlock {
+    Write-Host "[gui] main-thread blocking control"
     Set-Backend "qt-process" $Worker
-    Invoke-Python @((Join-Path $repoRoot "tools\bench_qt_responsiveness.py"), $Dsn, "--caller", "main") (Result "guiBlocks")
+    Invoke-Python @(
+        (Join-Path $repoRoot "tools\bench_qt_responsiveness.py"), $Dsn, "--caller", "main"
+    ) (Result "guiBlocks")
+}
+
+function Median([double[]] $values) {
+    if (-not $values.Count) { return $null }
+    $sorted = @($values | Sort-Object)
+    $middle = [int] [math]::Floor($sorted.Count / 2)
+    if ($sorted.Count % 2) { return [double] $sorted[$middle] }
+    return ([double] $sorted[$middle - 1] + [double] $sorted[$middle]) / 2
+}
+
+function BenchSummary([string] $backend) {
+    $runs = @(Get-ChildItem $runDir -Filter "bench-*-$backend.json" | Sort-Object Name |
+        ForEach-Object { Get-Content $_.FullName -Raw | ConvertFrom-Json })
+    if (-not $runs.Count) { return $null }
+
+    return [ordered]@{
+        runs = $runs.Count
+        connect_median_ms = Median @($runs | ForEach-Object { $_.connect.median_ms })
+        select_1_median_ms = Median @($runs | ForEach-Object { $_.select_1.median_ms })
+        select_1_p95_ms = Median @($runs | ForEach-Object { $_.select_1.p95_ms })
+        fetch_seconds = Median @($runs | ForEach-Object { $_.fetch.seconds })
+        fetch_rows_per_second = Median @($runs | ForEach-Object { $_.fetch.rows_per_second })
+        threads_seconds = Median @($runs | ForEach-Object { $_.threads.seconds })
+        cancel_call_seconds = Median @($runs | ForEach-Object { $_.cancel.call_seconds })
+    }
+}
+
+function QtSummary([string] $backend) {
+    $runs = @(Get-ChildItem $runDir -Filter "qt-*-$backend.json" | Sort-Object Name |
+        ForEach-Object { Get-Content $_.FullName -Raw | ConvertFrom-Json })
+    if (-not $runs.Count) { return $null }
+
+    return [ordered]@{
+        runs = $runs.Count
+        timer_median_ms = Median @($runs | ForEach-Object { $_.timer.median_ms })
+        timer_p95_ms = Median @($runs | ForEach-Object { $_.timer.p95_ms })
+        max_stall_ms = Median @($runs | ForEach-Object { $_.timer.max_stall_ms })
+    }
 }
 
 function Save-Results {
@@ -88,10 +146,20 @@ function Save-Results {
         iterations = $Iterations
         rows = $Rows
         threads = $Threads
+        repeat = $Repeat
         branch = (& git -C $repoRoot branch --show-current).Trim()
         commit = (& git -C $repoRoot rev-parse HEAD).Trim()
     }
     $manifest | ConvertTo-Json | Set-Content (Result "manifest") -Encoding utf8
+
+    $summary = [ordered]@{
+        vanilla = BenchSummary "vanilla"
+        qpsycopg = BenchSummary "qpsycopg"
+        vanilla_qt = QtSummary "vanilla"
+        qpsycopg_qt = QtSummary "qpsycopg"
+    }
+    $summary | ConvertTo-Json -Depth 4 | Set-Content (Result "summary") -Encoding utf8
+
     Compress-Archive -Path (Join-Path $runDir "*") -DestinationPath $archive -CompressionLevel Optimal -Force
     if (-not $KeepResults) { Remove-Item $runDir -Recurse -Force }
     Write-Host "Results archive: $archive"

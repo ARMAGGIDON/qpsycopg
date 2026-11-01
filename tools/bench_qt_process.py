@@ -23,6 +23,7 @@ from decimal import Decimal
 from typing import Any, Callable
 
 import psycopg
+from psycopg._transformer import Transformer
 
 
 def timed(call: Callable[[], Any], count: int) -> list[float]:
@@ -73,6 +74,10 @@ def main() -> int:
     result: dict[str, Any] = {
         "impl": psycopg.pq.__impl__,
         "worker_impl": os.environ.get("QPSYCOPG_WORKER_IMPL"),
+        "transformer": {
+            "class": f"{Transformer.__module__}.{Transformer.__qualname__}",
+            "decoder": getattr(Transformer, "__qpsycopg_decoder__", None),
+        },
         "iterations": args.iterations,
         "rows": args.rows,
         "threads": args.threads,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import warnings
-from time import monotonic
+from time import monotonic, sleep
 from typing import cast
 
 from . import errors as e
@@ -58,6 +58,12 @@ def _waitRemote(
         while True:
             wait = interval if deadline is None else _waitTime(interval, deadline)
             ready = waitRemote(handle, int(state), wait)
+            if not ready:
+                # A long-running query repeatedly times out on the shared
+                # transport WAIT. Yield here so a concurrent cancel_safe()
+                # waiter gets a chance to acquire the transport lock instead
+                # of losing it to this same query thread over and over.
+                sleep(0)
             state = gen.send(ready)
             if deadline is not None and monotonic() >= deadline:
                 raise e._WaitTimeout("wait timeout expired")
@@ -109,6 +115,8 @@ async def _waitRemoteAsync(
         while True:
             wait = interval if deadline is None else _waitTime(interval, deadline)
             ready = await asyncio.to_thread(waitRemote, handle, int(state), wait)
+            if not ready:
+                await asyncio.sleep(0)
             state = gen.send(ready)
             if deadline is not None and monotonic() >= deadline:
                 raise e._WaitTimeout("wait timeout expired")

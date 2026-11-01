@@ -45,7 +45,7 @@ _COPY_RESULTS = {
 _FAST_EXECUTE = "qpsycopg_execute_pending"
 _FAST_CANCEL = "qpsycopg_cancel"
 _PROFILE_TAKE = "qpsycopg_profile_take"
-_WAIT_DRAIN_GRACE = 0.001
+_WAIT_DRAIN_GRACE = 0.010
 
 
 class Worker:

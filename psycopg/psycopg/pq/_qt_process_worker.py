@@ -60,12 +60,12 @@ class Worker:
         if self.profile is not None:
             self.profile[key] = self.profile.get(key, 0) + value
 
-    def _timed(self, key: str, function: Any, *args: Any) -> Any:
+    def _timed(self, key: str, function: Any, *args: Any, **kwargs: Any) -> Any:
         if self.profile is None:
-            return function(*args)
+            return function(*args, **kwargs)
         start = perf_counter()
         try:
-            return function(*args)
+            return function(*args, **kwargs)
         finally:
             self._profile(f"{key}_seconds", perf_counter() - start)
             self._profile(f"{key}_calls", 1)
@@ -163,7 +163,9 @@ class Worker:
                         sendMember = request.args[1]
                         if sendMember not in _SEND_MEMBERS:
                             raise ValueError(f"unsupported deferred send: {sendMember!r}")
-                        self._timed("deferred_send", getattr(obj, sendMember), *request.args[2], **dict(request.args[3]))
+                        self._timed(
+                            "deferred_send", getattr(obj, sendMember), *request.args[2], **dict(request.args[3])
+                        )
                     return self._executePending(obj, timeout)
                 finally:
                     if self.profile is not None:

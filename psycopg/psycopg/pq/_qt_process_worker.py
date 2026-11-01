@@ -5,8 +5,10 @@ from __future__ import annotations
 import select
 import socket
 import sys
+from time import monotonic
 from typing import Any
 
+from psycopg import errors as e
 from psycopg import pq
 
 from ._qt_process_protocol import Operation, RemoteError, RemoteKind
@@ -31,6 +33,12 @@ _SUCCESS_RESULTS = {
     pq.ExecStatus.COMMAND_OK,
     pq.ExecStatus.TUPLES_OK,
 }
+_COPY_RESULTS = {
+    pq.ExecStatus.COPY_IN,
+    pq.ExecStatus.COPY_OUT,
+    pq.ExecStatus.COPY_BOTH,
+}
+_FAST_EXECUTE = "qpsycopg_execute_pending"
 
 
 class Worker:
@@ -104,6 +112,9 @@ class Worker:
         obj = self.objects[request.objectId]
 
         if op == Operation.CALL:
+            if request.objectId == 1 and request.member == _FAST_EXECUTE:
+                return self._executePending(obj, float(request.args[0]))
+
             value = getattr(obj, request.member)(*request.args, **dict(request.kwargs))
             if request.objectId == 1 and request.member == "get_result" and value is not None:
                 snapshot = _snapshotResult(value)
@@ -170,6 +181,63 @@ class Worker:
             return self._normalize(getattr(escaping, request.member)(*request.args))
 
         raise ValueError(f"unsupported operation: {op!r}")
+
+    def _executePending(
+        self, obj: Any, timeout: float
+    ) -> tuple[str, tuple[ResultSnapshot, ...], tuple[Any, ...]]:
+        """Try to finish a normal query in one bounded worker round-trip."""
+        if obj.pipeline_status != pq.PipelineStatus.OFF:
+            return "pending", (), ()
+
+        deadline = monotonic() + max(0.0, timeout)
+        while obj.flush() != 0:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                return "pending", (), ()
+            ready = self._wait(obj, READ | WRITE, remaining)
+            if not ready:
+                return "pending", (), ()
+            if ready & READ:
+                obj.consume_input()
+
+        results: list[ResultSnapshot] = []
+        notifies: list[Any] = []
+        while True:
+            while obj.is_busy():
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    return ("partial" if results else "pending"), tuple(results), tuple(notifies)
+                ready = self._wait(obj, READ, remaining)
+                if not ready:
+                    return ("partial" if results else "pending"), tuple(results), tuple(notifies)
+                obj.consume_input()
+
+            while notify := obj.notifies():
+                notifies.append(notify)
+
+            try:
+                result = obj.get_result()
+            except e.DatabaseError:
+                if any(item.status == int(pq.ExecStatus.FATAL_ERROR) for item in results):
+                    return "done", tuple(results), tuple(notifies)
+                raise
+
+            if result is None:
+                return "done", tuple(results), tuple(notifies)
+
+            snapshot = _snapshotResult(result)
+            results.append(snapshot)
+            status = result.status
+            if status in _COPY_RESULTS:
+                return "done", tuple(results), tuple(notifies)
+            if status == pq.ExecStatus.PIPELINE_SYNC:
+                if len(results) != 1:
+                    raise AssertionError(results)
+                return "done", tuple(results), tuple(notifies)
+            if status == pq.ExecStatus.FATAL_ERROR and obj.status == pq.ConnStatus.BAD:
+                # Upstream _fetch_many() would catch the next read error and
+                # stop because it has already received a fatal result.
+                return "done", tuple(results), tuple(notifies)
 
     def _setConnection(self, conn: Any) -> None:
         old = self.objects.get(1)

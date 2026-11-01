@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import errors as e
-from ._qt_process_protocol import FastExecuteRequest, FastExecuteResponse, Operation, SendSnapshot
+from ._qt_process_protocol import FastExecuteRequest, Operation, Response, SendSnapshot
 from .pq_qt_process import PGresult, _SEND_MEMBERS, _Transport, _raiseRemote, _restore, _wire
 from . import pq_qt_process as _pq
 
@@ -43,14 +43,14 @@ def _fastExecute(
     notices = ()
     if isinstance(response, SendSnapshot):
         value = response
-    elif isinstance(response, FastExecuteResponse):
+    elif isinstance(response, Response) and response.requestId == 0:
         notices = response.notices
         if response.error is not None:
             self._clearQueryCache(1)
             self._clearConnectionState()
             _raiseRemote(response.error)
         value = response.value
-        if value is None:
+        if not isinstance(value, SendSnapshot):
             self._markBroken()
             raise e.InternalError("missing fast execute response value")
     else:

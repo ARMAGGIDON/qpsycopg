@@ -28,6 +28,7 @@ from .connection_async import AsyncConnection as _AsyncConnection
 from .pq.pq_qt_process import PGconn as QtPGconn
 from .pq.pq_qt_process import waitRemote
 
+_REMOTE_WAIT_INTERVAL = 0.01
 _CANCEL_WAIT_INTERVAL = 0.01
 
 
@@ -49,7 +50,7 @@ def _waitProcessOwner(pgconn: object) -> None:
 def _waitRemote(
     gen: PQGen[RV],
     handle: int,
-    interval: float = _WAIT_INTERVAL,
+    interval: float = _REMOTE_WAIT_INTERVAL,
     timeout: float | None = None,
 ) -> RV:
     deadline = monotonic() + timeout if timeout is not None else None
@@ -59,10 +60,8 @@ def _waitRemote(
             wait = interval if deadline is None else _waitTime(interval, deadline)
             ready = waitRemote(handle, int(state), wait)
             if not ready:
-                # A long-running query repeatedly times out on the shared
-                # transport WAIT. Yield here so a concurrent cancel_safe()
-                # waiter gets a chance to acquire the transport lock instead
-                # of losing it to this same query thread over and over.
+                # Keep remote waits short enough that a concurrent cancel_safe()
+                # caller doesn't sit behind a long transport-lock hold.
                 sleep(0)
             state = gen.send(ready)
             if deadline is not None and monotonic() >= deadline:
@@ -91,10 +90,9 @@ def _waitRemoteConn(
 
 def _cancelRemote(connection: BaseConnection[Row], timeout: float) -> None:
     transport = cast(QtPGconn, connection.pgconn)._transport
-    # Query execution uses 100 ms waits to avoid busy polling. Cancellation is
-    # latency-sensitive, so poll the dedicated cancel socket more aggressively.
-    # Hold the re-entrant transport lock for the full sequence to prevent the
-    # query thread from starving cancel_conn between polls.
+    # Query and cancellation waits use a short quantum. Hold the re-entrant
+    # transport lock for the cancellation sequence so the query thread cannot
+    # starve cancel_conn between its own polls.
     with transport.lock:
         _waitRemoteConn(
             connection._cancel_gen(),
@@ -106,7 +104,7 @@ def _cancelRemote(connection: BaseConnection[Row], timeout: float) -> None:
 async def _waitRemoteAsync(
     gen: PQGen[RV],
     handle: int,
-    interval: float = _WAIT_INTERVAL,
+    interval: float = _REMOTE_WAIT_INTERVAL,
     timeout: float | None = None,
 ) -> RV:
     deadline = monotonic() + timeout if timeout is not None else None
@@ -242,7 +240,7 @@ class Connection(_Connection[Row]):
     def wait(
         self,
         gen: PQGen[RV],
-        interval: float = _WAIT_INTERVAL,
+        interval: float = _REMOTE_WAIT_INTERVAL,
         timeout: float | None = None,
     ) -> RV:
         try:
@@ -373,7 +371,7 @@ class AsyncConnection(_AsyncConnection[Row]):
     async def wait(
         self,
         gen: PQGen[RV],
-        interval: float = _WAIT_INTERVAL,
+        interval: float = _REMOTE_WAIT_INTERVAL,
         timeout: float | None = None,
     ) -> RV:
         try:

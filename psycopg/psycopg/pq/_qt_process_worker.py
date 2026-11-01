@@ -43,6 +43,7 @@ _COPY_RESULTS = {
     pq.ExecStatus.COPY_BOTH,
 }
 _FAST_EXECUTE = "qpsycopg_execute_pending"
+_FAST_CANCEL = "qpsycopg_cancel"
 _PROFILE_TAKE = "qpsycopg_profile_take"
 _WAIT_DRAIN_GRACE = 0.010
 
@@ -59,16 +60,6 @@ class Worker:
     def _profile(self, key: str, value: float | int) -> None:
         if self.profile is not None:
             self.profile[key] = self.profile.get(key, 0) + value
-
-    def _timed(self, key: str, function: Any, *args: Any, **kwargs: Any) -> Any:
-        if self.profile is None:
-            return function(*args, **kwargs)
-        start = perf_counter()
-        try:
-            return function(*args, **kwargs)
-        finally:
-            self._profile(f"{key}_seconds", perf_counter() - start)
-            self._profile(f"{key}_calls", 1)
 
     def _takeProfile(self) -> dict[str, float | int]:
         if self.profile is None:
@@ -112,19 +103,13 @@ class Worker:
                 return
 
     def _connectionBroken(self) -> bool:
-        start = perf_counter() if self.profile is not None else 0.0
+        conn = self.objects.get(1)
+        if conn is None:
+            return False
         try:
-            conn = self.objects.get(1)
-            if conn is None:
-                return False
-            try:
-                return bool(conn.status == pq.ConnStatus.BAD)
-            except Exception:
-                return True
-        finally:
-            if self.profile is not None:
-                self._profile("connection_broken_seconds", perf_counter() - start)
-                self._profile("connection_broken_calls", 1)
+            return bool(conn.status == pq.ConnStatus.BAD)
+        except Exception:
+            return True
 
     def _handle(self, request: Request) -> Any:
         op = request.operation
@@ -155,22 +140,17 @@ class Worker:
                     self.cancelControl = CancelControlServer(obj)
                 return self.cancelControl.info
 
+            if request.objectId == 1 and request.member == _FAST_CANCEL:
+                return self._cancelPending(obj, float(request.args[0]))
+
             if request.objectId == 1 and request.member == _FAST_EXECUTE:
-                fastStart = perf_counter() if self.profile is not None else 0.0
-                try:
-                    timeout = float(request.args[0])
-                    if len(request.args) > 1:
-                        sendMember = request.args[1]
-                        if sendMember not in _SEND_MEMBERS:
-                            raise ValueError(f"unsupported deferred send: {sendMember!r}")
-                        self._timed(
-                            "deferred_send", getattr(obj, sendMember), *request.args[2], **dict(request.args[3])
-                        )
-                    return self._executePending(obj, timeout)
-                finally:
-                    if self.profile is not None:
-                        self._profile("fast_execute_seconds", perf_counter() - fastStart)
-                        self._profile("fast_execute_calls", 1)
+                timeout = float(request.args[0])
+                if len(request.args) > 1:
+                    sendMember = request.args[1]
+                    if sendMember not in _SEND_MEMBERS:
+                        raise ValueError(f"unsupported deferred send: {sendMember!r}")
+                    getattr(obj, sendMember)(*request.args[2], **dict(request.args[3]))
+                return self._executePending(obj, timeout)
 
             value = getattr(obj, request.member)(*request.args, **dict(request.kwargs))
             if request.objectId == 1 and request.member == "get_result" and value is not None:
@@ -222,6 +202,34 @@ class Worker:
 
         raise ValueError(f"unsupported operation: {op!r}")
 
+    def _cancelPending(self, obj: Any, timeout: float) -> None:
+        cancelConn = obj.cancel_conn()
+        deadline = monotonic() + timeout if timeout else None
+        try:
+            cancelConn.start()
+            while True:
+                status = cancelConn.poll()
+                if status == pq.PollingStatus.OK:
+                    return
+                if status == pq.PollingStatus.FAILED:
+                    raise e.OperationalError(
+                        f"cancellation failed: {cancelConn.get_error_message()}"
+                    )
+                if status not in (pq.PollingStatus.READING, pq.PollingStatus.WRITING):
+                    raise e.InternalError(f"unexpected poll status: {status}")
+
+                remaining = None if deadline is None else deadline - monotonic()
+                if remaining is not None and remaining <= 0:
+                    raise e._WaitTimeout("wait timeout expired")
+                fd = cancelConn.socket
+                readers = [fd] if status == pq.PollingStatus.READING else []
+                writers = [fd] if status == pq.PollingStatus.WRITING else []
+                readable, writable, _ = select.select(readers, writers, [], remaining)
+                if not readable and not writable:
+                    raise e._WaitTimeout("wait timeout expired")
+        finally:
+            cancelConn.finish()
+
     def _waitConnection(self, obj: Any, mask: int, timeout: float | None) -> WaitSnapshot:
         ready = self._wait(obj, mask, timeout)
         if not ready & READ:
@@ -271,7 +279,6 @@ class Worker:
             return WaitSnapshot(ready=ready)
 
     def _sendSnapshot(self, obj: Any, value: Any, flush: int, busy: int) -> SendSnapshot:
-        start = perf_counter() if self.profile is not None else 0.0
         status = int(obj.status)
         transactionStatus = int(obj.transaction_status)
         clientEncoding: bytes | None = None
@@ -279,33 +286,15 @@ class Worker:
             encoding = obj.parameter_status(b"client_encoding")
             if encoding is not None:
                 clientEncoding = bytes(encoding)
-        snapshot = SendSnapshot(value, flush, busy, status, transactionStatus, clientEncoding)
-        if self.profile is not None:
-            self._profile("send_snapshot_seconds", perf_counter() - start)
-            self._profile("send_snapshot_calls", 1)
-        return snapshot
+        return SendSnapshot(value, flush, busy, status, transactionStatus, clientEncoding)
 
     def _executePending(self, obj: Any, timeout: float) -> SendSnapshot:
-        start = perf_counter() if self.profile is not None else 0.0
-        try:
-            return self._executePendingInner(obj, timeout)
-        finally:
-            if self.profile is not None:
-                self._profile("execute_pending_seconds", perf_counter() - start)
-                self._profile("execute_pending_calls", 1)
-
-    def _executePendingInner(self, obj: Any, timeout: float) -> SendSnapshot:
         """Try to finish a normal query in one bounded worker round-trip."""
         if obj.pipeline_status != pq.PipelineStatus.OFF:
-            return self._sendSnapshot(
-                obj,
-                ("pending", (), ()),
-                int(self._timed("flush", obj.flush)),
-                int(obj.is_busy()),
-            )
+            return self._sendSnapshot(obj, ("pending", (), ()), int(obj.flush()), int(obj.is_busy()))
 
         deadline = monotonic() + max(0.0, timeout)
-        while self._timed("flush", obj.flush) != 0:
+        while obj.flush() != 0:
             remaining = deadline - monotonic()
             if remaining <= 0:
                 return self._sendSnapshot(obj, ("pending", (), ()), 1, int(obj.is_busy()))
@@ -345,11 +334,11 @@ class Worker:
                     self._profile("consume_input_seconds", perf_counter() - start)
                     self._profile("consume_input_calls", 1)
 
-            while notify := self._timed("notifies", obj.notifies):
+            while notify := obj.notifies():
                 notifies.append(notify)
 
             try:
-                result = self._timed("get_result", obj.get_result)
+                result = obj.get_result()
             except e.DatabaseError:
                 if any(item.status == int(pq.ExecStatus.FATAL_ERROR) for item in results):
                     return self._sendSnapshot(obj, ("done", tuple(results), tuple(notifies)), 0, 0)

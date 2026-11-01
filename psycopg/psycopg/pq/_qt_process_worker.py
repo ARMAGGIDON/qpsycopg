@@ -172,7 +172,6 @@ class Worker:
         raise ValueError(f"unsupported operation: {op!r}")
 
     def _waitConnection(self, obj: Any, mask: int, timeout: float | None) -> WaitSnapshot:
-        deadline = monotonic() + timeout if timeout is not None else None
         ready = self._wait(obj, mask, timeout)
         if not ready & READ:
             return WaitSnapshot(ready=ready)
@@ -190,13 +189,10 @@ class Worker:
                 busy = int(obj.is_busy())
                 while notify := obj.notifies():
                     notifies.append(notify)
-                if not busy or deadline is None:
+                if not busy:
                     break
 
-                remaining = deadline - monotonic()
-                if remaining <= 0:
-                    break
-                nextReady = self._wait(obj, READ, remaining)
+                nextReady = self._wait(obj, READ, 0.0)
                 if not nextReady & READ:
                     break
                 ready |= nextReady
@@ -267,17 +263,12 @@ class Worker:
             results.append(snapshot)
             status = result.status
             if status in _COPY_RESULTS:
-                # COPY switches libpq into a separate data-transfer state. Keep
-                # the parent-side flush/busy cache synchronized with that new
-                # state so copy_from() doesn't wait on stale pre-COPY values.
                 return self._sendSnapshot(obj, ("done", tuple(results), tuple(notifies)), 0, 0)
             if status == pq.ExecStatus.PIPELINE_SYNC:
                 if len(results) != 1:
                     raise AssertionError(results)
                 return self._sendSnapshot(obj, ("done", tuple(results), tuple(notifies)), 0, 0)
             if status == pq.ExecStatus.FATAL_ERROR and obj.status == pq.ConnStatus.BAD:
-                # Upstream _fetch_many() would catch the next read error and
-                # stop because it has already received a fatal result.
                 return self._sendSnapshot(obj, ("done", tuple(results), tuple(notifies)), 0, 0)
 
     def _setConnection(self, conn: Any) -> None:

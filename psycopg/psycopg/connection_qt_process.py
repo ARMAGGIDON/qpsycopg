@@ -21,6 +21,7 @@ from .connection import Connection as _Connection
 from .connection import logger
 from .cursor_async import AsyncCursor
 from ._capabilities import capabilities
+from ._connection_base import BaseConnection
 from ._conninfo_utils import gssapi_requested
 from .connection_async import _INTERRUPTED as _ASYNC_INTERRUPTED
 from .connection_async import AsyncConnection as _AsyncConnection
@@ -78,6 +79,15 @@ def _waitRemoteConn(
                 raise e._WaitTimeout("wait timeout expired")
     except StopIteration as ex:
         return cast(RV, ex.value)
+
+
+def _cancelRemote(connection: BaseConnection[Row], timeout: float) -> None:
+    transport = cast(QtPGconn, connection.pgconn)._transport
+    # The query thread repeatedly performs short WAIT requests using the same
+    # transport. Hold the re-entrant lock for the complete cancellation
+    # sequence so the query thread cannot starve cancel_conn between polls.
+    with transport.lock:
+        _waitRemoteConn(connection._cancel_gen(), _WAIT_INTERVAL, timeout or None)
 
 
 async def _waitRemoteAsync(
@@ -241,7 +251,7 @@ class Connection(_Connection[Row]):
             return
         if capabilities.has_cancel_safe():
             try:
-                _waitRemoteConn(self._cancel_gen(), _WAIT_INTERVAL, timeout or None)
+                _cancelRemote(self, timeout)
             except e._WaitTimeout:
                 raise e.CancellationTimeout("cancellation timeout expired") from None
         else:
@@ -372,9 +382,7 @@ class AsyncConnection(_AsyncConnection[Row]):
             return
         if capabilities.has_cancel_safe():
             try:
-                await _waitRemoteConnAsync(
-                    self._cancel_gen(), _WAIT_INTERVAL, timeout or None
-                )
+                await asyncio.to_thread(_cancelRemote, self, timeout)
             except e._WaitTimeout:
                 raise e.CancellationTimeout("cancellation timeout expired") from None
         else:

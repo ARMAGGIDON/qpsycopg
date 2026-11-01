@@ -13,8 +13,8 @@ connection function, where the fileno may change, the generators yield pairs
 (fileno, `Wait`).
 
 The generator can be restarted sending the appropriate `Ready` state when the
-file descriptor is ready. If a None value is sent, it means that the wait
-function timed out without any file descriptor becoming ready; in this case the
+file descriptor is ready. If a None value is sent, it means the wait function
+timed out without any file descriptor becoming ready; in this case the
 generator should probably yield the same value again in order to wait more.
 """
 
@@ -58,6 +58,9 @@ READY_RW = Ready.RW
 _QT_PROCESS_EXECUTE_GRACE = 0.002
 
 logger = logging.getLogger("psycopg")
+
+if pq.__impl__ == "qt-process":
+    from .pq import _qt_process_lazy as _qt_process_lazy  # noqa: F401
 
 
 def _connect(conninfo: str) -> PQGenConn[PGconn]:
@@ -181,15 +184,14 @@ def _fetch_many(pgconn: PGconn) -> PQGen[list[PGresult]]:
     The query must have already been sent to the server, so pgconn.flush() has
     already returned 0.
 
-    Return the list of results returned by the database (whether success
-    or error).
+    Return the list of results returned by the database (whether success or error).
     """
     results: list[PGresult] = []
     while True:
         try:
             result = yield from _fetch(pgconn)
         except e.DatabaseError:
-            # What might have happened here is that a previuos error disconnected
+            # What might have happened here is that a previous error disconnected
             # the connection, for example a idle in transaction timeout.
             # Check if we had received an error before: if that's the case
             # just exit the loop. Our callers will handle this error and raise

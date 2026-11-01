@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import warnings
 from time import monotonic, sleep
 from typing import cast
@@ -30,10 +31,25 @@ from .pq.pq_qt_process import waitRemote
 
 _REMOTE_WAIT_INTERVAL = 0.01
 _CANCEL_WAIT_INTERVAL = 0.01
+_cancelPendingHandles: set[int] = set()
+_cancelPendingLock = threading.Lock()
 
 
 def _waitTime(interval: float, deadline: float) -> float:
     return max(0.0, min(interval, deadline - monotonic()))
+
+
+def _setCancelPending(handle: int, pending: bool) -> None:
+    with _cancelPendingLock:
+        if pending:
+            _cancelPendingHandles.add(handle)
+        else:
+            _cancelPendingHandles.discard(handle)
+
+
+def _isCancelPending(handle: int) -> bool:
+    with _cancelPendingLock:
+        return handle in _cancelPendingHandles
 
 
 def _waitProcessOwner(pgconn: object) -> None:
@@ -58,10 +74,8 @@ def _waitRemote(
         state = next(gen)
         while True:
             wait = interval if deadline is None else _waitTime(interval, deadline)
-            ready = waitRemote(handle, int(state), wait)
+            ready = 0 if _isCancelPending(handle) else waitRemote(handle, int(state), wait)
             if not ready:
-                # Keep remote waits short enough that a concurrent cancel_safe()
-                # caller doesn't sit behind a long transport-lock hold.
                 sleep(0)
             state = gen.send(ready)
             if deadline is not None and monotonic() >= deadline:
@@ -89,16 +103,33 @@ def _waitRemoteConn(
 
 
 def _cancelRemote(connection: BaseConnection[Row], timeout: float) -> None:
-    transport = cast(QtPGconn, connection.pgconn)._transport
-    # Query and cancellation waits use a short quantum. Hold the re-entrant
-    # transport lock for the cancellation sequence so the query thread cannot
-    # starve cancel_conn between its own polls.
-    with transport.lock:
-        _waitRemoteConn(
-            connection._cancel_gen(),
-            _CANCEL_WAIT_INTERVAL,
-            timeout or None,
-        )
+    pgconn = cast(QtPGconn, connection.pgconn)
+    transport = pgconn._transport
+    handle = pgconn.socket
+    deadline = monotonic() + timeout if timeout else None
+
+    # Once cancellation is pending, the main query wait loop stops entering the
+    # shared transport lock. The cancellation thread can therefore acquire it
+    # after at most the currently running short WAIT instead of being starved by
+    # the query thread repeatedly reacquiring the RLock.
+    _setCancelPending(handle, True)
+    try:
+        if deadline is None:
+            transport.lock.acquire()
+            acquired = True
+        else:
+            acquired = transport.lock.acquire(timeout=max(0.0, deadline - monotonic()))
+        if not acquired:
+            raise e._WaitTimeout("wait timeout expired")
+        try:
+            remaining = None if deadline is None else max(0.0, deadline - monotonic())
+            if remaining == 0.0:
+                raise e._WaitTimeout("wait timeout expired")
+            _waitRemoteConn(connection._cancel_gen(), _CANCEL_WAIT_INTERVAL, remaining)
+        finally:
+            transport.lock.release()
+    finally:
+        _setCancelPending(handle, False)
 
 
 async def _waitRemoteAsync(
@@ -112,7 +143,10 @@ async def _waitRemoteAsync(
         state = next(gen)
         while True:
             wait = interval if deadline is None else _waitTime(interval, deadline)
-            ready = await asyncio.to_thread(waitRemote, handle, int(state), wait)
+            if _isCancelPending(handle):
+                ready = 0
+            else:
+                ready = await asyncio.to_thread(waitRemote, handle, int(state), wait)
             if not ready:
                 await asyncio.sleep(0)
             state = gen.send(ready)

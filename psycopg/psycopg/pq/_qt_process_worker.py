@@ -108,11 +108,11 @@ class Worker:
             if request.objectId == 1 and ready & READ:
                 try:
                     if obj.status == pq.ConnStatus.OK:
-                        consumed = obj.consume_input()
-                        return ready, consumed, obj.is_busy()
+                        obj.consume_input()
+                        return ready, True, obj.is_busy()
                 except Exception:
                     pass
-            return ready, None, None
+            return ready, False, None
 
         if op == Operation.ESCAPE:
             escapingConn: Any = obj if request.objectId else None

@@ -58,13 +58,26 @@ class RemoteError:
     message: str
 
 
-@dataclass(slots=True, frozen=True)
 class CellTable:
-    values: array[int]
+    __slots__ = ("values", "_view")
+
+    def __init__(
+        self,
+        values: array[int] | memoryview | pickle.PickleBuffer,
+    ) -> None:
+        self.values = values
+        view = memoryview(values)
+        self._view = view if view.format == "q" else view.cast("q")
 
     def __getitem__(self, index: int) -> tuple[int, int]:
         offset = index * 2
-        return self.values[offset], self.values[offset + 1]
+        return self._view[offset], self._view[offset + 1]
+
+    def __reduce_ex__(self, protocol: int) -> tuple[Any, tuple[Any]]:
+        values: Any = self.values
+        if protocol >= 5 and not isinstance(values, pickle.PickleBuffer):
+            values = pickle.PickleBuffer(values)
+        return type(self), (values,)
 
 
 @dataclass(slots=True, frozen=True)

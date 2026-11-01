@@ -93,16 +93,22 @@ def main() -> int:
         rssBefore = processRss()
         start = time.perf_counter()
         with connection.cursor() as cursor:
+            executeStart = time.perf_counter()
             cursor.execute(
                 "SELECT i, i::numeric / 10, clock_timestamp() "
                 "FROM generate_series(1, %s) AS s(i)",
                 (args.rows,),
             )
+            executeElapsed = time.perf_counter() - executeStart
+            fetchStart = time.perf_counter()
             rows = cursor.fetchall()
+            fetchallElapsed = time.perf_counter() - fetchStart
         elapsed = time.perf_counter() - start
         rssAfter = processRss()
         result["fetch"] = {
             "seconds": elapsed,
+            "execute_seconds": executeElapsed,
+            "fetchall_seconds": fetchallElapsed,
             "rows": len(rows),
             "rows_per_second": len(rows) / max(elapsed, 1e-9),
         }

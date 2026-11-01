@@ -52,6 +52,7 @@ def _request(
 
         if operation == Operation.CALL and objectId == 1 and member in _SEND_MEMBERS:
             self._clearQueryCache(objectId)
+            self._clearConnectionState()
             self._pendingSend = (objectId, member, args, kwargs)
             return None
 

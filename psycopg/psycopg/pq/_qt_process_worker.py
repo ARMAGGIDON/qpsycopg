@@ -39,6 +39,7 @@ _COPY_RESULTS = {
     pq.ExecStatus.COPY_BOTH,
 }
 _FAST_EXECUTE = "qpsycopg_execute_pending"
+_WAIT_DRAIN_GRACE = 0.001
 
 
 class Worker:
@@ -180,6 +181,7 @@ class Worker:
             if obj.status != pq.ConnStatus.OK:
                 return WaitSnapshot(ready=ready)
 
+            drainDeadline = monotonic() + _WAIT_DRAIN_GRACE
             consumed = False
             busy: int | None = None
             notifies = []
@@ -192,7 +194,10 @@ class Worker:
                 if not busy:
                     break
 
-                nextReady = self._wait(obj, READ, 0.0)
+                remaining = drainDeadline - monotonic()
+                if remaining <= 0:
+                    break
+                nextReady = self._wait(obj, READ, remaining)
                 if not nextReady & READ:
                     break
                 ready |= nextReady

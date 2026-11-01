@@ -385,6 +385,42 @@ class Worker:
                 pass
 
 
+def _packResultValues(
+    result: Any,
+    ntuples: int,
+    nfields: int,
+    profile: dict[str, float | int] | None,
+) -> PackedValues:
+    cellCount = ntuples * nfields
+    packValues = getattr(result, "_qpsycopg_pack_values", None)
+    if packValues is not None:
+        valueData, valueOffsets, nulls, packedCount = packValues()
+        if packedCount != cellCount:
+            raise AssertionError(f"native PGresult pack count mismatch: {packedCount} != {cellCount}")
+        if profile is not None:
+            profile["snapshot_native_pack_calls"] = profile.get("snapshot_native_pack_calls", 0) + 1
+        return PackedValues(valueData, valueOffsets, nulls, cellCount)
+
+    valueData = bytearray()
+    valueOffsets = bytearray((cellCount + 1) * _VALUE_OFFSET.size)
+    nulls = bytearray((cellCount + 7) // 8)
+    getValue = result.get_value
+    cellIndex = 0
+    for row in range(ntuples):
+        for column in range(nfields):
+            _VALUE_OFFSET.pack_into(valueOffsets, cellIndex * _VALUE_OFFSET.size, len(valueData))
+            value = getValue(row, column)
+            if value is None:
+                nulls[cellIndex >> 3] |= 1 << (cellIndex & 7)
+            else:
+                valueData.extend(value)
+            cellIndex += 1
+    _VALUE_OFFSET.pack_into(valueOffsets, cellIndex * _VALUE_OFFSET.size, len(valueData))
+    if profile is not None:
+        profile["snapshot_python_pack_calls"] = profile.get("snapshot_python_pack_calls", 0) + 1
+    return PackedValues(bytes(valueData), bytes(valueOffsets), bytes(nulls), cellCount)
+
+
 def _snapshotResult(result: Any, profile: dict[str, float | int] | None = None) -> ResultSnapshot:
     totalStart = perf_counter() if profile is not None else 0.0
     nfields = result.nfields
@@ -410,22 +446,8 @@ def _snapshotResult(result: Any, profile: dict[str, float | int] | None = None) 
     )
 
     packStart = perf_counter() if profile is not None else 0.0
+    values = _packResultValues(result, ntuples, nfields, profile)
     cellCount = ntuples * nfields
-    valueData = bytearray()
-    valueOffsets = bytearray((cellCount + 1) * _VALUE_OFFSET.size)
-    nulls = bytearray((cellCount + 7) // 8)
-    getValue = result.get_value
-    cellIndex = 0
-    for row in range(ntuples):
-        for column in range(nfields):
-            _VALUE_OFFSET.pack_into(valueOffsets, cellIndex * _VALUE_OFFSET.size, len(valueData))
-            value = getValue(row, column)
-            if value is None:
-                nulls[cellIndex >> 3] |= 1 << (cellIndex & 7)
-            else:
-                valueData.extend(value)
-            cellIndex += 1
-    _VALUE_OFFSET.pack_into(valueOffsets, cellIndex * _VALUE_OFFSET.size, len(valueData))
     if profile is not None:
         profile["snapshot_values_seconds"] = profile.get("snapshot_values_seconds", 0) + perf_counter() - packStart
         profile["snapshot_cells"] = profile.get("snapshot_cells", 0) + cellCount
@@ -446,7 +468,7 @@ def _snapshotResult(result: Any, profile: dict[str, float | int] | None = None) 
         rowCount=ntuples,
         columnCount=nfields,
         binaryTuples=result.binary_tuples,
-        values=PackedValues(bytes(valueData), bytes(valueOffsets), bytes(nulls), cellCount),
+        values=values,
         paramTypes=tuple(result.param_type(i) for i in range(result.nparams)),
         commandStatus=result.command_status,
         commandTuples=result.command_tuples,

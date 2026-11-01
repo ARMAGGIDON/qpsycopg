@@ -35,21 +35,21 @@ The latest full benchmark checkpoint is ``optimized14``:
 
 The summary medians were:
 
-========================  ============  ============  =============
-Metric                    vanilla       qt-process    summary ratio
-========================  ============  ============  =============
-connect                    34.84 ms      636.54 ms     18.27x
-SELECT 1 median            0.967 ms      1.727 ms      1.79x
-SELECT 1 p95               1.383 ms      2.082 ms      1.51x
-100k execute               0.170 s       0.431 s       2.53x
-100k fetchall              0.187 s       0.207 s       1.11x
-100k total                 0.344 s       0.638 s       1.85x
-8 shared-connection threads 14.57 ms     24.04 ms      1.65x
-cancel call                6.36 ms       13.55 ms      2.13x
-RSS delta for 100k result  39.37 MiB     34.75 MiB     0.88x
-Qt timer median            9.934 ms      9.940 ms      ~=1x
-Qt timer p95               10.459 ms     10.481 ms     ~=1x
-========================  ============  ============  =============
+===========================  ============  ============  =============
+Metric                       vanilla       qt-process    summary ratio
+===========================  ============  ============  =============
+connect                       34.84 ms      636.54 ms     18.27x
+SELECT 1 median               0.967 ms      1.727 ms      1.79x
+SELECT 1 p95                  1.383 ms      2.082 ms      1.51x
+100k execute                  0.170 s       0.431 s       2.53x
+100k fetchall                 0.187 s       0.207 s       1.11x
+100k total                    0.344 s       0.638 s       1.85x
+8 shared-connection threads   14.57 ms      24.04 ms      1.65x
+cancel call                   6.36 ms       13.55 ms      2.13x
+RSS delta for 100k result     39.37 MiB     34.75 MiB     0.88x
+Qt timer median               9.934 ms      9.940 ms      ~=1x
+Qt timer p95                  10.459 ms     10.481 ms     ~=1x
+===========================  ============  ============  =============
 
 The runs were noisy, especially for bulk query execution. Paired ratios are
 therefore useful in addition to ratios of the summary medians. The median paired

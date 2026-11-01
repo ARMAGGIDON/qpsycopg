@@ -28,6 +28,8 @@ from .connection_async import AsyncConnection as _AsyncConnection
 from .pq.pq_qt_process import PGconn as QtPGconn
 from .pq.pq_qt_process import waitRemote
 
+_CANCEL_WAIT_INTERVAL = 0.01
+
 
 def _waitTime(interval: float, deadline: float) -> float:
     return max(0.0, min(interval, deadline - monotonic()))
@@ -83,11 +85,16 @@ def _waitRemoteConn(
 
 def _cancelRemote(connection: BaseConnection[Row], timeout: float) -> None:
     transport = cast(QtPGconn, connection.pgconn)._transport
-    # The query thread repeatedly performs short WAIT requests using the same
-    # transport. Hold the re-entrant lock for the complete cancellation
-    # sequence so the query thread cannot starve cancel_conn between polls.
+    # Query execution uses 100 ms waits to avoid busy polling. Cancellation is
+    # latency-sensitive, so poll the dedicated cancel socket more aggressively.
+    # Hold the re-entrant transport lock for the full sequence to prevent the
+    # query thread from starving cancel_conn between polls.
     with transport.lock:
-        _waitRemoteConn(connection._cancel_gen(), _WAIT_INTERVAL, timeout or None)
+        _waitRemoteConn(
+            connection._cancel_gen(),
+            _CANCEL_WAIT_INTERVAL,
+            timeout or None,
+        )
 
 
 async def _waitRemoteAsync(

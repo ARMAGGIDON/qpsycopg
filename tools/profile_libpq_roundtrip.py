@@ -9,7 +9,7 @@ import select
 import statistics
 import time
 
-os.environ["PSYCOPG_IMPL"] = "binary"
+os.environ.setdefault("PSYCOPG_IMPL", "binary")
 
 from psycopg import pq
 

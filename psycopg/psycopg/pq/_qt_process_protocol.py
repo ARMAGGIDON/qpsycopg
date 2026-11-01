@@ -10,6 +10,7 @@ from enum import IntEnum
 from typing import Any
 
 _HEADER = struct.Struct("!Q")
+_VALUE_OFFSET = struct.Struct("=Q")
 _TOKEN_SIZE = 32
 _MAX_FRAME = 1 << 34  # 16 GiB: reject obviously corrupt frame lengths.
 _COALESCE_FRAME = 64 * 1024
@@ -57,6 +58,35 @@ class RemoteError:
 
 
 @dataclass(slots=True, frozen=True)
+class PackedValues:
+    """Contiguous result cells with offsets and a NULL bitmap."""
+
+    data: bytes
+    offsets: bytes
+    nulls: bytes
+    count: int
+
+    def __len__(self) -> int:
+        return self.count
+
+    def __getitem__(self, index: int | slice) -> bytes | None | tuple[bytes | None, ...]:
+        if isinstance(index, slice):
+            start, stop, step = index.indices(self.count)
+            return tuple(self[i] for i in range(start, stop, step))
+
+        if index < 0:
+            index += self.count
+        if not 0 <= index < self.count:
+            raise IndexError(index)
+        if self.nulls[index >> 3] & (1 << (index & 7)):
+            return None
+
+        start = _VALUE_OFFSET.unpack_from(self.offsets, index * _VALUE_OFFSET.size)[0]
+        end = _VALUE_OFFSET.unpack_from(self.offsets, (index + 1) * _VALUE_OFFSET.size)[0]
+        return self.data[start:end]
+
+
+@dataclass(slots=True, frozen=True)
 class ResultSnapshot:
     status: int
     errorMessage: bytes
@@ -65,7 +95,7 @@ class ResultSnapshot:
     rowCount: int
     columnCount: int
     binaryTuples: int
-    values: tuple[bytes | None, ...]
+    values: PackedValues | tuple[bytes | None, ...]
     paramTypes: tuple[int, ...]
     commandStatus: bytes | None
     commandTuples: int | None

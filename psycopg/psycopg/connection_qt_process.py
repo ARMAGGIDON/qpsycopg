@@ -24,11 +24,23 @@ from ._capabilities import capabilities
 from ._conninfo_utils import gssapi_requested
 from .connection_async import _INTERRUPTED as _ASYNC_INTERRUPTED
 from .connection_async import AsyncConnection as _AsyncConnection
+from .pq.pq_qt_process import PGconn as QtPGconn
 from .pq.pq_qt_process import waitRemote
 
 
 def _waitTime(interval: float, deadline: float) -> float:
     return max(0.0, min(interval, deadline - monotonic()))
+
+
+def _waitProcessOwner(pgconn: object) -> None:
+    owner = cast(QtPGconn, pgconn)._transport.owner
+    if not owner.thread.is_alive():
+        return
+
+    owner.close()
+    owner.thread.join(8.0)
+    if owner.thread.is_alive():
+        logger.warning("qpsycopg QProcess owner thread didn't stop after close")
 
 
 def _waitRemote(
@@ -185,6 +197,18 @@ class Connection(_Connection[Row]):
         rv.prepare_threshold = prepare_threshold
         return rv
 
+    def close(self) -> None:
+        pool = getattr(self, "_pool", None)
+        if pool and getattr(pool, "close_returns", False):
+            super().close()
+            return
+
+        pgconn = self.pgconn
+        try:
+            super().close()
+        finally:
+            _waitProcessOwner(pgconn)
+
     def fileno(self) -> int:
         raise e.NotSupportedError(
             "fileno() is not available for qt-process connections"
@@ -303,6 +327,18 @@ class AsyncConnection(_AsyncConnection[Row]):
             rv._adapters = AdaptersMap(context.adapters)
         rv.prepare_threshold = prepare_threshold
         return rv
+
+    async def close(self) -> None:
+        pool = getattr(self, "_pool", None)
+        if pool and getattr(pool, "close_returns", False):
+            await super().close()
+            return
+
+        pgconn = self.pgconn
+        try:
+            await super().close()
+        finally:
+            await asyncio.to_thread(_waitProcessOwner, pgconn)
 
     def fileno(self) -> int:
         raise e.NotSupportedError(

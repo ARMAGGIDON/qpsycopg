@@ -10,11 +10,9 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any
 
-_HEADER = struct.Struct("!QI")
-_BUFFER_HEADER = struct.Struct("!Q")
+_HEADER = struct.Struct("!Q")
 _TOKEN_SIZE = 32
-_MAX_FRAME = 1 << 34  # 16 GiB: reject obviously corrupt aggregate frame sizes.
-_MAX_BUFFERS = 4096
+_MAX_FRAME = 1 << 34  # 16 GiB: reject obviously corrupt frame lengths.
 
 
 class Operation(IntEnum):
@@ -58,26 +56,13 @@ class RemoteError:
     message: str
 
 
+@dataclass(slots=True, frozen=True)
 class CellTable:
-    __slots__ = ("values", "_view")
-
-    def __init__(
-        self,
-        values: array[int] | memoryview | pickle.PickleBuffer,
-    ) -> None:
-        self.values = values
-        view = memoryview(values)
-        self._view = view if view.format == "q" else view.cast("q")
+    values: array[int]
 
     def __getitem__(self, index: int) -> tuple[int, int]:
         offset = index * 2
-        return self._view[offset], self._view[offset + 1]
-
-    def __reduce_ex__(self, protocol: int) -> tuple[Any, tuple[Any]]:
-        values: Any = self.values
-        if protocol >= 5 and not isinstance(values, pickle.PickleBuffer):
-            values = pickle.PickleBuffer(values)
-        return type(self), (values,)
+        return self.values[offset], self.values[offset + 1]
 
 
 @dataclass(slots=True, frozen=True)
@@ -89,7 +74,7 @@ class ResultSnapshot:
     rowCount: int
     columnCount: int
     binaryTuples: int
-    data: bytearray | memoryview | pickle.PickleBuffer
+    data: bytearray
     cells: CellTable
     paramTypes: tuple[int, ...]
     commandStatus: bytes | None
@@ -116,45 +101,16 @@ def recvToken(sock: socket.socket) -> bytes:
 
 
 def sendFrame(sock: socket.socket, value: Any) -> None:
-    buffers: list[pickle.PickleBuffer] = []
-    payload = pickle.dumps(
-        value,
-        protocol=pickle.HIGHEST_PROTOCOL,
-        buffer_callback=buffers.append,
-    )
-    if len(buffers) > _MAX_BUFFERS:
-        raise ValueError(f"too many qpsycopg frame buffers: {len(buffers)}")
-
-    views = [buffer.raw() for buffer in buffers]
-    totalSize = len(payload) + sum(view.nbytes for view in views)
-    if totalSize > _MAX_FRAME:
-        raise ValueError(f"qpsycopg frame is too large: {totalSize}")
-
-    sock.sendall(_HEADER.pack(len(payload), len(views)))
+    payload = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+    sock.sendall(_HEADER.pack(len(payload)))
     sock.sendall(payload)
-    for view in views:
-        sock.sendall(_BUFFER_HEADER.pack(view.nbytes))
-        sock.sendall(view)
 
 
 def recvFrame(sock: socket.socket) -> Any:
-    payloadSize, bufferCount = _HEADER.unpack(_recvExact(sock, _HEADER.size))
-    if payloadSize > _MAX_FRAME:
-        raise ValueError(f"invalid qpsycopg frame size: {payloadSize}")
-    if bufferCount > _MAX_BUFFERS:
-        raise ValueError(f"invalid qpsycopg frame buffer count: {bufferCount}")
-
-    payload = _recvExact(sock, payloadSize)
-    buffers: list[memoryview] = []
-    totalSize = payloadSize
-    for _ in range(bufferCount):
-        size = _BUFFER_HEADER.unpack(_recvExact(sock, _BUFFER_HEADER.size))[0]
-        totalSize += size
-        if totalSize > _MAX_FRAME:
-            raise ValueError(f"invalid qpsycopg aggregate frame size: {totalSize}")
-        buffers.append(memoryview(_recvExact(sock, size)))
-
-    return pickle.loads(payload, buffers=buffers)
+    size = _HEADER.unpack(_recvExact(sock, _HEADER.size))[0]
+    if size > _MAX_FRAME:
+        raise ValueError(f"invalid qpsycopg frame size: {size}")
+    return pickle.loads(_recvExact(sock, size))
 
 
 def _recvExact(sock: socket.socket, size: int) -> bytearray:

@@ -127,6 +127,19 @@ class Response(NamedTuple):
     notices: tuple[ResultSnapshot, ...] = ()
 
 
+class FastExecuteRequest(NamedTuple):
+    timeout: float
+    sendMember: str
+    sendArgs: tuple[Any, ...]
+    sendKwargs: tuple[tuple[str, Any], ...]
+
+
+class FastExecuteResponse(NamedTuple):
+    value: SendSnapshot | None = None
+    error: RemoteError | None = None
+    notices: tuple[ResultSnapshot, ...] = ()
+
+
 def _lowLatency(sock: socket.socket) -> None:
     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 

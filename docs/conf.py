@@ -12,6 +12,7 @@ from pathlib import Path
 docs_dir = Path(__file__).resolve().parent
 repo_dir = docs_dir.parent
 sys.path.insert(0, str(repo_dir / "psycopg"))
+sys.path.insert(0, str(repo_dir / "psycopg_pool"))
 sys.path.append(str(docs_dir / "lib"))
 
 import psycopg
@@ -66,8 +67,7 @@ html_css_files = ["psycopg.css"]
 # list: from pygments.styles import STYLE_MAP; print(sorted(STYLE_MAP.keys()))
 pygments_style = "tango"
 
-# The theme to use for HTML and HTML Help pages. See the documentation for
-# a list of builtin themes.
+# The theme to use for HTML output.
 html_theme = "furo"
 html_show_sphinx = True
 html_show_sourcelink = False

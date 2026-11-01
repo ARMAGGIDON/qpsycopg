@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import errors as e
-from ._qt_process_protocol import FastExecuteRequest, Operation, Response, SendSnapshot
+from ._qt_process_protocol import FastExecuteFrame, Operation, Response, SendSnapshot
 from .pq_qt_process import PGresult, _SEND_MEMBERS, _Transport, _raiseRemote, _restore, _wire
 from . import pq_qt_process as _pq
 
@@ -27,7 +27,7 @@ def _fastExecute(
     # Keep requestId as a local transport counter used by profiling/benchmarks.
     # The synchronous fast frame itself doesn't need an id on the wire.
     self.requestId += 1
-    request = FastExecuteRequest(
+    request = FastExecuteFrame(
         float(timeout),
         sendMember,
         _wire(sendArgs),

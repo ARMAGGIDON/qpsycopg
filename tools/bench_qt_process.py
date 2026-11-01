@@ -163,9 +163,13 @@ def main() -> int:
         time.sleep(0.5)
         start = time.perf_counter()
         connection.cancel_safe(timeout=5.0)
+        cancelReturned = time.perf_counter()
         thread.join(10.0)
+        finished = time.perf_counter()
         result["cancel"] = {
-            "seconds": time.perf_counter() - start,
+            "seconds": finished - start,
+            "call_seconds": cancelReturned - start,
+            "query_finish_seconds": finished - cancelReturned,
             "exception": cancelled[0] if cancelled else None,
             "thread_alive": thread.is_alive(),
         }

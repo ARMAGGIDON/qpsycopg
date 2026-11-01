@@ -222,6 +222,7 @@ class _Transport:
         self.requestId = 0
         self.closed = False
         self.connection: PGconn | None = None
+        self._waitCache: dict[int, list[int | bool | None]] = {}
 
     def request(
         self,
@@ -234,6 +235,18 @@ class _Transport:
         with self.lock:
             if self.closed:
                 raise e.OperationalError("qpsycopg worker process is closed")
+
+            cached = self._waitCache.get(objectId)
+            if cached is not None and operation == Operation.CALL:
+                if member == "consume_input" and cached[0]:
+                    cached[0] = False
+                    return None
+                if member == "is_busy" and cached[1] is not None:
+                    busy = int(cached[1])
+                    self._waitCache.pop(objectId, None)
+                    return busy
+            if operation != Operation.WAIT:
+                self._waitCache.pop(objectId, None)
 
             self.requestId += 1
             request = Request(
@@ -269,12 +282,20 @@ class _Transport:
 
             if response.error is not None:
                 _raiseRemote(response.error)
-            return _restore(response.value, self)
+
+            value = _restore(response.value, self)
+            if operation == Operation.WAIT and isinstance(value, tuple):
+                ready, consumed, busy = value
+                if consumed:
+                    self._waitCache[objectId] = [True, int(busy)]
+                return int(ready)
+            return value
 
     def _markBroken(self) -> None:
         if self.closed:
             return
         self.closed = True
+        self._waitCache.clear()
         try:
             self.sock.close()
         finally:
@@ -292,6 +313,7 @@ class _Transport:
                 self.owner.kill()
             finally:
                 self.closed = True
+                self._waitCache.clear()
                 self.sock.close()
                 self.owner.close()
 
@@ -545,6 +567,10 @@ class PGresult:
     def __init__(self, snapshot: ResultSnapshot) -> None:
         self._snapshot = snapshot
         self._columns = list(snapshot.columns)
+        self._data = memoryview(snapshot.data)
+        self._cells = snapshot.cells
+        self._columnCount = snapshot.columnCount
+        self._errorFields = dict(snapshot.errorFields)
 
     def clear(self) -> None:
         pass
@@ -561,7 +587,7 @@ class PGresult:
         return _clean_error_message(self.error_message, encoding)
 
     def error_field(self, fieldcode: int) -> bytes | None:
-        return dict(self._snapshot.errorFields).get(fieldcode)
+        return self._errorFields.get(fieldcode)
 
     @property
     def ntuples(self) -> int:
@@ -597,11 +623,11 @@ class PGresult:
         return self._snapshot.binaryTuples
 
     def get_value(self, row_number: int, column_number: int) -> memoryview | None:
-        index = row_number * self._snapshot.columnCount + column_number
-        start, size = self._snapshot.cells[index]
+        index = row_number * self._columnCount + column_number
+        start, size = self._cells[index]
         if start < 0:
             return None
-        return memoryview(self._snapshot.data)[start : start + size]
+        return self._data[start : start + size]
 
     @property
     def nparams(self) -> int:

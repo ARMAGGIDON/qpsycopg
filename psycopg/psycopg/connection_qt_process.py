@@ -26,11 +26,11 @@ from ._connection_base import BaseConnection
 from ._conninfo_utils import gssapi_requested
 from .connection_async import _INTERRUPTED as _ASYNC_INTERRUPTED
 from .connection_async import AsyncConnection as _AsyncConnection
+from .pq._qt_process_cancel import CancelControlClient
 from .pq.pq_qt_process import PGconn as QtPGconn
 from .pq.pq_qt_process import waitRemote
 
 _REMOTE_WAIT_INTERVAL = 0.01
-_CANCEL_WAIT_INTERVAL = 0.01
 _cancelPendingHandles: set[int] = set()
 _cancelPendingLock = threading.Lock()
 
@@ -50,6 +50,24 @@ def _setCancelPending(handle: int, pending: bool) -> None:
 def _isCancelPending(handle: int) -> bool:
     with _cancelPendingLock:
         return handle in _cancelPendingHandles
+
+
+def _openCancelControl(pgconn: QtPGconn) -> None:
+    transport = pgconn._transport
+    if getattr(transport, "_cancelControl", None) is not None:
+        return
+    setattr(transport, "_cancelControl", CancelControlClient.open(pgconn))
+
+
+def _closeCancelControl(pgconn: QtPGconn) -> None:
+    transport = pgconn._transport
+    control = getattr(transport, "_cancelControl", None)
+    if control is None:
+        return
+    try:
+        control.close()
+    finally:
+        setattr(transport, "_cancelControl", None)
 
 
 def _waitProcessOwner(pgconn: object) -> None:
@@ -104,30 +122,14 @@ def _waitRemoteConn(
 
 def _cancelRemote(connection: BaseConnection[Row], timeout: float) -> None:
     pgconn = cast(QtPGconn, connection.pgconn)
-    transport = pgconn._transport
-    handle = pgconn.socket
-    deadline = monotonic() + timeout if timeout else None
+    control = getattr(pgconn._transport, "_cancelControl", None)
+    if control is None:
+        raise e.OperationalError("qpsycopg cancellation channel is not available")
 
-    # Stop the query thread from starting another WAIT while the cancelling
-    # thread acquires the shared transport. Once acquired, cancellation itself
-    # is one RPC: the worker drives PGcancelConn locally instead of bouncing
-    # poll/socket/wait calls across the process boundary.
+    handle = pgconn.socket
     _setCancelPending(handle, True)
     try:
-        if deadline is None:
-            transport.lock.acquire()
-            acquired = True
-        else:
-            acquired = transport.lock.acquire(timeout=max(0.0, deadline - monotonic()))
-        if not acquired:
-            raise e._WaitTimeout("wait timeout expired")
-        try:
-            remaining = None if deadline is None else max(0.0, deadline - monotonic())
-            if remaining == 0.0:
-                raise e._WaitTimeout("wait timeout expired")
-            pgconn._call("qpsycopg_cancel", 0.0 if remaining is None else remaining)
-        finally:
-            transport.lock.release()
+        control.cancel(timeout)
     finally:
         _setCancelPending(handle, False)
 
@@ -244,6 +246,12 @@ class Connection(_Connection[Row]):
                 RuntimeWarning,
             )
 
+        try:
+            _openCancelControl(cast(QtPGconn, rv.pgconn))
+        except BaseException:
+            rv.pgconn.finish()
+            raise
+
         rv._autocommit = bool(autocommit)
         if row_factory:
             rv.row_factory = row_factory
@@ -261,6 +269,7 @@ class Connection(_Connection[Row]):
             return
 
         pgconn = self.pgconn
+        _closeCancelControl(cast(QtPGconn, pgconn))
         try:
             super().close()
         finally:
@@ -375,6 +384,12 @@ class AsyncConnection(_AsyncConnection[Row]):
                 RuntimeWarning,
             )
 
+        try:
+            await asyncio.to_thread(_openCancelControl, cast(QtPGconn, rv.pgconn))
+        except BaseException:
+            rv.pgconn.finish()
+            raise
+
         rv._autocommit = bool(autocommit)
         if row_factory:
             rv.row_factory = row_factory
@@ -392,6 +407,7 @@ class AsyncConnection(_AsyncConnection[Row]):
             return
 
         pgconn = self.pgconn
+        await asyncio.to_thread(_closeCancelControl, cast(QtPGconn, pgconn))
         try:
             await super().close()
         finally:

@@ -20,6 +20,17 @@ _FRAME_FLAGS = _FAST_REQUEST_FLAG | _FAST_RESPONSE_FLAG
 _FRAME_SIZE_MASK = _FAST_RESPONSE_FLAG - 1
 _Profile = dict[str, float | int]
 _FAST_EXECUTE = "qpsycopg_execute_pending"
+_FAST_SEND_MEMBERS = (
+    "send_query",
+    "send_query_params",
+    "send_prepare",
+    "send_query_prepared",
+    "send_describe_prepared",
+    "send_describe_portal",
+    "send_close_prepared",
+    "send_close_portal",
+)
+_FAST_SEND_CODES = {member: code for code, member in enumerate(_FAST_SEND_MEMBERS)}
 
 
 class Operation(IntEnum):
@@ -133,7 +144,7 @@ class Response(NamedTuple):
 
 
 class FastExecuteFrame(NamedTuple):
-    """Parent-only marker: sendFrame serializes only these four payload fields."""
+    """Parent-only marker for the compact coalesced send/execute frame."""
 
     timeout: float
     sendMember: str
@@ -162,9 +173,51 @@ def recvToken(sock: socket.socket) -> bytes:
     return bytes(_recvExact(sock, _TOKEN_SIZE))
 
 
+def _packFastResult(snapshot: ResultSnapshot) -> tuple[Any, ...] | None:
+    values = snapshot.values
+    if snapshot.errorMessage or snapshot.errorFields or not isinstance(values, PackedValues):
+        return None
+    return (
+        snapshot.status,
+        snapshot.columns,
+        snapshot.rowCount,
+        snapshot.columnCount,
+        snapshot.binaryTuples,
+        tuple(values),
+        snapshot.paramTypes,
+        snapshot.commandStatus,
+        snapshot.commandTuples,
+        snapshot.oidValue,
+    )
+
+
+def _unpackFastResult(value: tuple[Any, ...]) -> ResultSnapshot:
+    status, columns, rowCount, columnCount, binaryTuples, packed, paramTypes, commandStatus, commandTuples, oidValue = value
+    return ResultSnapshot(
+        status,
+        b"",
+        (),
+        columns,
+        rowCount,
+        columnCount,
+        binaryTuples,
+        PackedValues(*packed),
+        paramTypes,
+        commandStatus,
+        commandTuples,
+        oidValue,
+    )
+
+
 def _wireValue(value: Any) -> tuple[Any, int]:
     if isinstance(value, FastExecuteFrame):
+        code = _FAST_SEND_CODES.get(value.sendMember)
+        if code is not None:
+            if value.sendKwargs:
+                return (value.timeout, code, value.sendArgs, value.sendKwargs), _FAST_REQUEST_FLAG
+            return (value.timeout, code, value.sendArgs), _FAST_REQUEST_FLAG
         return tuple(value), _FAST_REQUEST_FLAG
+
     if (
         isinstance(value, Response)
         and value.requestId == 0
@@ -172,7 +225,28 @@ def _wireValue(value: Any) -> tuple[Any, int]:
         and not value.notices
         and isinstance(value.value, SendSnapshot)
     ):
-        return tuple(value.value), _FAST_RESPONSE_FLAG
+        snapshot = value.value
+        execution = snapshot.value
+        if (
+            snapshot.flush == 0
+            and snapshot.busy == 0
+            and isinstance(execution, tuple)
+            and len(execution) == 3
+            and execution[0] == "done"
+            and isinstance(execution[1], tuple)
+            and len(execution[1]) == 1
+            and not execution[2]
+            and isinstance(execution[1][0], ResultSnapshot)
+        ):
+            result = _packFastResult(execution[1][0])
+            if result is not None:
+                return (
+                    result,
+                    snapshot.status,
+                    snapshot.transactionStatus,
+                    snapshot.clientEncoding,
+                ), _FAST_RESPONSE_FLAG
+        return tuple(snapshot), _FAST_RESPONSE_FLAG
     return value, 0
 
 
@@ -216,9 +290,33 @@ def _readHeader(sock: socket.socket) -> tuple[int, int]:
 
 def _restoreWireValue(value: Any, flags: int) -> Any:
     if flags == _FAST_REQUEST_FLAG:
+        if len(value) == 3:
+            timeout, code, sendArgs = value
+            return Request(0, Operation.CALL, 1, _FAST_EXECUTE, (timeout, _FAST_SEND_MEMBERS[code], sendArgs, ()))
+        if len(value) == 4 and isinstance(value[1], int):
+            timeout, code, sendArgs, sendKwargs = value
+            return Request(
+                0,
+                Operation.CALL,
+                1,
+                _FAST_EXECUTE,
+                (timeout, _FAST_SEND_MEMBERS[code], sendArgs, sendKwargs),
+            )
         timeout, sendMember, sendArgs, sendKwargs = value
         return Request(0, Operation.CALL, 1, _FAST_EXECUTE, (timeout, sendMember, sendArgs, sendKwargs))
+
     if flags == _FAST_RESPONSE_FLAG:
+        if len(value) == 4:
+            result, status, transactionStatus, clientEncoding = value
+            snapshot = _unpackFastResult(result)
+            return SendSnapshot(
+                ("done", (snapshot,), ()),
+                0,
+                0,
+                status,
+                transactionStatus,
+                clientEncoding,
+            )
         return SendSnapshot(*value)
     return value
 

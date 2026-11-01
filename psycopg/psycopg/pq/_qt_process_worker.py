@@ -113,7 +113,13 @@ class Worker:
 
         if op == Operation.CALL:
             if request.objectId == 1 and request.member == _FAST_EXECUTE:
-                return self._executePending(obj, float(request.args[0]))
+                timeout = float(request.args[0])
+                if len(request.args) > 1:
+                    sendMember = request.args[1]
+                    if sendMember not in _SEND_MEMBERS:
+                        raise ValueError(f"unsupported deferred send: {sendMember!r}")
+                    getattr(obj, sendMember)(*request.args[2], **dict(request.args[3]))
+                return self._executePending(obj, timeout)
 
             value = getattr(obj, request.member)(*request.args, **dict(request.kwargs))
             if request.objectId == 1 and request.member == "get_result" and value is not None:

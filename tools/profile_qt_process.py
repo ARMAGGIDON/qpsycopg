@@ -125,6 +125,10 @@ def main() -> int:
                         selectOne()
                         perCall.append(events[offset:])
                     executeEvents = list(events)
+                    executeParentPhases = dict(parentPhases)
+                    workerPhases = connection.pgconn.qpsycopg_profile_take()
+                    parentPhases.clear()
+                    parentPhases.update(executeParentPhases)
                 else:
                     perCall = []
                     with connection.cursor() as cursor:

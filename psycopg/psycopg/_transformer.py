@@ -22,10 +22,10 @@ elif pq.__impl__ == "qt-process":
     from . import _py_transformer
 
     try:
-        import psycopg_binary._psycopg as _qt_fast
+        import psycopg_c._psycopg as _qt_fast
     except ImportError:
         try:
-            import psycopg_c._psycopg as _qt_fast
+            import psycopg_binary._psycopg as _qt_fast
         except ImportError:
             _qt_fast = None  # type: ignore[assignment]
 
@@ -40,6 +40,7 @@ elif pq.__impl__ == "qt-process":
             def __init__(self, context: abc.AdaptContext | None = None):
                 super().__init__(context)
                 self._fast = _qt_fast.Transformer(context)
+                self._bulkLoadRows = getattr(_qt_fast, "qpsycopg_load_rows_sequence", None)
                 self._fastResult = False
 
             @classmethod
@@ -79,6 +80,9 @@ elif pq.__impl__ == "qt-process":
                     return super().load_rows(row0, row1, make_row)
 
                 values = res._values  # type: ignore[attr-defined]
+                if self._bulkLoadRows is not None:
+                    return self._bulkLoadRows(self._fast, values, row0, row1, make_row)
+
                 nfields = self._nfields
                 load = self._fast.load_sequence
                 if make_row is tuple:

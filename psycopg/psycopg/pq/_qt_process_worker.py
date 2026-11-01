@@ -11,10 +11,22 @@ from psycopg import pq
 
 from ._qt_process_protocol import Operation, RemoteError, RemoteKind
 from ._qt_process_protocol import RemoteRef, Request, Response, ResultSnapshot
+from ._qt_process_protocol import SendSnapshot, WaitSnapshot
 from ._qt_process_protocol import recvFrame, sendFrame, sendToken
 
 READ = 1
 WRITE = 2
+_COPY_RESULTS = {pq.ExecStatus.COPY_IN, pq.ExecStatus.COPY_OUT, pq.ExecStatus.COPY_BOTH}
+_SEND_MEMBERS = {
+    "send_query",
+    "send_query_params",
+    "send_prepare",
+    "send_query_prepared",
+    "send_describe_prepared",
+    "send_describe_portal",
+    "send_close_prepared",
+    "send_close_portal",
+}
 
 
 class Worker:
@@ -88,12 +100,18 @@ class Worker:
         obj = self.objects[request.objectId]
 
         if op == Operation.CALL:
-            return self._normalize(
-                getattr(obj, request.member)(
-                    *request.args,
-                    **dict(request.kwargs),
+            value = getattr(obj, request.member)(*request.args, **dict(request.kwargs))
+            if (
+                request.objectId == 1
+                and request.member in _SEND_MEMBERS
+                and obj.pipeline_status == pq.PipelineStatus.OFF
+            ):
+                return SendSnapshot(
+                    self._normalize(value),
+                    int(obj.flush()),
+                    int(obj.is_busy()),
                 )
-            )
+            return self._normalize(value)
 
         if op == Operation.GET:
             return self._normalize(getattr(obj, request.member))
@@ -108,10 +126,33 @@ class Worker:
                 try:
                     if obj.status == pq.ConnStatus.OK:
                         obj.consume_input()
-                        return ready, True, obj.is_busy()
+                        busy = int(obj.is_busy())
+                        notifies = []
+                        while notify := obj.notifies():
+                            notifies.append(notify)
+
+                        results: list[ResultSnapshot | None] = []
+                        if not busy and obj.pipeline_status == pq.PipelineStatus.OFF:
+                            while True:
+                                result = obj.get_result()
+                                if result is None:
+                                    results.append(None)
+                                    break
+                                results.append(_snapshotResult(result))
+                                status = result.status
+                                if status in _COPY_RESULTS or status == pq.ExecStatus.PIPELINE_SYNC:
+                                    break
+
+                        return WaitSnapshot(
+                            ready=ready,
+                            consumed=True,
+                            busy=busy,
+                            notifies=tuple(notifies),
+                            results=tuple(results),
+                        )
                 except Exception:
                     pass
-            return ready, False, None
+            return WaitSnapshot(ready=ready)
 
         if op == Operation.ESCAPE:
             escapingConn: Any = obj if request.objectId else None

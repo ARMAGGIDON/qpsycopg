@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pickle
 import select
 import socket
 import sys
@@ -215,7 +216,7 @@ def _snapshotResult(result: Any) -> ResultSnapshot:
         rowCount=result.ntuples,
         columnCount=result.nfields,
         binaryTuples=result.binary_tuples,
-        data=data,
+        data=pickle.PickleBuffer(data),
         cells=CellTable(cells),
         paramTypes=tuple(result.param_type(i) for i in range(result.nparams)),
         commandStatus=result.command_status,

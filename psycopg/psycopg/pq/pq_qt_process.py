@@ -24,7 +24,8 @@ from .misc import ConninfoOption, PGnotify, PGresAttDesc, _clean_error_message
 from ._enums import ConnStatus, Trace
 from ._qt_process_protocol import Operation, RemoteError, RemoteKind, RemoteRef
 from ._qt_process_protocol import Request, Response, ResultSnapshot, SendSnapshot
-from ._qt_process_protocol import WaitSnapshot, recvFrame, recvToken, sendFrame
+from ._qt_process_protocol import ResultReadSnapshot, WaitSnapshot
+from ._qt_process_protocol import recvFrame, recvToken, sendFrame
 
 try:
     from PySide6.QtCore import QProcess, QProcessEnvironment
@@ -341,6 +342,14 @@ class _Transport:
                 self._flushCache[objectId] = value.flush
                 self._busyCache[objectId] = value.busy
                 return _restore(value.value, self)
+
+            if isinstance(value, ResultReadSnapshot):
+                if value.following:
+                    self._resultCache[objectId] = [
+                        cast(PGresult | None, _restore(item, self))
+                        for item in value.following
+                    ]
+                return cast(PGresult, _restore(value.value, self))
 
             if isinstance(value, WaitSnapshot):
                 if value.consumed:

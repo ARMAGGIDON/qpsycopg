@@ -5,7 +5,10 @@ psycopg_c.pq.PGresult object implementation.
 # Copyright (C) 2020 The Psycopg Team
 
 cimport cython
+from cpython.bytes cimport PyBytes_AS_STRING, PyBytes_FromStringAndSize
 from cpython.mem cimport PyMem_Free, PyMem_Malloc
+from libc.stdint cimport uint64_t
+from libc.string cimport memcpy, memset
 
 from psycopg.pq.misc import PGresAttDesc
 from psycopg.pq._enums import ExecStatus
@@ -111,6 +114,68 @@ cdef class PGresult:
                 return None
             else:
                 return b""
+
+    def _qpsycopg_pack_values(self) -> tuple[bytes, bytes, bytes, int]:
+        """Pack result cells into qpsycopg's data/offset/NULL wire layout."""
+        cdef int ntuples = libpq.PQntuples(self._pgresult_ptr)
+        cdef int nfields = libpq.PQnfields(self._pgresult_ptr)
+        cdef uint64_t cellCount = <uint64_t>ntuples * <uint64_t>nfields
+        cdef uint64_t maxPySize = (<uint64_t>1 << (sizeof(Py_ssize_t) * 8 - 1)) - 1
+        cdef uint64_t offsetsSize
+        cdef uint64_t nullsSize
+        cdef uint64_t dataSize = 0
+        cdef uint64_t cellIndex = 0
+        cdef int row
+        cdef int column
+        cdef int length
+        cdef char *value
+
+        if cellCount > maxPySize // sizeof(uint64_t) - 1:
+            raise OverflowError("PGresult has too many cells to pack")
+        offsetsSize = (cellCount + 1) * sizeof(uint64_t)
+        nullsSize = (cellCount + 7) // 8
+
+        cdef bytes offsets = PyBytes_FromStringAndSize(NULL, <Py_ssize_t>offsetsSize)
+        cdef bytes nulls = PyBytes_FromStringAndSize(NULL, <Py_ssize_t>nullsSize)
+        cdef char *offsetsPtr = PyBytes_AS_STRING(offsets)
+        cdef unsigned char *nullsPtr = <unsigned char *>PyBytes_AS_STRING(nulls)
+        if nullsSize:
+            memset(nullsPtr, 0, <size_t>nullsSize)
+
+        for row in range(ntuples):
+            for column in range(nfields):
+                memcpy(
+                    offsetsPtr + <Py_ssize_t>(cellIndex * sizeof(uint64_t)),
+                    &dataSize,
+                    sizeof(uint64_t),
+                )
+                length = libpq.PQgetlength(self._pgresult_ptr, row, column)
+                if length:
+                    dataSize += <uint64_t>length
+                    if dataSize > maxPySize:
+                        raise OverflowError("PGresult data is too large to pack")
+                elif libpq.PQgetisnull(self._pgresult_ptr, row, column):
+                    nullsPtr[cellIndex >> 3] |= <unsigned char>(1 << (cellIndex & 7))
+                cellIndex += 1
+
+        memcpy(
+            offsetsPtr + <Py_ssize_t>(cellIndex * sizeof(uint64_t)),
+            &dataSize,
+            sizeof(uint64_t),
+        )
+
+        cdef bytes data = PyBytes_FromStringAndSize(NULL, <Py_ssize_t>dataSize)
+        cdef char *dataPtr = PyBytes_AS_STRING(data)
+        cdef Py_ssize_t dataOffset = 0
+        for row in range(ntuples):
+            for column in range(nfields):
+                length = libpq.PQgetlength(self._pgresult_ptr, row, column)
+                if length:
+                    value = libpq.PQgetvalue(self._pgresult_ptr, row, column)
+                    memcpy(dataPtr + dataOffset, value, <size_t>length)
+                    dataOffset += length
+
+        return data, offsets, nulls, cellCount
 
     @property
     def nparams(self) -> int:

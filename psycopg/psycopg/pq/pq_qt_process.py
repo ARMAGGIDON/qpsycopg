@@ -567,8 +567,7 @@ class PGresult:
     def __init__(self, snapshot: ResultSnapshot) -> None:
         self._snapshot = snapshot
         self._columns = list(snapshot.columns)
-        self._data = memoryview(snapshot.data)
-        self._cells = snapshot.cells
+        self._values = snapshot.values
         self._columnCount = snapshot.columnCount
         self._errorFields = dict(snapshot.errorFields)
 
@@ -622,12 +621,8 @@ class PGresult:
     def binary_tuples(self) -> int:
         return self._snapshot.binaryTuples
 
-    def get_value(self, row_number: int, column_number: int) -> memoryview | None:
-        index = row_number * self._columnCount + column_number
-        start, size = self._cells[index]
-        if start < 0:
-            return None
-        return self._data[start : start + size]
+    def get_value(self, row_number: int, column_number: int) -> bytes | None:
+        return self._values[row_number * self._columnCount + column_number]
 
     @property
     def nparams(self) -> int:

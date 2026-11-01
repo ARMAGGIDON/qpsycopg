@@ -14,6 +14,10 @@ _VALUE_OFFSET = struct.Struct("=Q")
 _TOKEN_SIZE = 32
 _MAX_FRAME = 1 << 34  # 16 GiB: reject obviously corrupt frame lengths.
 _COALESCE_FRAME = 64 * 1024
+_FAST_REQUEST_FLAG = 1 << 63
+_FAST_RESPONSE_FLAG = 1 << 62
+_FRAME_FLAGS = _FAST_REQUEST_FLAG | _FAST_RESPONSE_FLAG
+_FRAME_SIZE_MASK = _FAST_RESPONSE_FLAG - 1
 _Profile = dict[str, float | int]
 _FAST_EXECUTE = "qpsycopg_execute_pending"
 
@@ -121,49 +125,20 @@ class ResultReadSnapshot(NamedTuple):
     following: tuple[ResultSnapshot | None, ...] = ()
 
 
-def _identity(value: Any) -> Any:
-    return value
-
-
 class Response(NamedTuple):
     requestId: int
     value: Any = None
     error: RemoteError | None = None
     notices: tuple[ResultSnapshot, ...] = ()
 
-    def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
-        # Fast execute uses requestId 0. For the overwhelmingly common success
-        # case, don't serialize the generic response envelope at all.
-        if self.requestId == 0 and self.error is None and not self.notices and isinstance(self.value, SendSnapshot):
-            return _identity, (self.value,)
-        return type(self), tuple(self)
 
+class FastExecuteFrame(NamedTuple):
+    """Parent-only marker: sendFrame serializes only these four payload fields."""
 
-def _makeFastExecuteRequest(
-    timeout: float,
-    sendMember: str,
-    sendArgs: tuple[Any, ...],
-    sendKwargs: tuple[tuple[str, Any], ...],
-) -> Request:
-    return Request(0, Operation.CALL, 1, _FAST_EXECUTE, (timeout, sendMember, sendArgs, sendKwargs))
-
-
-class FastExecuteRequest(NamedTuple):
     timeout: float
     sendMember: str
     sendArgs: tuple[Any, ...]
     sendKwargs: tuple[tuple[str, Any], ...]
-
-    def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
-        # The worker receives an ordinary Request, but fixed routing fields
-        # never travel over the wire.
-        return _makeFastExecuteRequest, tuple(self)
-
-
-class FastExecuteResponse(NamedTuple):
-    value: SendSnapshot | None = None
-    error: RemoteError | None = None
-    notices: tuple[ResultSnapshot, ...] = ()
 
 
 def _lowLatency(sock: socket.socket) -> None:
@@ -187,52 +162,82 @@ def recvToken(sock: socket.socket) -> bytes:
     return bytes(_recvExact(sock, _TOKEN_SIZE))
 
 
-def sendFrame(sock: socket.socket, value: Any, profile: _Profile | None = None, prefix: str = "frame") -> None:
-    if profile is None:
-        payload = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
-        header = _HEADER.pack(len(payload))
-        if len(payload) <= _COALESCE_FRAME:
-            sock.sendall(header + payload)
-        else:
-            sock.sendall(header)
-            sock.sendall(payload)
-        return
+def _wireValue(value: Any) -> tuple[Any, int]:
+    if isinstance(value, FastExecuteFrame):
+        return tuple(value), _FAST_REQUEST_FLAG
+    if (
+        isinstance(value, Response)
+        and value.requestId == 0
+        and value.error is None
+        and not value.notices
+        and isinstance(value.value, SendSnapshot)
+    ):
+        return tuple(value.value), _FAST_RESPONSE_FLAG
+    return value, 0
 
-    start = perf_counter()
-    payload = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
-    _addProfile(profile, f"{prefix}_pickle_seconds", perf_counter() - start)
 
-    header = _HEADER.pack(len(payload))
-    start = perf_counter()
+def _sendPayload(sock: socket.socket, payload: bytes, flags: int) -> None:
+    header = _HEADER.pack(flags | len(payload))
     if len(payload) <= _COALESCE_FRAME:
         sock.sendall(header + payload)
     else:
         sock.sendall(header)
         sock.sendall(payload)
+
+
+def sendFrame(sock: socket.socket, value: Any, profile: _Profile | None = None, prefix: str = "frame") -> None:
+    wireValue, flags = _wireValue(value)
+    if profile is None:
+        payload = pickle.dumps(wireValue, protocol=pickle.HIGHEST_PROTOCOL)
+        _sendPayload(sock, payload, flags)
+        return
+
+    start = perf_counter()
+    payload = pickle.dumps(wireValue, protocol=pickle.HIGHEST_PROTOCOL)
+    _addProfile(profile, f"{prefix}_pickle_seconds", perf_counter() - start)
+
+    start = perf_counter()
+    _sendPayload(sock, payload, flags)
     _addProfile(profile, f"{prefix}_socket_send_seconds", perf_counter() - start)
     _addProfile(profile, f"{prefix}_payload_bytes", len(payload))
     _addProfile(profile, f"{prefix}_frames", 1)
 
 
-def recvFrame(sock: socket.socket, profile: _Profile | None = None, prefix: str = "frame") -> Any:
-    if profile is None:
-        size = _HEADER.unpack(_recvExact(sock, _HEADER.size))[0]
-        if size > _MAX_FRAME:
-            raise ValueError(f"invalid qpsycopg frame size: {size}")
-        return pickle.loads(_recvExact(sock, size))
-
-    start = perf_counter()
-    size = _HEADER.unpack(_recvExact(sock, _HEADER.size))[0]
-    _addProfile(profile, f"{prefix}_header_wait_seconds", perf_counter() - start)
+def _readHeader(sock: socket.socket) -> tuple[int, int]:
+    frame = _HEADER.unpack(_recvExact(sock, _HEADER.size))[0]
+    flags = frame & _FRAME_FLAGS
+    if flags == _FRAME_FLAGS:
+        raise ValueError("invalid qpsycopg frame flags")
+    size = frame & _FRAME_SIZE_MASK
     if size > _MAX_FRAME:
         raise ValueError(f"invalid qpsycopg frame size: {size}")
+    return size, flags
+
+
+def _restoreWireValue(value: Any, flags: int) -> Any:
+    if flags == _FAST_REQUEST_FLAG:
+        timeout, sendMember, sendArgs, sendKwargs = value
+        return Request(0, Operation.CALL, 1, _FAST_EXECUTE, (timeout, sendMember, sendArgs, sendKwargs))
+    if flags == _FAST_RESPONSE_FLAG:
+        return SendSnapshot(*value)
+    return value
+
+
+def recvFrame(sock: socket.socket, profile: _Profile | None = None, prefix: str = "frame") -> Any:
+    if profile is None:
+        size, flags = _readHeader(sock)
+        return _restoreWireValue(pickle.loads(_recvExact(sock, size)), flags)
+
+    start = perf_counter()
+    size, flags = _readHeader(sock)
+    _addProfile(profile, f"{prefix}_header_wait_seconds", perf_counter() - start)
 
     start = perf_counter()
     payload = _recvExact(sock, size)
     _addProfile(profile, f"{prefix}_payload_recv_seconds", perf_counter() - start)
 
     start = perf_counter()
-    value = pickle.loads(payload)
+    value = _restoreWireValue(pickle.loads(payload), flags)
     _addProfile(profile, f"{prefix}_unpickle_seconds", perf_counter() - start)
     _addProfile(profile, f"{prefix}_payload_bytes", size)
     _addProfile(profile, f"{prefix}_frames", 1)

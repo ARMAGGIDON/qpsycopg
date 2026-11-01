@@ -55,6 +55,8 @@ READY_R = Ready.R
 READY_W = Ready.W
 READY_RW = Ready.RW
 
+_QT_PROCESS_EXECUTE_GRACE = 0.002
+
 logger = logging.getLogger("psycopg")
 
 
@@ -130,6 +132,21 @@ def _execute(pgconn: PGconn) -> PQGen[list[PGresult]]:
     Return the list of results returned by the database (whether success
     or error).
     """
+    if pq.__impl__ == "qt-process":
+        state, readyResults, notifications = pgconn.qpsycopg_execute_pending(  # type: ignore[attr-defined]
+            _QT_PROCESS_EXECUTE_GRACE
+        )
+        if pgconn.notify_handler:
+            for notification in notifications:
+                pgconn.notify_handler(notification)
+
+        results = list(readyResults)
+        if state == "done":
+            return results
+        if state == "partial":
+            results.extend((yield from _fetch_many(pgconn)))
+            return results
+
     yield from _send(pgconn)
     rv = yield from _fetch_many(pgconn)
     return rv

@@ -237,8 +237,31 @@ to the child process, produced approximately::
 
 The difference is noise-level and did not address the snapshot bottleneck. Both
 worker implementations still execute qpsycopg's Python ``_snapshotResult()``
-loop. Do not spend optimisation time switching worker implementation unless a
-new profile demonstrates an implementation-specific cost.
+loop.
+
+The C worker is still useful as a **feasibility/A-B harness** when a local
+``psycopg_c`` object exposes native ``PGresult`` state that is convenient for a
+prototype. A C-only prototype may estimate the best-case speed of direct
+``PQgetisnull``/``PQgetlength``/``PQgetvalue`` packing. However, that result is
+not by itself a production optimisation for qt-process.
+
+Before investing in a C-only fast path, answer how the same optimisation reaches
+the canonical ``binary`` worker. ``psycopg_c.pq.PGresult`` and
+``psycopg_binary.pq.PGresult`` are different extension types; do not assume that
+a helper which relies on ``psycopg_c`` private/native fields can consume a
+``psycopg_binary`` result or that their internal layouts are interchangeable.
+A production proposal must therefore identify one of the following:
+
+* a supported/native-accessible path from the canonical binary ``PGresult``;
+* a worker-agnostic native interface/capsule/buffer contract usable by both
+  implementations;
+* or an explicit architectural decision to change the canonical worker, backed
+  by end-to-end benchmarks and dependency/deployment trade-offs.
+
+If none of those exists yet, keep a ``worker=c`` packer clearly labelled as a
+proof-of-concept and use it only to estimate the performance ceiling. Do not
+build production-grade C-worker bootstrap/DLL infrastructure solely to support
+that experiment before its transfer path to ``binary`` is understood.
 
 On Windows, a worker import failure for ``psycopg_c.pq`` can surface in the
 parent as a later ``listener.accept()`` timeout because the child dies before
@@ -293,6 +316,11 @@ execute time. The measured C-worker run did not improve the target path and can
 introduce Windows DLL/bootstrap noise which distracts from the measured qpsycopg
 costs.
 
+A deliberate ``c`` run is acceptable when it answers a narrow feasibility
+question, such as the speed ceiling of a direct native packer. In that case,
+keep the experiment isolated and temporary. Do not promote a ``c``-only result
+to the production plan until a binary-compatible integration route is known.
+
 Benchmark tools
 ---------------
 
@@ -324,7 +352,16 @@ The large-query phase decomposition is now complete enough to choose the next
 experiment. Do **not** repeat that investigation or switch worker implementation
 before acting on its result.
 
-#. Implement/prototype a native worker-side packer which converts native
+#. Before implementing a production native packer, inspect the canonical
+   ``binary`` worker path and identify how native ``PGresult`` data can be
+   accessed without depending on ``psycopg_c``-private object layout. Record the
+   intended binary-compatible integration route.
+#. If useful, implement a small ``worker=c`` Cython packer only as a controlled
+   feasibility experiment to measure the attainable packing speed. Do not spend
+   time productising C-worker bootstrap/DLL handling for this purpose, and do
+   not treat the experiment as complete until the transfer path to ``binary`` is
+   clear.
+#. Implement/prototype the production worker-side packer which converts native
    ``PGresult`` cell storage directly into the existing ``PackedValues`` layout
    (data buffer + offsets + NULL bitmap), avoiding 300,000 Python
    ``result.get_value()``/``bytearray`` iterations for the 100k x 3 benchmark.
@@ -347,6 +384,8 @@ before acting on its result.
    new reproducible checkpoint.
 
 Decision rule for future sessions: once profiling identifies a concrete dominant
-phase, optimise that phase first unless there is a correctness blocker. Do not
-branch into unrelated implementation/environment experiments merely because
-another backend option exists.
+phase, optimise that phase first unless there is a correctness blocker. A
+backend-specific prototype is allowed only when it answers a narrow feasibility
+question; before promoting it to the production plan, demonstrate how the same
+optimisation applies to the canonical ``binary`` worker or explicitly justify a
+change of canonical worker.

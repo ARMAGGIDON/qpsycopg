@@ -87,6 +87,15 @@ def _refreshesParameters(value: Any) -> bool:
     )
 
 
+def _completedHealthy(value: Any) -> bool:
+    if not isinstance(value, tuple) or len(value) < 2 or value[0] != "done" or not isinstance(value[1], tuple):
+        return False
+    return all(
+        not isinstance(result, ResultSnapshot) or result.status != int(pq.ExecStatus.FATAL_ERROR)
+        for result in value[1]
+    )
+
+
 class Worker(_worker.Worker):
     def __init__(self, sock: socket.socket):
         super().__init__(sock)
@@ -107,7 +116,7 @@ class Worker(_worker.Worker):
         super()._setConnection(conn)
 
     def _sendSnapshot(self, obj: Any, value: Any, flush: int, busy: int) -> SendSnapshot:
-        status = int(obj.status)
+        status = int(pq.ConnStatus.OK) if _completedHealthy(value) else int(obj.status)
         self._snapshotStatus = status
         transactionStatus = int(obj.transaction_status)
         clientEncoding: bytes | None = None

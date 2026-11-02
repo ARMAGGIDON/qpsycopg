@@ -276,6 +276,25 @@ def _pgconnStatus(self: _pq.PGconn) -> int:
     return int(_originalPgconnStatus(self))
 
 
+def _exchangeFastFrame(sock: Any, request: FastExecuteFrame) -> Any:
+    roundtrip = getattr(sock, "roundtrip_frame", None)
+    if roundtrip is None:
+        _pq.sendFrame(sock, request)
+        return _pq.recvFrame(sock)
+
+    wireValue, flags = _protocol._wireValue(request)
+    payload = _protocol._serialize(wireValue, flags)
+    framed = _protocol._HEADER.pack(flags | len(payload)) + payload
+    result = roundtrip(framed, _protocol._MAX_FRAME)
+    if result is None:
+        _protocol._sendPayload(sock, payload, flags)
+        return _pq.recvFrame(sock)
+
+    frame, responsePayload = result
+    responseFlags = frame & _protocol._FRAME_FLAGS
+    return _protocol._restoreWireValue(_protocol._deserialize(responsePayload, responseFlags), responseFlags)
+
+
 def _fastExecute(
     self: _Transport,
     timeout: Any,
@@ -292,8 +311,7 @@ def _fastExecute(
         float(timeout), sendMember, _wire(sendArgs), tuple((name, _wire(value)) for name, value in sendKwargs)
     )
     try:
-        _pq.sendFrame(self.sock, request)
-        response = _pq.recvFrame(self.sock)
+        response = _exchangeFastFrame(self.sock, request)
     except (EOFError, OSError, ValueError) as error:
         self._markBroken()
         raise e.OperationalError("qpsycopg worker process disconnected") from error

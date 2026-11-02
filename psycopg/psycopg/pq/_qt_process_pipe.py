@@ -8,6 +8,11 @@ import secrets
 import time
 from typing import Any
 
+try:
+    from psycopg_c._psycopg import qpsycopg_pipe_frame_roundtrip as _nativeFrameRoundtrip
+except (ImportError, AttributeError):
+    _nativeFrameRoundtrip = None
+
 if os.name == "nt":
     import ctypes
     import msvcrt
@@ -102,6 +107,11 @@ class PipeStream:
         data = bytearray(size)
         count = self.recv_into(data)
         return bytes(memoryview(data)[:count])
+
+    def roundtrip_frame(self, request: bytes, max_frame: int) -> tuple[int, bytearray] | None:
+        if _nativeFrameRoundtrip is None or self._readStart != self._readEnd:
+            return None
+        return _nativeFrameRoundtrip(self.file.fileno(), request, self._readBuffer, max_frame)
 
     def settimeout(self, timeout: float | None) -> None:
         pass

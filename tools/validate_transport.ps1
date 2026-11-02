@@ -5,6 +5,11 @@ $dsn = $env:QPSYCOPG_DSN
 if (-not (Test-Path $python)) { throw "Virtual environment not found: $python" }
 if (-not $dsn) { throw "QPSYCOPG_DSN is not set" }
 
+$uv = Get-Command uv -ErrorAction Stop
+Write-Host "[build] psycopg-c native IPC"
+& $uv.Source pip install --python $python --reinstall --no-deps -e (Join-Path $repoRoot "psycopg_c")
+if ($LASTEXITCODE -ne 0) { throw "psycopg-c rebuild failed with code $LASTEXITCODE" }
+
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss-fff"
 $outDir = Join-Path $repoRoot "test-results\transport-validation-$timestamp"
 $archive = Join-Path $repoRoot "test-results\qpsycopg-transport-validation-$timestamp.zip"
@@ -59,6 +64,7 @@ try {
         iterations = 500
         rows = 100000
         threads = 8
+        native_frame_exchange = $true
     } | ConvertTo-Json | Set-Content (Join-Path $outDir "manifest.json") -Encoding utf8
 
     Compress-Archive -Path (Join-Path $outDir "*") -DestinationPath $archive -CompressionLevel Optimal -Force

@@ -88,6 +88,7 @@ def main() -> int:
             setattr(module, attr, wrapped)
 
         patch(lazy, "_fastExecute", "fast_execute", True)
+        patch(lazy, "_exchangeFastFrame", "exchange_fast_frame", True)
         patch(protocol, "_serialize", "serialize")
         patch(protocol, "_deserialize", "deserialize")
         patch(protocol, "_sendPayload", "socket_send")

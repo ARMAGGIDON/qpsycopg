@@ -25,6 +25,7 @@ if os.name == "nt":
     _ERROR_PIPE_BUSY = 231
     _ERROR_PIPE_CONNECTED = 535
     _BUFFER_SIZE = 1 << 20
+    _READ_AHEAD = 64 * 1024
 
     _kernel32.CreateNamedPipeW.argtypes = (
         ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
@@ -56,6 +57,9 @@ def _fileFromHandle(handle: int) -> io.FileIO:
 class PipeStream:
     def __init__(self, file: io.FileIO):
         self.file = file
+        self._readBuffer = bytearray(_READ_AHEAD)
+        self._readStart = 0
+        self._readEnd = 0
 
     def sendall(self, data: bytes | bytearray | memoryview) -> None:
         view = memoryview(data)
@@ -67,11 +71,37 @@ class PipeStream:
             offset += written
 
     def recv_into(self, target: Any) -> int:
-        received = self.file.readinto(target)
-        return 0 if received is None else int(received)
+        view = memoryview(target)
+        if not view:
+            return 0
+
+        available = self._readEnd - self._readStart
+        if available:
+            count = min(len(view), available)
+            view[:count] = memoryview(self._readBuffer)[self._readStart:self._readStart + count]
+            self._readStart += count
+            if self._readStart == self._readEnd:
+                self._readStart = self._readEnd = 0
+            return count
+
+        if len(view) >= _READ_AHEAD:
+            received = self.file.readinto(view)
+            return 0 if received is None else int(received)
+
+        received = self.file.readinto(self._readBuffer)
+        if not received:
+            return 0
+        count = min(len(view), received)
+        view[:count] = memoryview(self._readBuffer)[:count]
+        if count < received:
+            self._readStart = count
+            self._readEnd = int(received)
+        return count
 
     def recv(self, size: int) -> bytes:
-        return self.file.read(size)
+        data = bytearray(size)
+        count = self.recv_into(data)
+        return bytes(memoryview(data)[:count])
 
     def settimeout(self, timeout: float | None) -> None:
         pass

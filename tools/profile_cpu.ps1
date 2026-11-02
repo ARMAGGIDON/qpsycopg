@@ -26,6 +26,9 @@ try {
     & $python (Join-Path $PSScriptRoot "profile_cpu_path.py") $dsn > (Join-Path $outDir "cpu-qpsycopg.json")
     if ($LASTEXITCODE -ne 0) { throw "qpsycopg CPU profile failed with code $LASTEXITCODE" }
 
+    & $python (Join-Path $PSScriptRoot "profile_cpu_phases.py") $dsn > (Join-Path $outDir "cpu-phases-qpsycopg.json")
+    if ($LASTEXITCODE -ne 0) { throw "qpsycopg CPU phase profile failed with code $LASTEXITCODE" }
+
     Compress-Archive -Path (Join-Path $outDir "*") -DestinationPath $archive -CompressionLevel Optimal -Force
     Remove-Item $outDir -Recurse -Force
     Write-Host "CPU profile archive: $archive"

@@ -16,6 +16,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$workloadVersion = 1
 $repoRoot = Split-Path $PSScriptRoot -Parent
 $python = Join-Path $repoRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $python)) { throw "Virtual environment not found: $python" }
@@ -86,15 +87,16 @@ function Bench {
         (Join-Path $repoRoot "tools\bench_qt_process.py"), $Dsn,
         "--iterations", $Iterations, "--rows", $Rows, "--threads", $Threads
     )
+    $sentinelAt = [math]::Max(1, [math]::Ceiling($Repeat / 2))
 
     for ($i = 1; $i -le $Repeat; $i++) {
         $n = "{0:D2}" -f $i
-        if ($i % 2) {
-            Invoke-BackendTest "[$i/$Repeat] vanilla bench" $Worker $benchArgs (Result "bench-$n-vanilla")
-            Invoke-BackendTest "[$i/$Repeat] qpsycopg bench" "qt-process" $benchArgs (Result "bench-$n-qpsycopg")
-        } else {
-            Invoke-BackendTest "[$i/$Repeat] qpsycopg bench" "qt-process" $benchArgs (Result "bench-$n-qpsycopg")
-            Invoke-BackendTest "[$i/$Repeat] vanilla bench" $Worker $benchArgs (Result "bench-$n-vanilla")
+        if ($i -eq $sentinelAt -and $i % 2) {
+            Invoke-BackendTest "[sentinel] vanilla bench" $Worker $benchArgs (Result "bench-$n-vanilla")
+        }
+        Invoke-BackendTest "[$i/$Repeat] qpsycopg bench" "qt-process" $benchArgs (Result "bench-$n-qpsycopg")
+        if ($i -eq $sentinelAt -and -not ($i % 2)) {
+            Invoke-BackendTest "[sentinel] vanilla bench" $Worker $benchArgs (Result "bench-$n-vanilla")
         }
     }
 }
@@ -166,8 +168,8 @@ function BenchSummary([string] $backend, [string] $prefix = "bench") {
         select_1_p95_ms = Median @($runs | ForEach-Object { $_.select_1.p95_ms })
         select_cpu_us_per_call = Median @($runs | ForEach-Object { $_.select_1.resources.tree_cpu_us_per_call })
         select_ctx_switches_per_call = Median @($runs | ForEach-Object { $_.select_1.resources.tree_ctx_switches_per_call })
-        select_rss_mb = Median @($runs | ForEach-Object { $_.select_1.resources.tree_rss_mb_after })
-        select_private_mb = Median @($runs | ForEach-Object { $_.select_1.resources.tree_private_mb_after })
+        select_rss_mb = Median @($runs | ForEach-Object { $_.select_1.resources.tree_rssmb_after })
+        select_private_mb = Median @($runs | ForEach-Object { $_.select_1.resources.tree_privatemb_after })
         select_handles = Median @($runs | ForEach-Object { $_.select_1.resources.tree_handles_after })
         select_threads = Median @($runs | ForEach-Object { $_.select_1.resources.tree_threads_after })
         select_processes = Median @($runs | ForEach-Object { $_.select_1.resources.tree_process_count_after })
@@ -175,10 +177,10 @@ function BenchSummary([string] $backend, [string] $prefix = "bench") {
         fetch_execute_seconds = Median @($runs | ForEach-Object { $_.fetch.execute_seconds })
         fetchall_seconds = Median @($runs | ForEach-Object { $_.fetch.fetchall_seconds })
         fetch_rows_per_second = Median @($runs | ForEach-Object { $_.fetch.rows_per_second })
-        fetch_rss_before_mb = Median @($runs | ForEach-Object { $_.fetch.rss_before_mb })
-        fetch_rss_after_mb = Median @($runs | ForEach-Object { $_.fetch.rss_after_mb })
-        fetch_rss_delta_mb = Median @($runs | ForEach-Object { $_.fetch.rss_delta_mb })
-        fetch_private_mb = Median @($runs | ForEach-Object { $_.fetch.resources.tree_private_mb_after })
+        fetch_rss_before_mb = Median @($runs | ForEach-Object { $_.fetch.resources.tree_rssmb_before })
+        fetch_rss_after_mb = Median @($runs | ForEach-Object { $_.fetch.resources.tree_rssmb_after })
+        fetch_rss_delta_mb = Median @($runs | ForEach-Object { $_.fetch.resources.tree_rssmb_delta })
+        fetch_private_mb = Median @($runs | ForEach-Object { $_.fetch.resources.tree_privatemb_after })
         fetch_cpu_seconds = Median @($runs | ForEach-Object { $_.fetch.resources.tree_cpu_total_seconds })
         fetch_ctx_switches = Median @($runs | ForEach-Object { $_.fetch.resources.tree_ctx_total })
         threads_seconds = Median @($runs | ForEach-Object { $_.threads.seconds })
@@ -209,20 +211,33 @@ function Save-Results {
         rows = $Rows
         threads = $Threads
         repeat = $Repeat
+        vanilla_sentinels = if ($Mode -in @("bench", "all")) { 1 } else { 0 }
+        benchmark_workload_version = $workloadVersion
         branch = (& git -C $repoRoot branch --show-current).Trim()
         commit = (& git -C $repoRoot rev-parse HEAD).Trim()
     }
     $manifest | ConvertTo-Json | Set-Content (Result "manifest") -Encoding utf8
 
+    $baseline = $null
+    if ($Mode -in @("bench", "all")) {
+        $baselineFile = Result "vanilla-baseline"
+        Invoke-Python @(
+            (Join-Path $repoRoot "tools\vanilla_baseline.py"), $resultsRoot,
+            "--worker", $Worker, "--iterations", $Iterations, "--rows", $Rows, "--threads", $Threads
+        ) $baselineFile
+        $baseline = Get-Content $baselineFile -Raw | ConvertFrom-Json
+    }
+
     $summary = [ordered]@{
         vanilla = BenchSummary "vanilla"
+        vanilla_baseline = $baseline
         qpsycopg = BenchSummary "qpsycopg"
         transport_tcp = BenchSummary "tcp" "transport"
         transport_pipe = BenchSummary "pipe" "transport"
         vanilla_qt = QtSummary "vanilla"
         qpsycopg_qt = QtSummary "qpsycopg"
     }
-    $summary | ConvertTo-Json -Depth 5 | Set-Content (Result "summary") -Encoding utf8
+    $summary | ConvertTo-Json -Depth 7 | Set-Content (Result "summary") -Encoding utf8
 
     Compress-Archive -Path (Join-Path $runDir "*") -DestinationPath $archive -CompressionLevel Optimal -Force
     if (-not $KeepResults) { Remove-Item $runDir -Recurse -Force }

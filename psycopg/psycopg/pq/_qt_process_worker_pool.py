@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import socket
 import sys
-from time import perf_counter
+from time import perf_counter, thread_time_ns
 from typing import Any
 
 from psycopg import pq
@@ -12,12 +12,20 @@ from psycopg import pq
 from .. import errors as e
 from . import _qt_process_worker as _worker
 from ._qt_process_pipe import connectPipe
-from ._qt_process_protocol import Operation, Request, ResultSnapshot, SendSnapshot
+from ._qt_process_protocol import Operation, RemoteError, Request, Response, ResultSnapshot, SendSnapshot
+from ._qt_process_protocol import recvFrame, sendFrame
+
+
+def _addCpu(profile: dict[str, float | int] | None, key: str, started: int) -> None:
+    if profile is not None:
+        profile[f"{key}_cpu_ns"] = profile.get(f"{key}_cpu_ns", 0) + thread_time_ns() - started
+        profile[f"{key}_calls"] = profile.get(f"{key}_calls", 0) + 1
 
 
 def _snapshotResult(result: Any, profile: dict[str, float | int] | None = None) -> ResultSnapshot:
     """Snapshot PGresult using the native metadata packer when available."""
     totalStart = perf_counter() if profile is not None else 0.0
+    totalCpuStart = thread_time_ns() if profile is not None else 0
     snapshotMeta = getattr(result, "_qpsycopg_snapshot_meta", None)
     if snapshotMeta is not None:
         status, ntuples, nfields, columns, binaryTuples, paramTypes, commandStatus, commandTuples, oidValue = snapshotMeta()
@@ -39,9 +47,11 @@ def _snapshotResult(result: Any, profile: dict[str, float | int] | None = None) 
         oidValue = result.oid_value
 
     packStart = perf_counter() if profile is not None else 0.0
+    packCpuStart = thread_time_ns() if profile is not None else 0
     values = _worker._packResultValues(result, ntuples, nfields, profile)
     if profile is not None:
         profile["snapshot_values_seconds"] = profile.get("snapshot_values_seconds", 0) + perf_counter() - packStart
+        profile["snapshot_values_cpu_ns"] = profile.get("snapshot_values_cpu_ns", 0) + thread_time_ns() - packCpuStart
         profile["snapshot_cells"] = profile.get("snapshot_cells", 0) + ntuples * nfields
 
     if status in _worker._SUCCESS_RESULTS:
@@ -72,6 +82,7 @@ def _snapshotResult(result: Any, profile: dict[str, float | int] | None = None) 
     )
     if profile is not None:
         profile["snapshot_total_seconds"] = profile.get("snapshot_total_seconds", 0) + perf_counter() - totalStart
+        profile["snapshot_total_cpu_ns"] = profile.get("snapshot_total_cpu_ns", 0) + thread_time_ns() - totalCpuStart
         profile["snapshot_results"] = profile.get("snapshot_results", 0) + 1
     return snapshot
 
@@ -103,6 +114,50 @@ class Worker(_worker.Worker):
         self._clientEncoding: bytes | None = None
         self._snapshotStatus: int | None = None
 
+    def run(self) -> None:
+        while True:
+            started = thread_time_ns() if self.profile is not None else 0
+            request = recvFrame(self.sock)
+            _addCpu(self.profile, "worker_recv_frame", started)
+            if not isinstance(request, Request):
+                raise TypeError(f"unexpected worker request: {type(request)!r}")
+
+            stop = request.operation == Operation.CLOSE
+            try:
+                started = thread_time_ns() if self.profile is not None else 0
+                try:
+                    value = self._handle(request)
+                finally:
+                    _addCpu(self.profile, "worker_handle", started)
+
+                started = thread_time_ns() if self.profile is not None else 0
+                try:
+                    stop |= self._connectionBroken()
+                finally:
+                    _addCpu(self.profile, "worker_connection_check", started)
+
+                response = Response(requestId=request.requestId, value=value, notices=tuple(self.notices))
+            except BaseException as error:
+                started = thread_time_ns() if self.profile is not None else 0
+                try:
+                    stop |= self._connectionBroken()
+                finally:
+                    _addCpu(self.profile, "worker_connection_check", started)
+                response = Response(
+                    requestId=request.requestId,
+                    error=RemoteError(module=type(error).__module__, name=type(error).__name__, message=str(error)),
+                    notices=tuple(self.notices),
+                )
+            finally:
+                self.notices.clear()
+
+            started = thread_time_ns() if self.profile is not None else 0
+            sendFrame(self.sock, response, self.profile, "worker_response")
+            _addCpu(self.profile, "worker_send_frame", started)
+            if stop:
+                self._closeObjects()
+                return
+
     def _closeCancelControl(self) -> None:
         control = self.cancelControl
         if control is None:
@@ -117,15 +172,33 @@ class Worker(_worker.Worker):
         super()._setConnection(conn)
 
     def _sendSnapshot(self, obj: Any, value: Any, flush: int, busy: int) -> SendSnapshot:
-        status = int(pq.ConnStatus.OK) if _completedHealthy(value) else int(obj.status)
-        self._snapshotStatus = status
-        transactionStatus = int(obj.transaction_status)
-        clientEncoding: bytes | None = None
-        if status == int(pq.ConnStatus.OK) and (self._clientEncoding is None or _refreshesParameters(value)):
-            encoding = obj.parameter_status(b"client_encoding")
-            self._clientEncoding = bytes(encoding) if encoding is not None else b""
-            clientEncoding = self._clientEncoding or None
-        return SendSnapshot(value, flush, busy, status, transactionStatus, clientEncoding)
+        started = thread_time_ns() if self.profile is not None else 0
+        try:
+            status = int(pq.ConnStatus.OK) if _completedHealthy(value) else int(obj.status)
+            self._snapshotStatus = status
+            transactionStatus = int(obj.transaction_status)
+            clientEncoding: bytes | None = None
+            if status == int(pq.ConnStatus.OK) and (self._clientEncoding is None or _refreshesParameters(value)):
+                encoding = obj.parameter_status(b"client_encoding")
+                self._clientEncoding = bytes(encoding) if encoding is not None else b""
+                clientEncoding = self._clientEncoding or None
+            return SendSnapshot(value, flush, busy, status, transactionStatus, clientEncoding)
+        finally:
+            _addCpu(self.profile, "worker_send_snapshot", started)
+
+    def _executePending(self, obj: Any, timeout: float) -> SendSnapshot:
+        started = thread_time_ns() if self.profile is not None else 0
+        try:
+            return super()._executePending(obj, timeout)
+        finally:
+            _addCpu(self.profile, "worker_execute_pending", started)
+
+    def _wait(self, obj: Any, mask: int, timeout: float | None) -> int:
+        started = thread_time_ns() if self.profile is not None else 0
+        try:
+            return super()._wait(obj, mask, timeout)
+        finally:
+            _addCpu(self.profile, "worker_wait", started)
 
     def _connectionBroken(self) -> bool:
         if self._snapshotStatus is not None:

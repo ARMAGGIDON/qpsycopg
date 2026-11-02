@@ -11,7 +11,7 @@ from psycopg import pq
 
 from .. import errors as e
 from . import _qt_process_worker as _worker
-from ._qt_process_protocol import Operation, Request, ResultSnapshot, sendToken
+from ._qt_process_protocol import Operation, Request, ResultSnapshot, SendSnapshot, sendToken
 
 
 def _snapshotResult(result: Any, profile: dict[str, float | int] | None = None) -> ResultSnapshot:
@@ -78,7 +78,20 @@ def _snapshotResult(result: Any, profile: dict[str, float | int] | None = None) 
 _worker._snapshotResult = _snapshotResult
 
 
+def _refreshesParameters(value: Any) -> bool:
+    if not isinstance(value, tuple) or len(value) < 2 or not isinstance(value[1], tuple):
+        return False
+    return any(
+        isinstance(result, ResultSnapshot) and result.commandStatus in (b"SET", b"RESET", b"DISCARD")
+        for result in value[1]
+    )
+
+
 class Worker(_worker.Worker):
+    def __init__(self, sock: socket.socket):
+        super().__init__(sock)
+        self._clientEncoding: bytes | None = None
+
     def _closeCancelControl(self) -> None:
         control = self.cancelControl
         if control is None:
@@ -88,6 +101,19 @@ class Worker(_worker.Worker):
             raise e.OperationalError("qpsycopg cancellation control did not stop")
         self.cancelControl = None
 
+    def _setConnection(self, conn: Any) -> None:
+        self._clientEncoding = None
+        super()._setConnection(conn)
+
+    def _sendSnapshot(self, obj: Any, value: Any, flush: int, busy: int) -> SendSnapshot:
+        status = int(obj.status)
+        transactionStatus = int(obj.transaction_status)
+        if status == int(pq.ConnStatus.OK) and (self._clientEncoding is None or _refreshesParameters(value)):
+            encoding = obj.parameter_status(b"client_encoding")
+            self._clientEncoding = bytes(encoding) if encoding is not None else b""
+        clientEncoding = self._clientEncoding or None if status == int(pq.ConnStatus.OK) else None
+        return SendSnapshot(value, flush, busy, status, transactionStatus, clientEncoding)
+
     def _handle(self, request: Request) -> Any:
         if request.operation in (Operation.CONNECT, Operation.CONNECT_START):
             self._closeCancelControl()
@@ -96,8 +122,13 @@ class Worker(_worker.Worker):
             conn = self.objects.pop(1, None)
             if conn is not None:
                 conn.finish()
+            self._clientEncoding = None
             return None
-        return super()._handle(request)
+
+        value = super()._handle(request)
+        if request.operation == Operation.CALL and request.objectId == 1 and request.member == "set_client_encoding":
+            self._clientEncoding = None
+        return value
 
 
 def main() -> int:

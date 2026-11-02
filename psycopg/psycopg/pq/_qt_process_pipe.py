@@ -12,6 +12,8 @@ try:
     from psycopg_c._psycopg import qpsycopg_pipe_frame_roundtrip as _nativeFrameRoundtrip
 except (ImportError, AttributeError):
     _nativeFrameRoundtrip = None
+if os.environ.get("QPSYCOPG_NATIVE_IPC", "1") == "0":
+    _nativeFrameRoundtrip = None
 
 if os.name == "nt":
     import ctypes

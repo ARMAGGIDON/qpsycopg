@@ -13,6 +13,7 @@ New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 $oldImpl = $env:PSYCOPG_IMPL
 $oldWorker = $env:QPSYCOPG_WORKER_IMPL
 $oldIpc = $env:QPSYCOPG_IPC
+$ipc = if ($IsWindows) { "pipe" } else { "tcp" }
 
 try {
     $env:PSYCOPG_IMPL = "binary"
@@ -22,7 +23,7 @@ try {
 
     $env:PSYCOPG_IMPL = "qt-process"
     $env:QPSYCOPG_WORKER_IMPL = "binary"
-    $env:QPSYCOPG_IPC = "tcp"
+    $env:QPSYCOPG_IPC = $ipc
     & $python (Join-Path $PSScriptRoot "profile_cpu_path.py") $dsn > (Join-Path $outDir "cpu-qpsycopg.json")
     if ($LASTEXITCODE -ne 0) { throw "qpsycopg CPU profile failed with code $LASTEXITCODE" }
 

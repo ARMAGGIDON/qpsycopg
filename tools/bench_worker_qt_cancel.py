@@ -56,8 +56,14 @@ class DirectConnection:
         self.connection.close()
 
 
-def qtPhase(database: Any, caller: str, queries: int, sleepSeconds: float, timerMs: int) -> dict[str, Any]:
-    app = QCoreApplication.instance() or QCoreApplication([])
+def qtPhase(
+    app: QCoreApplication,
+    database: Any,
+    caller: str,
+    queries: int,
+    sleepSeconds: float,
+    timerMs: int,
+) -> dict[str, Any]:
     done = threading.Event()
     errors: list[BaseException] = []
     intervals: list[float] = []
@@ -165,9 +171,12 @@ def main() -> int:
     parser.add_argument("--cancel-delay", type=float, default=.2)
     args = parser.parse_args()
 
+    # A Qt application must exist in the real process main thread before qpsycopg
+    # can create any QProcess objects in its dedicated owner thread.
+    app = QCoreApplication.instance() or QCoreApplication([])
     database: Any = ThreadConnection(args.dsn) if args.mode == "thread" else DirectConnection(args.dsn)
     try:
-        qt = qtPhase(database, args.caller, args.queries, args.sleep_ms / 1000, args.timer_ms)
+        qt = qtPhase(app, database, args.caller, args.queries, args.sleep_ms / 1000, args.timer_ms)
         cancel = cancelPhase(database, args.cancel_delay)
     finally:
         database.close()

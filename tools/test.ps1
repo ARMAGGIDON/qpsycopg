@@ -27,7 +27,8 @@ if (-not $Tag -and $Mode -in @("bench", "all")) {
     $lastOptimized = Get-ChildItem $resultsRoot -File -Filter "qpsycopg-*.zip" |
         ForEach-Object { if ($_.BaseName -match '-optimized(\d+)$') { [int] $Matches[1] } } |
         Sort-Object -Descending | Select-Object -First 1
-    $Tag = "optimized$($(if ($null -eq $lastOptimized) { 1 } else { $lastOptimized + 1 }))"
+    $nextOptimized = if ($null -eq $lastOptimized) { 17 } else { [math]::Max(17, $lastOptimized + 1) }
+    $Tag = "optimized$nextOptimized"
 }
 
 $safeTag = $Tag -replace '[^\w.-]', '_'
@@ -88,7 +89,7 @@ function Bench {
             Invoke-BackendTest "[$i/$Repeat] vanilla bench" $Worker $benchArgs (Result "bench-$n-vanilla")
             Invoke-BackendTest "[$i/$Repeat] qpsycopg bench" "qt-process" $benchArgs (Result "bench-$n-qpsycopg")
         } else {
-            Invoke-BackendTest "[$i/$Repeat] qpsycopg bench" "qt-process" $benchArgs (Result "bench-$n-qpsycopg")
+            Invoke-BackendTest "[$i/$Repeat] qpsycopg bench" "qt-process" $Worker $benchArgs (Result "bench-$n-qpsycopg")
             Invoke-BackendTest "[$i/$Repeat] vanilla bench" $Worker $benchArgs (Result "bench-$n-vanilla")
         }
     }
@@ -101,9 +102,9 @@ function QtBench {
         $n = "{0:D2}" -f $i
         if ($i % 2) {
             Invoke-BackendTest "[$i/$Repeat] vanilla Qt" $Worker $qtArgs (Result "qt-$n-vanilla")
-            Invoke-BackendTest "[$i/$Repeat] qpsycopg Qt" "qt-process" $qtArgs (Result "qt-$n-qpsycopg")
+            Invoke-BackendTest "[$i/$Repeat] qpsycopg Qt" "qt-process" $Worker $qtArgs (Result "qt-$n-qpsycopg")
         } else {
-            Invoke-BackendTest "[$i/$Repeat] qpsycopg Qt" "qt-process" $qtArgs (Result "qt-$n-qpsycopg")
+            Invoke-BackendTest "[$i/$Repeat] qpsycopg Qt" "qt-process" $Worker $qtArgs (Result "qt-$n-qpsycopg")
             Invoke-BackendTest "[$i/$Repeat] vanilla Qt" $Worker $qtArgs (Result "qt-$n-vanilla")
         }
     }

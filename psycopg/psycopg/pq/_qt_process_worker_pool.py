@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import socket
 import sys
 from time import perf_counter, thread_time_ns
@@ -14,6 +15,13 @@ from . import _qt_process_worker as _worker
 from ._qt_process_pipe import connectPipe
 from ._qt_process_protocol import Operation, RemoteError, Request, Response, ResultSnapshot, SendSnapshot
 from ._qt_process_protocol import recvFrame, sendFrame
+
+try:
+    from psycopg_c._psycopg import qpsycopg_wait_socket as _nativeWaitSocket
+except (ImportError, AttributeError):
+    _nativeWaitSocket = None
+if sys.platform != "win32" or os.environ.get("QPSYCOPG_NATIVE_WAIT", "0") == "0":
+    _nativeWaitSocket = None
 
 
 def _addCpu(profile: dict[str, float | int] | None, key: str, started: int) -> None:
@@ -196,7 +204,15 @@ class Worker(_worker.Worker):
     def _wait(self, obj: Any, mask: int, timeout: float | None) -> int:
         started = thread_time_ns() if self.profile is not None else 0
         try:
-            return super()._wait(obj, mask, timeout)
+            if _nativeWaitSocket is None:
+                return super()._wait(obj, mask, timeout)
+
+            wallStart = perf_counter() if self.profile is not None else 0.0
+            ready = int(_nativeWaitSocket(int(obj.socket), mask, timeout))
+            if self.profile is not None:
+                self._profile("libpq_wait_seconds", perf_counter() - wallStart)
+                self._profile("libpq_wait_calls", 1)
+            return ready
         finally:
             _addCpu(self.profile, "worker_wait", started)
 

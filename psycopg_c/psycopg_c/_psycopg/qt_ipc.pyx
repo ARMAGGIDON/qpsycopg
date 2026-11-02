@@ -9,8 +9,13 @@ from libc.string cimport memcpy
 cdef extern from *:
     """
 #ifdef MS_WINDOWS
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
 #include <windows.h>
 #include <io.h>
+#include <stdint.h>
 
 static int qpsycopg_pipe_write_all(int fd, const char *buffer, Py_ssize_t size)
 {
@@ -70,16 +75,67 @@ static int qpsycopg_pipe_read_some(int fd, char *buffer, Py_ssize_t size, Py_ssi
     *received_out = (Py_ssize_t)received;
     return 0;
 }
+
+static int qpsycopg_socket_wait(Py_ssize_t socket_value, int mask, double timeout_seconds, int *ready_out)
+{
+    SOCKET sock = (SOCKET)(uintptr_t)socket_value;
+    fd_set read_set;
+    fd_set write_set;
+    fd_set *read_ptr = NULL;
+    fd_set *write_ptr = NULL;
+    struct timeval timeout;
+    struct timeval *timeout_ptr = NULL;
+    int result;
+    int ready = 0;
+
+    if (mask & 1) {
+        FD_ZERO(&read_set);
+        FD_SET(sock, &read_set);
+        read_ptr = &read_set;
+    }
+    if (mask & 2) {
+        FD_ZERO(&write_set);
+        FD_SET(sock, &write_set);
+        write_ptr = &write_set;
+    }
+    if (timeout_seconds >= 0.0) {
+        long seconds = (long)timeout_seconds;
+        long microseconds = (long)((timeout_seconds - (double)seconds) * 1000000.0);
+        if (microseconds < 0)
+            microseconds = 0;
+        if (microseconds >= 1000000) {
+            seconds += microseconds / 1000000;
+            microseconds %= 1000000;
+        }
+        timeout.tv_sec = seconds;
+        timeout.tv_usec = microseconds;
+        timeout_ptr = &timeout;
+    }
+
+    result = select(0, read_ptr, write_ptr, NULL, timeout_ptr);
+    if (result == SOCKET_ERROR)
+        return -WSAGetLastError();
+    if (read_ptr && FD_ISSET(sock, &read_set))
+        ready |= 1;
+    if (write_ptr && FD_ISSET(sock, &write_set))
+        ready |= 2;
+    *ready_out = ready;
+    return 0;
+}
 #else
 static int qpsycopg_pipe_write_all(int fd, const char *buffer, Py_ssize_t size) { return -1; }
 static int qpsycopg_pipe_read_exact(int fd, char *buffer, Py_ssize_t size) { return -1; }
 static int qpsycopg_pipe_read_some(int fd, char *buffer, Py_ssize_t size, Py_ssize_t *received_out) { return -1; }
+static int qpsycopg_socket_wait(Py_ssize_t socket_value, int mask, double timeout_seconds, int *ready_out) { return -1; }
 #endif
     """
     int qpsycopg_pipe_write_all(int fd, const char *buffer, Py_ssize_t size) noexcept nogil
     int qpsycopg_pipe_read_exact(int fd, char *buffer, Py_ssize_t size) noexcept nogil
     int qpsycopg_pipe_read_some(
         int fd, char *buffer, Py_ssize_t size, Py_ssize_t *received_out
+    ) noexcept nogil
+    int qpsycopg_socket_wait(
+        Py_ssize_t socket_value, int mask, double timeout_seconds, int *ready_out
     ) noexcept nogil
 
 
@@ -239,3 +295,21 @@ def qpsycopg_pipe_recv_frame(int fd, bytearray scratch, Py_ssize_t max_frame):
     if received_total > frame_end:
         return frame, payload, frame_end, received_total
     return frame, payload, 0, 0
+
+
+def qpsycopg_wait_socket(Py_ssize_t socket_value, int mask, timeout):
+    """Wait for one libpq socket using Winsock select with the GIL released."""
+    cdef double timeout_seconds = -1.0
+    cdef int ready = 0
+    cdef int status
+
+    if timeout is not None:
+        timeout_seconds = float(timeout)
+        if timeout_seconds < 0.0:
+            raise ValueError("timeout must be non-negative or None")
+
+    with nogil:
+        status = qpsycopg_socket_wait(socket_value, mask, timeout_seconds, &ready)
+    if status < 0:
+        raise OSError(-status, "native qpsycopg socket wait failed")
+    return ready

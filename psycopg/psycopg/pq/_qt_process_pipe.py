@@ -15,6 +15,8 @@ except (ImportError, AttributeError):
     _nativeFrameRoundtrip = _nativeRecvFrame = None
 if os.environ.get("QPSYCOPG_NATIVE_IPC", "1") == "0":
     _nativeFrameRoundtrip = _nativeRecvFrame = None
+elif os.environ.get("QPSYCOPG_NATIVE_RECV", "1") == "0":
+    _nativeRecvFrame = None
 
 if os.name == "nt":
     import ctypes

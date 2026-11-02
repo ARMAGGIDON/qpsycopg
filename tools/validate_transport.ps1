@@ -24,10 +24,10 @@ function Set-Qpsycopg([string] $ipc) {
     $env:QPSYCOPG_IPC = $ipc
 }
 
-function Run([string] $ipc, [string] $label, [string[]] $args, [string] $file) {
+function Run([string] $ipc, [string] $label, [string[]] $pythonArgs, [string] $file) {
     Write-Host "[$ipc] $label"
     Set-Qpsycopg $ipc
-    & $python @args > (Join-Path $outDir $file)
+    & $python @pythonArgs > (Join-Path $outDir $file)
     if ($LASTEXITCODE -ne 0) { throw "$ipc $label failed with code $LASTEXITCODE" }
 }
 

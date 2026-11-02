@@ -108,10 +108,11 @@ class Worker(_worker.Worker):
     def _sendSnapshot(self, obj: Any, value: Any, flush: int, busy: int) -> SendSnapshot:
         status = int(obj.status)
         transactionStatus = int(obj.transaction_status)
+        clientEncoding: bytes | None = None
         if status == int(pq.ConnStatus.OK) and (self._clientEncoding is None or _refreshesParameters(value)):
             encoding = obj.parameter_status(b"client_encoding")
             self._clientEncoding = bytes(encoding) if encoding is not None else b""
-        clientEncoding = self._clientEncoding or None if status == int(pq.ConnStatus.OK) else None
+            clientEncoding = self._clientEncoding or None
         return SendSnapshot(value, flush, busy, status, transactionStatus, clientEncoding)
 
     def _handle(self, request: Request) -> Any:

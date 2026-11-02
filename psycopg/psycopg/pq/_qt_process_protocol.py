@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import marshal
 import pickle
 import socket
 import struct
@@ -18,6 +19,8 @@ _FAST_REQUEST_FLAG = 1 << 63
 _FAST_RESPONSE_FLAG = 1 << 62
 _FRAME_FLAGS = _FAST_REQUEST_FLAG | _FAST_RESPONSE_FLAG
 _FRAME_SIZE_MASK = _FAST_RESPONSE_FLAG - 1
+_MARSHAL_PAYLOAD = b"M"
+_PICKLE_PAYLOAD = b"P"
 _Profile = dict[str, float | int]
 _FAST_EXECUTE = "qpsycopg_execute_pending"
 _FAST_SEND_MEMBERS = (
@@ -240,14 +243,30 @@ def _wireValue(value: Any) -> tuple[Any, int]:
         ):
             result = _packFastResult(execution[1][0])
             if result is not None:
-                return (
-                    result,
-                    snapshot.status,
-                    snapshot.transactionStatus,
-                    snapshot.clientEncoding,
-                ), _FAST_RESPONSE_FLAG
+                return (result, snapshot.status, snapshot.transactionStatus, snapshot.clientEncoding), _FAST_RESPONSE_FLAG
         return tuple(snapshot), _FAST_RESPONSE_FLAG
     return value, 0
+
+
+def _serialize(value: Any, flags: int) -> bytes:
+    if flags:
+        try:
+            return _MARSHAL_PAYLOAD + marshal.dumps(value)
+        except ValueError:
+            return _PICKLE_PAYLOAD + pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+    return pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def _deserialize(payload: bytes | bytearray, flags: int) -> Any:
+    if not flags:
+        return pickle.loads(payload)
+    marker = payload[0:1]
+    data = payload[1:]
+    if marker == _MARSHAL_PAYLOAD:
+        return marshal.loads(data)
+    if marker == _PICKLE_PAYLOAD:
+        return pickle.loads(data)
+    raise ValueError("invalid qpsycopg fast payload marker")
 
 
 def _sendPayload(sock: socket.socket, payload: bytes, flags: int) -> None:
@@ -262,12 +281,11 @@ def _sendPayload(sock: socket.socket, payload: bytes, flags: int) -> None:
 def sendFrame(sock: socket.socket, value: Any, profile: _Profile | None = None, prefix: str = "frame") -> None:
     wireValue, flags = _wireValue(value)
     if profile is None:
-        payload = pickle.dumps(wireValue, protocol=pickle.HIGHEST_PROTOCOL)
-        _sendPayload(sock, payload, flags)
+        _sendPayload(sock, _serialize(wireValue, flags), flags)
         return
 
     start = perf_counter()
-    payload = pickle.dumps(wireValue, protocol=pickle.HIGHEST_PROTOCOL)
+    payload = _serialize(wireValue, flags)
     _addProfile(profile, f"{prefix}_pickle_seconds", perf_counter() - start)
 
     start = perf_counter()
@@ -295,13 +313,7 @@ def _restoreWireValue(value: Any, flags: int) -> Any:
             return Request(0, Operation.CALL, 1, _FAST_EXECUTE, (timeout, _FAST_SEND_MEMBERS[code], sendArgs, ()))
         if len(value) == 4 and isinstance(value[1], int):
             timeout, code, sendArgs, sendKwargs = value
-            return Request(
-                0,
-                Operation.CALL,
-                1,
-                _FAST_EXECUTE,
-                (timeout, _FAST_SEND_MEMBERS[code], sendArgs, sendKwargs),
-            )
+            return Request(0, Operation.CALL, 1, _FAST_EXECUTE, (timeout, _FAST_SEND_MEMBERS[code], sendArgs, sendKwargs))
         timeout, sendMember, sendArgs, sendKwargs = value
         return Request(0, Operation.CALL, 1, _FAST_EXECUTE, (timeout, sendMember, sendArgs, sendKwargs))
 
@@ -309,14 +321,7 @@ def _restoreWireValue(value: Any, flags: int) -> Any:
         if len(value) == 4:
             result, status, transactionStatus, clientEncoding = value
             snapshot = _unpackFastResult(result)
-            return SendSnapshot(
-                ("done", (snapshot,), ()),
-                0,
-                0,
-                status,
-                transactionStatus,
-                clientEncoding,
-            )
+            return SendSnapshot(("done", (snapshot,), ()), 0, 0, status, transactionStatus, clientEncoding)
         return SendSnapshot(*value)
     return value
 
@@ -324,7 +329,7 @@ def _restoreWireValue(value: Any, flags: int) -> Any:
 def recvFrame(sock: socket.socket, profile: _Profile | None = None, prefix: str = "frame") -> Any:
     if profile is None:
         size, flags = _readHeader(sock)
-        return _restoreWireValue(pickle.loads(_recvExact(sock, size)), flags)
+        return _restoreWireValue(_deserialize(_recvExact(sock, size), flags), flags)
 
     start = perf_counter()
     size, flags = _readHeader(sock)
@@ -335,7 +340,7 @@ def recvFrame(sock: socket.socket, profile: _Profile | None = None, prefix: str 
     _addProfile(profile, f"{prefix}_payload_recv_seconds", perf_counter() - start)
 
     start = perf_counter()
-    value = _restoreWireValue(pickle.loads(payload), flags)
+    value = _restoreWireValue(_deserialize(payload, flags), flags)
     _addProfile(profile, f"{prefix}_unpickle_seconds", perf_counter() - start)
     _addProfile(profile, f"{prefix}_payload_bytes", size)
     _addProfile(profile, f"{prefix}_frames", 1)

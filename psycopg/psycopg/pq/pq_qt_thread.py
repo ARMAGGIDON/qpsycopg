@@ -12,7 +12,7 @@ from typing import Any, cast
 from .. import errors as e
 from . import abc
 from . import pq_qt_process as _base
-from ._enums import ConnStatus
+from ._enums import ConnStatus, PollingStatus
 from ._qt_process_protocol import Operation, RemoteError, Request, Response
 from ._qt_process_protocol import ResultReadSnapshot, SendSnapshot, WaitSnapshot
 
@@ -77,21 +77,41 @@ class _ThreadTransport(_base._Transport):
         self.thread = threading.Thread(target=self._run, name="qpsycopg-worker", daemon=True)
         self.thread.start()
 
+    @staticmethod
+    def _connectionReady(request: Request, value: Any, worker: Any, ready: bool) -> bool:
+        # A BAD status is part of the asynchronous connection failure contract:
+        # the parent generator must still be able to read status/error_message and
+        # finish the PGconn. Only start fatal-BAD handling after connect_poll()
+        # has reported OK (or a blocking CONNECT returned an OK connection).
+        if request.operation == Operation.CONNECT_START:
+            return False
+        if request.operation == Operation.CONNECT:
+            conn = worker.objects.get(1)
+            return conn is not None and int(conn.status) == int(ConnStatus.OK)
+        if request.operation == Operation.CALL and request.objectId == 1:
+            if request.member == "connect_poll":
+                return int(value) == int(PollingStatus.OK)
+            if request.member == "finish":
+                return False
+        return ready
+
     def _run(self) -> None:
         worker = _workerPool.Worker(None)
+        connectionReady = False
         while True:
             request = self._requests.get()
             stop = request.operation == Operation.CLOSE
             stopReason = "close requested" if stop else None
             try:
                 value = worker._handle(request)
-                broken = worker._connectionBroken()
+                connectionReady = self._connectionReady(request, value, worker, connectionReady)
+                broken = connectionReady and worker._connectionBroken()
                 stop |= broken
                 if broken:
                     stopReason = f"{request.operation.name}: worker connection became BAD"
                 response = Response(request.requestId, value=value, notices=tuple(worker.notices))
             except BaseException as error:
-                broken = worker._connectionBroken()
+                broken = connectionReady and worker._connectionBroken()
                 stop |= broken
                 if broken:
                     stopReason = f"{request.operation.name}: {type(error).__name__}: {error}; connection BAD"

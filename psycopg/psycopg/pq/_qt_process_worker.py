@@ -42,6 +42,11 @@ _COPY_RESULTS = {
     pq.ExecStatus.COPY_OUT,
     pq.ExecStatus.COPY_BOTH,
 }
+_ERROR_RESULTS = {
+    pq.ExecStatus.BAD_RESPONSE,
+    pq.ExecStatus.NONFATAL_ERROR,
+    pq.ExecStatus.FATAL_ERROR,
+}
 _FAST_EXECUTE = "qpsycopg_execute_pending"
 _FAST_CANCEL = "qpsycopg_cancel"
 _PROFILE_TAKE = "qpsycopg_profile_take"
@@ -462,6 +467,7 @@ def _packResultValues(
 
 def _snapshotResult(result: Any, profile: dict[str, float | int] | None = None) -> ResultSnapshot:
     totalStart = perf_counter() if profile is not None else 0.0
+    status = result.status
     nfields = result.nfields
     ntuples = result.ntuples
     fname = result.fname
@@ -492,15 +498,16 @@ def _snapshotResult(result: Any, profile: dict[str, float | int] | None = None) 
         profile["snapshot_cells"] = profile.get("snapshot_cells", 0) + cellCount
 
     errorFields: list[tuple[int, bytes]] = []
-    errorField = result.error_field
-    for field in pq.DiagnosticField:
-        code = int(field)
-        value = errorField(code)
-        if value is not None:
-            errorFields.append((code, value))
+    if status in _ERROR_RESULTS:
+        errorField = result.error_field
+        for field in pq.DiagnosticField:
+            code = int(field)
+            value = errorField(code)
+            if value is not None:
+                errorFields.append((code, value))
 
     snapshot = ResultSnapshot(
-        status=int(result.status),
+        status=int(status),
         errorMessage=result.error_message,
         errorFields=tuple(errorFields),
         columns=columns,

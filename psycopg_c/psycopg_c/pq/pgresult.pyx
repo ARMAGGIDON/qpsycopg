@@ -177,6 +177,56 @@ cdef class PGresult:
 
         return data, offsets, nulls, cellCount
 
+    def _qpsycopg_snapshot_meta(self) -> tuple:
+        """Collect PGresult metadata in one native call for qpsycopg snapshots."""
+        cdef int status = libpq.PQresultStatus(self._pgresult_ptr)
+        cdef int ntuples = libpq.PQntuples(self._pgresult_ptr)
+        cdef int nfields = libpq.PQnfields(self._pgresult_ptr)
+        cdef int nparams = libpq.PQnparams(self._pgresult_ptr)
+        cdef int i
+        cdef char *name
+        cdef char *cmdStatus = libpq.PQcmdStatus(self._pgresult_ptr)
+        cdef char *cmdTuples = libpq.PQcmdTuples(self._pgresult_ptr)
+        cdef bytes cmdTuplesBytes
+        cdef object commandStatus = None
+        cdef object commandTuples = None
+        cdef list columns = []
+        cdef list paramTypes = []
+
+        for i in range(nfields):
+            name = libpq.PQfname(self._pgresult_ptr, i)
+            columns.append((
+                None if name is NULL else name,
+                libpq.PQftable(self._pgresult_ptr, i),
+                libpq.PQftablecol(self._pgresult_ptr, i),
+                libpq.PQfformat(self._pgresult_ptr, i),
+                libpq.PQftype(self._pgresult_ptr, i),
+                libpq.PQfmod(self._pgresult_ptr, i),
+                libpq.PQfsize(self._pgresult_ptr, i),
+            ))
+
+        for i in range(nparams):
+            paramTypes.append(libpq.PQparamtype(self._pgresult_ptr, i))
+
+        if cmdStatus is not NULL:
+            commandStatus = cmdStatus
+        if cmdTuples is not NULL:
+            cmdTuplesBytes = cmdTuples
+            if cmdTuplesBytes:
+                commandTuples = int(cmdTuplesBytes)
+
+        return (
+            status,
+            ntuples,
+            nfields,
+            tuple(columns),
+            libpq.PQbinaryTuples(self._pgresult_ptr),
+            tuple(paramTypes),
+            commandStatus,
+            commandTuples,
+            libpq.PQoidValue(self._pgresult_ptr),
+        )
+
     @property
     def nparams(self) -> int:
         return libpq.PQnparams(self._pgresult_ptr)

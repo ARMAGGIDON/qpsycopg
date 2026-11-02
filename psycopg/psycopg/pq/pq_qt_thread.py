@@ -96,6 +96,16 @@ class _ThreadTransport(_base._Transport):
         return ready
 
     @staticmethod
+    def _connectionBroken(worker: Any) -> bool:
+        conn = worker.objects.get(1)
+        if conn is None:
+            return False
+        try:
+            return int(conn.status) == int(ConnStatus.BAD)
+        except Exception:
+            return True
+
+    @staticmethod
     def _brokenReason(worker: Any, request: Request, error: BaseException | None = None) -> str:
         label = request.operation.name
         if request.member:
@@ -130,13 +140,13 @@ class _ThreadTransport(_base._Transport):
             try:
                 value = worker._handle(request)
                 connectionReady = self._connectionReady(request, value, worker, connectionReady)
-                broken = connectionReady and worker._connectionBroken()
+                broken = connectionReady and self._connectionBroken(worker)
                 stop |= broken
                 if broken:
                     stopReason = self._brokenReason(worker, request)
                 response = Response(request.requestId, value=value, notices=tuple(worker.notices))
             except BaseException as error:
-                broken = connectionReady and worker._connectionBroken()
+                broken = connectionReady and self._connectionBroken(worker)
                 stop |= broken
                 if broken:
                     stopReason = self._brokenReason(worker, request, error)

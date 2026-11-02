@@ -21,6 +21,7 @@ _FRAME_FLAGS = _FAST_REQUEST_FLAG | _FAST_RESPONSE_FLAG
 _FRAME_SIZE_MASK = _FAST_RESPONSE_FLAG - 1
 _MARSHAL_PAYLOAD = b"M"
 _PICKLE_PAYLOAD = b"P"
+_CONNECTION_OK = 0
 _Profile = dict[str, float | int]
 _FAST_EXECUTE = "qpsycopg_execute_pending"
 _FAST_SEND_MEMBERS = (
@@ -243,6 +244,10 @@ def _wireValue(value: Any) -> tuple[Any, int]:
         ):
             result = _packFastResult(execution[1][0])
             if result is not None:
+                if snapshot.status == _CONNECTION_OK:
+                    if snapshot.clientEncoding is None:
+                        return (result, snapshot.transactionStatus), _FAST_RESPONSE_FLAG
+                    return (result, snapshot.transactionStatus, snapshot.clientEncoding), _FAST_RESPONSE_FLAG
                 return (result, snapshot.status, snapshot.transactionStatus, snapshot.clientEncoding), _FAST_RESPONSE_FLAG
         return tuple(snapshot), _FAST_RESPONSE_FLAG
     return value, 0
@@ -318,6 +323,14 @@ def _restoreWireValue(value: Any, flags: int) -> Any:
         return Request(0, Operation.CALL, 1, _FAST_EXECUTE, (timeout, sendMember, sendArgs, sendKwargs))
 
     if flags == _FAST_RESPONSE_FLAG:
+        if len(value) == 2:
+            result, transactionStatus = value
+            snapshot = _unpackFastResult(result)
+            return SendSnapshot(("done", (snapshot,), ()), 0, 0, _CONNECTION_OK, transactionStatus, None)
+        if len(value) == 3:
+            result, transactionStatus, clientEncoding = value
+            snapshot = _unpackFastResult(result)
+            return SendSnapshot(("done", (snapshot,), ()), 0, 0, _CONNECTION_OK, transactionStatus, clientEncoding)
         if len(value) == 4:
             result, status, transactionStatus, clientEncoding = value
             snapshot = _unpackFastResult(result)

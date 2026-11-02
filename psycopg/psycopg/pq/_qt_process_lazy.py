@@ -8,6 +8,7 @@ import threading
 from typing import Any
 
 from .. import errors as e
+from ._qt_process_cancel import CancelControlClient
 from ._qt_process_protocol import FastExecuteFrame, Operation, Response, SendSnapshot
 from .pq_qt_process import PGresult, _SEND_MEMBERS, _Transport, _raiseRemote, _restore, _wire
 from . import pq_qt_process as _pq
@@ -63,20 +64,43 @@ def _ownerRun(self: Any) -> None:
             process.waitForFinished(5_000)
 
 
-def _patchWaitProcessOwner() -> None:
+def _patchConnectionHooks() -> None:
     module = sys.modules.get("psycopg.connection_qt_process")
     if module is None or getattr(module, "_qpsycopgWorkerPoolPatched", False):
         return
 
-    original = module._waitProcessOwner
+    originalWait = module._waitProcessOwner
+    originalOpenCancel = module._openCancelControl
 
     def waitProcessOwner(pgconn: object) -> None:
         if getattr(pgconn, "_qpsycopgWorkerReleased", False):
             return
-        original(pgconn)
+        originalWait(pgconn)
 
+    def cancelRemote(connection: Any, timeout: float) -> None:
+        pgconn = connection.pgconn
+        originalOpenCancel(pgconn)
+        control = getattr(pgconn._transport, "_cancelControl", None)
+        if control is None:
+            raise e.OperationalError("qpsycopg cancellation channel is not available")
+        control.cancel(timeout)
+
+    # Don't create/destroy a cancellation thread for connect()/close() pairs
+    # which never run a query. _request() opens it before the first send, while
+    # cancelRemote() keeps a correctness fallback for cancel-before-query.
+    module._openCancelControl = lambda pgconn: None
+    module._cancelRemote = cancelRemote
     module._waitProcessOwner = waitProcessOwner
     module._qpsycopgWorkerPoolPatched = True
+
+
+def _ensureCancelControl(transport: _Transport) -> None:
+    if getattr(transport, "_cancelControl", None) is not None:
+        return
+    pgconn = transport.connection
+    if pgconn is None:
+        return
+    transport._cancelControl = CancelControlClient.open(pgconn)
 
 
 def _resetTransport(transport: _Transport) -> None:
@@ -96,7 +120,7 @@ def _discardTransport(transport: _Transport) -> None:
 
 
 def _acquireTransport() -> _Transport:
-    _patchWaitProcessOwner()
+    _patchConnectionHooks()
     with _workerPoolLock:
         while _workerPool:
             transport = _workerPool.pop()
@@ -280,6 +304,7 @@ def _request(
             _originalRequest(self, Operation.CALL, sendObjectId, sendMember, sendArgs, sendKwargs)
 
         if operation == Operation.CALL and objectId == 1 and member in _SEND_MEMBERS:
+            _ensureCancelControl(self)
             self._clearQueryCache(objectId)
             self._clearConnectionState()
             self._pendingSend = (objectId, member, args, kwargs)

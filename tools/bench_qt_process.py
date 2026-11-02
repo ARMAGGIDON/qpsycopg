@@ -68,10 +68,11 @@ def main() -> int:
     parser.add_argument("--threads", type=int, default=4)
     args = parser.parse_args()
 
+    defaultIpc = "pipe" if os.name == "nt" else "tcp"
     result: dict[str, Any] = {
         "impl": psycopg.pq.__impl__,
         "worker_impl": os.environ.get("QPSYCOPG_WORKER_IMPL"),
-        "ipc": os.environ.get("QPSYCOPG_IPC", "tcp") if psycopg.pq.__impl__ == "qt-process" else None,
+        "ipc": os.environ.get("QPSYCOPG_IPC", defaultIpc) if psycopg.pq.__impl__ == "qt-process" else None,
         "transformer": {
             "class": f"{Transformer.__module__}.{Transformer.__qualname__}",
             "decoder": getattr(Transformer, "__qpsycopg_decoder__", None),
@@ -134,11 +135,11 @@ def main() -> int:
         }
         addResources(result["fetch"], resourcesBefore, resourcesAfter)
         resources = result["fetch"].get("resources", {})
-        if "tree_rss_mb_before" in resources:
+        if "tree_rssmb_before" in resources:
             result["fetch"].update({
-                "rss_before_mb": resources["tree_rss_mb_before"],
-                "rss_after_mb": resources["tree_rss_mb_after"],
-                "rss_delta_mb": resources["tree_rss_mb_delta"],
+                "rss_before_mb": resources["tree_rssmb_before"],
+                "rss_after_mb": resources["tree_rssmb_after"],
+                "rss_delta_mb": resources["tree_rssmb_delta"],
             })
         if (count := remoteDelta(requestsBefore, requestsAfterExecute)) is not None:
             result["fetch"]["execute_remote_requests"] = count
@@ -161,9 +162,10 @@ def main() -> int:
         start = time.perf_counter()
         with ThreadPoolExecutor(max_workers=args.threads) as pool:
             values = list(pool.map(threaded, range(args.threads)))
+        threadsElapsed = time.perf_counter() - start
         resourcesAfter = processResources()
         requestsAfter = remoteRequests(connection)
-        result["threads"] = {"seconds": time.perf_counter() - start, "values": values}
+        result["threads"] = {"seconds": threadsElapsed, "values": values}
         addResources(result["threads"], resourcesBefore, resourcesAfter, args.threads)
         if (requestCount := remoteDelta(requestsBefore, requestsAfter)) is not None:
             result["threads"]["remote_requests"] = requestCount

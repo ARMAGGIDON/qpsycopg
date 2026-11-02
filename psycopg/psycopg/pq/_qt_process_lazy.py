@@ -358,7 +358,7 @@ def _request(
         return _originalRequest(self, operation, objectId, member, args, kwargs)
 
 
-_ipc = os.environ.get("QPSYCOPG_IPC", "tcp").lower()
+_ipc = os.environ.get("QPSYCOPG_IPC", "pipe" if sys.platform == "win32" else "tcp").lower()
 if _ipc not in ("tcp", "pipe"):
     raise e.InterfaceError(f"unknown QPSYCOPG_IPC value: {_ipc!r}")
 if _ipc == "pipe":

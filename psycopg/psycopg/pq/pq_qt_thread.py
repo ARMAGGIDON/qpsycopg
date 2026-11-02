@@ -36,6 +36,11 @@ from . import _qt_process_worker as _workerBase
 _workerBase.pq = _workerPq
 from . import _qt_process_worker_pool as _workerPool
 
+# In a subprocess both worker modules import psycopg.pq after PSYCOPG_IMPL has
+# been changed to the worker backend. The thread POC shares the parent interpreter,
+# so patch both module globals explicitly to reproduce the same worker namespace.
+_workerPool.pq = _workerPq
+
 __impl__ = "qt-thread"
 __build_version__ = int(_workerPq.__build_version__)
 version = _base.version
@@ -67,6 +72,7 @@ class _ThreadTransport(_base._Transport):
         self._pendingSend: tuple[int, str, tuple[Any, ...], tuple[tuple[str, Any], ...]] | None = None
         self._requests: queue.SimpleQueue[Request] = queue.SimpleQueue()
         self._responses: queue.SimpleQueue[Response] = queue.SimpleQueue()
+        self._stopReason: str | None = None
         self.owner = self
         self.thread = threading.Thread(target=self._run, name="qpsycopg-worker", daemon=True)
         self.thread.start()
@@ -76,12 +82,19 @@ class _ThreadTransport(_base._Transport):
         while True:
             request = self._requests.get()
             stop = request.operation == Operation.CLOSE
+            stopReason = "close requested" if stop else None
             try:
                 value = worker._handle(request)
-                stop |= worker._connectionBroken()
+                broken = worker._connectionBroken()
+                stop |= broken
+                if broken:
+                    stopReason = f"{request.operation.name}: worker connection became BAD"
                 response = Response(request.requestId, value=value, notices=tuple(worker.notices))
             except BaseException as error:
-                stop |= worker._connectionBroken()
+                broken = worker._connectionBroken()
+                stop |= broken
+                if broken:
+                    stopReason = f"{request.operation.name}: {type(error).__name__}: {error}; connection BAD"
                 response = Response(
                     requestId=request.requestId,
                     error=RemoteError(type(error).__module__, type(error).__name__, str(error)),
@@ -92,6 +105,7 @@ class _ThreadTransport(_base._Transport):
 
             self._responses.put(response)
             if stop:
+                self._stopReason = stopReason or f"{request.operation.name}: worker stopped"
                 try:
                     worker._closeCancelControl()
                 except Exception:
@@ -101,8 +115,9 @@ class _ThreadTransport(_base._Transport):
 
     def _dispatch(self, request: Request) -> Response:
         if not self.thread.is_alive():
+            reason = f": {self._stopReason}" if self._stopReason else ""
             self._markBroken()
-            raise e.OperationalError("qpsycopg worker thread stopped")
+            raise e.OperationalError(f"qpsycopg worker thread stopped{reason}")
         self._requests.put(request)
         return self._responses.get()
 
@@ -204,7 +219,8 @@ class _ThreadTransport(_base._Transport):
     ) -> Any:
         with self.lock:
             if self.closed:
-                raise e.OperationalError("qpsycopg worker thread is closed")
+                reason = f": {self._stopReason}" if self._stopReason else ""
+                raise e.OperationalError(f"qpsycopg worker thread is closed{reason}")
 
             pending = self._pendingSend
             if pending is not None:
@@ -237,6 +253,7 @@ class _ThreadTransport(_base._Transport):
         self._clearCaches()
 
     def kill(self) -> None:
+        self._stopReason = self._stopReason or "killed by parent"
         self._markBroken()
 
     def close(self) -> None:

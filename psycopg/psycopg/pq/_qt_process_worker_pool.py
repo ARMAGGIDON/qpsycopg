@@ -4,14 +4,70 @@ from __future__ import annotations
 
 import socket
 import sys
+from time import perf_counter
 from typing import Any
 
+from psycopg import pq
+
 from .. import errors as e
-from ._qt_process_protocol import Operation, Request, sendToken
-from ._qt_process_worker import Worker as _Worker
+from . import _qt_process_worker as _worker
+from ._qt_process_protocol import Operation, Request, ResultSnapshot, sendToken
 
 
-class Worker(_Worker):
+def _snapshotResult(result: Any, profile: dict[str, float | int] | None = None) -> ResultSnapshot:
+    """Snapshot PGresult without probing diagnostics on successful results."""
+    totalStart = perf_counter() if profile is not None else 0.0
+    status = result.status
+    nfields = result.nfields
+    ntuples = result.ntuples
+    fname, ftable, ftablecol = result.fname, result.ftable, result.ftablecol
+    fformat, ftype, fmod, fsize = result.fformat, result.ftype, result.fmod, result.fsize
+    columns = tuple(
+        (fname(i), ftable(i), ftablecol(i), fformat(i), ftype(i), fmod(i), fsize(i)) for i in range(nfields)
+    )
+
+    packStart = perf_counter() if profile is not None else 0.0
+    values = _worker._packResultValues(result, ntuples, nfields, profile)
+    if profile is not None:
+        profile["snapshot_values_seconds"] = profile.get("snapshot_values_seconds", 0) + perf_counter() - packStart
+        profile["snapshot_cells"] = profile.get("snapshot_cells", 0) + ntuples * nfields
+
+    if status in _worker._SUCCESS_RESULTS:
+        errorMessage = b""
+        errorFields: tuple[tuple[int, bytes], ...] = ()
+    else:
+        errorMessage = result.error_message
+        errorField = result.error_field
+        errorFields = tuple(
+            (code, value)
+            for field in pq.DiagnosticField
+            if (value := errorField(code := int(field))) is not None
+        )
+
+    snapshot = ResultSnapshot(
+        status=int(status),
+        errorMessage=errorMessage,
+        errorFields=errorFields,
+        columns=columns,
+        rowCount=ntuples,
+        columnCount=nfields,
+        binaryTuples=result.binary_tuples,
+        values=values,
+        paramTypes=tuple(result.param_type(i) for i in range(result.nparams)),
+        commandStatus=result.command_status,
+        commandTuples=result.command_tuples,
+        oidValue=result.oid_value,
+    )
+    if profile is not None:
+        profile["snapshot_total_seconds"] = profile.get("snapshot_total_seconds", 0) + perf_counter() - totalStart
+        profile["snapshot_results"] = profile.get("snapshot_results", 0) + 1
+    return snapshot
+
+
+_worker._snapshotResult = _snapshotResult
+
+
+class Worker(_worker.Worker):
     def _closeCancelControl(self) -> None:
         control = self.cancelControl
         if control is None:

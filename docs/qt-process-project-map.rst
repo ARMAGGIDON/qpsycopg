@@ -1,9 +1,9 @@
 Qt process backend project map
 ==============================
 
-This is the implementation/handoff map for qpsycopg's experimental
-``qt-process`` backend. Read this file first when resuming work, then read
-:doc:`qt-process-performance` for current measurements.
+This file is the implementation/handoff map for qpsycopg's Qt-oriented pq work.
+Read :doc:`qt-process` first for user-visible behaviour and
+:doc:`qt-process-performance` for measurements and rejected experiments.
 
 Repository state
 ----------------
@@ -11,107 +11,114 @@ Repository state
 * repository: ``ARMAGGIDON/qpsycopg``
 * development branch: ``feature/qt-process-pq``
 * draft PR: ``#1``
-* public API goal: normal ``psycopg.connect(...)`` semantics
-* opt-in selector: ``PSYCOPG_IMPL=qt-process``
-* worker selector: ``QPSYCOPG_WORKER_IMPL=python|c|binary``
-* canonical performance worker: ``binary``
-* latest full performance checkpoint: ``optimized16`` measured at
-  ``e24e4169b000ef052f07b90924c45cd625f96791``
-* latest post-checkpoint cleanup: ``a186786`` removes obsolete cancellation
-  gating and the old main-channel fast-cancel path
+* primary implementation: ``PSYCOPG_IMPL=qt-process``
+* architecture proof of concept: ``PSYCOPG_IMPL=qt-thread``
+* canonical worker implementation: ``QPSYCOPG_WORKER_IMPL=binary``
+* current code handoff before this documentation refresh: ``64f2ee8``
+  (``fix: keep qt-thread worker backend consistent``)
+* latest full numbered benchmark captured in the previous work: ``optimized35``;
+  several later targeted validations contain newer architectural evidence and
+  are more relevant than that numbered checkpoint for the current next step
 
-Current performance state
--------------------------
+The branch has moved far beyond the old ``optimized16`` handoff. Do not resume
+from the old short-query profiling plan or repeat native result-packing/WAIT work.
 
-The two dominant costs identified by the earlier phase decomposition have been
-addressed.
+Current direction
+-----------------
 
-Native snapshot packing
-~~~~~~~~~~~~~~~~~~~~~~~
+The process-backed implementation has already received the major measured
+optimisations:
 
-The worker no longer builds a large ``PackedValues`` payload by calling Python
-``PGresult.get_value()`` once per cell on the hot binary-worker path.
+* native ``PGresult -> PackedValues`` packing;
+* native packed bulk decoding;
+* dedicated cancellation control channel;
+* ``10 ms`` worker-side WAIT drain;
+* deferred send + one-request fast execute;
+* compact/marshal fast frames;
+* warmed ``QProcess`` reuse between PostgreSQL sessions;
+* cached stable connection state where safe;
+* Windows TCP loopback fast path;
+* raw Windows named-pipe main transport;
+* native parent-side named-pipe frame exchange;
+* resource telemetry and reusable historical vanilla baselines.
 
-The native packer is implemented in the shared Cython ``PGresult`` source and is
-therefore generated into ``psycopg_binary`` as well as ``psycopg_c``. The worker
-capability-detects it and retains a Python fallback.
+After these changes, controlled architecture benchmarks showed that a dedicated
+worker thread is much closer to direct Psycopg than the separate process design.
+The current work therefore investigates whether the process boundary itself is
+the wrong data-plane boundary instead of continuing small Python IPC tweaks.
 
-Representative 100k x 3 packing time changed from roughly ``109 ms`` to
-``5 ms``. Preserve the current data/offset/NULL-bitmap wire layout.
-
-WAIT batching and cancellation isolation
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Cancellation now has a separate authenticated localhost control channel. It no
-longer waits for the main query transport lock.
-
-The worker main thread creates the ``PGcancelConn`` from the real ``PGconn``;
-a dedicated control thread then owns and drives only that cancel object. This
-allows the main query WAIT drain to be increased to ``10 ms`` without restoring
-the old cancellation-latency regression.
-
-A representative 100k x 3 profile with ``10 ms`` drain reported ``11`` remote
-WAIT requests instead of roughly ``67`` with ``1 ms`` drain. Full-checkpoint
-cancellation is now approximately vanilla latency.
-
-The remaining important performance gaps are therefore:
-
-* warmed one-RPC short-query latency (about ``2x`` summary median in
-  ``optimized16``);
-* shared-connection threaded operations (about ``1.7x``);
-* connection startup (structurally much slower, but not currently a hot-path
-  target).
+The branch now contains a real ``qt-thread`` proof of concept, but it is not yet
+semantically validated: its smoke suite still fails during the initial connection
+path at the current handoff.
 
 Architectural invariants
 ------------------------
 
-Treat changes to these points as architectural changes rather than local
-optimisations.
+Treat changes to these points as architectural changes, not local optimisations.
 
-#. High-level Psycopg semantics stay in the application process:
+#. High-level Psycopg semantics remain in the application process:
    ``Connection``, ``Cursor``, transactions, adaptation, row factories,
    SQLSTATE exception mapping and user callbacks.
-#. Stateful libpq/session objects stay in the worker process.
-#. One normal PostgreSQL connection owns one worker ``QProcess``.
-#. ``qt-process`` is explicit opt-in and never an implicit fallback.
-#. The worker pq implementation is normal ``python``, ``c`` or ``binary``;
-   never recursive ``qt-process``.
-#. Result adaptation remains parent-side. The worker may package raw result
-   bytes but must not replace normal Psycopg adaptation semantics.
+#. The canonical ``qt-process`` backend keeps the stateful libpq session in the
+   worker process.
+#. A recycled worker process does not imply a recycled PostgreSQL session. A
+   connection close finishes the real ``PGconn``; only the warmed worker process
+   may be reused.
+#. ``qt-process`` and ``qt-thread`` are explicit opt-in backends and are never
+   implicit fallbacks.
+#. The worker pq implementation is normal ``binary``, ``c`` or ``python``;
+   never recursive ``qt-process``/``qt-thread``.
+#. Result adaptation remains parent-side. Worker/native helpers may pack raw
+   bytes/metadata but must not replace normal Psycopg adaptation semantics.
 #. Psycopg's existing connection lock remains authoritative for a connection
-   shared by Python threads.
-#. Synchronous calls remain synchronous and block the calling thread.
-#. Ordinary PostgreSQL statement errors must not kill a healthy worker/session;
-   fatal BAD-state handling may terminate it after returning the originating
-   error.
+   shared by caller threads.
+#. Synchronous Psycopg calls remain synchronous and block the caller.
+#. Ordinary PostgreSQL statement errors must not kill a healthy session.
+#. Fatal ``ConnStatus.BAD`` handling must still terminate/mark a broken session.
 #. Parent-process file descriptors must not be passed to worker libpq.
+#. Benchmark conclusions must consider the whole process tree for process-backed
+   resource measurements.
 
-Top-level architecture
-----------------------
+Current qt-process architecture
+-------------------------------
 
-::
+On Windows the preferred data path is::
 
     application process
+      |
+      +-- Connection/Cursor/adaptation
+      |
+      +-- synthetic PGconn/PGresult facade
+      |
+      +-- deferred send / compact fast execute
+      |
+      +-- raw named pipe
+      |     |
+      |     +-- native parent frame exchange when psycopg_c helper is available
+      |
+      +================ process boundary ================+
+                                                        |
+                                               reusable QProcess worker
+                                                        |
+                                               psycopg_binary.pq
+                                                        |
+                                                      libpq
+                                                        |
+                                                   PostgreSQL
 
-      Connection / Cursor / adaptation
-          |
-      qt-process PGconn/PGresult facade
-          |
-          +-- main authenticated TCP channel -------------------+
-          |                                                     |
-          +-- dedicated authenticated cancel control channel ---|---+
-                                                                |   |
-    ================= process boundary =========================|===|===
-                                                                |   |
-      QProcess worker                                           |   |
-          |                                                     |   |
-          +-- main worker thread -> native PGconn/PGresult <----+   |
-          |                                                         |
-          +-- cancel control thread -> reusable PGcancelConn <------+
-          |
-      normal pq implementation (binary/c/python)
-          |
-      libpq -> PostgreSQL
+Cancellation is intentionally separate::
+
+    parent CancelControlClient
+        |
+    authenticated localhost TCP
+        |
+    worker cancel-control thread
+        |
+    reusable PGcancelConn
+
+The main Windows transport defaults to ``QPSYCOPG_IPC=pipe``. TCP remains a
+fallback and uses ``SIO_LOOPBACK_FAST_PATH`` when available. Non-Windows currently
+uses TCP.
 
 Source map
 ----------
@@ -120,325 +127,360 @@ Backend selection
 ~~~~~~~~~~~~~~~~~
 
 ``psycopg/psycopg/pq/__init__.py``
-    Selects the low-level pq implementation. ``qt-process`` is used only when
-    explicitly requested.
+    Selects ``qt-process`` and the experimental ``qt-thread`` only when explicitly
+    requested.
 
 ``psycopg/psycopg/__init__.py``
-    Selects qt-process-specific ``Connection`` / ``AsyncConnection`` classes
-    when the active pq implementation is ``qt-process``.
+    Routes the Qt backends through the qpsycopg connection classes.
 
-Parent transport and proxies
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``psycopg/psycopg/_cmodule.py``
+    ``qt-process`` and ``qt-thread`` use the Python generator layer because their
+    synthetic ``PGconn`` proxies are not local native ``PGconn`` objects.
+
+Parent qt-process facade
+~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``psycopg/psycopg/pq/pq_qt_process.py``
-    Parent low-level facade and main worker transport.
+    Base remote pq facade and generic transport. Important pieces:
 
-    Important pieces:
-
-    * ``_ProcessOwner`` owns ``QProcess`` in one dedicated Python thread;
-    * ``_Transport`` owns the main authenticated socket, RLock, request IDs,
-      request/response framing, caches and worker-break handling;
-    * ``PGconn`` exposes a synthetic handle used by remote wait helpers;
-    * ``PGresult`` exposes snapshot-backed result metadata and packed values;
-    * connection caches cover status, transaction status and client encoding;
-    * query caches cover flush/busy/consume/notify/result state.
+    * ``_ProcessOwner`` owns ``QProcess`` on a dedicated Python thread;
+    * ``_Transport`` owns generic request/response state and caches;
+    * ``PGconn`` / ``PGresult`` expose the synthetic pq API;
+    * connection/query caches mirror status needed by the parent generator.
 
 ``psycopg/psycopg/pq/_qt_process_lazy.py``
-    Defers ``send_query*`` and merges the common send/execute path into
-    ``qpsycopg_execute_pending``. A warmed short SELECT should normally use one
-    remote process-boundary request.
+    Current production-oriented patch layer. It owns most of the later hot-path
+    work:
 
-Cancellation control
+    * deferred ``send_query*``;
+    * compact fast execute frames;
+    * worker-process reuse (pool size currently one);
+    * lazy cancellation-control setup;
+    * Windows transport selection;
+    * TCP loopback fast-path patching;
+    * parent native named-pipe frame exchange;
+    * connection/session release rules.
+
+Do not inspect only ``pq_qt_process.py`` when debugging current behaviour: several
+important current behaviours are patched in by ``_qt_process_lazy.py``.
+
+Windows pipe transport
+~~~~~~~~~~~~~~~~~~~~~~
+
+``psycopg/psycopg/pq/_qt_process_pipe.py``
+    Raw byte-stream Windows named-pipe adapter using ``CreateNamedPipeW`` /
+    ``CreateFileW`` and ``io.FileIO``.
+
+    ``PipeStream`` keeps a read-ahead buffer so an over-read is preserved instead
+    of corrupting the next frame.
+
+    ``QPSYCOPG_NATIVE_IPC=0`` disables the native parent frame exchange for A/B
+    testing. Native worker receive exists behind ``QPSYCOPG_NATIVE_RECV=1`` but is
+    intentionally off by default after validation.
+
+``psycopg_c/psycopg_c/_psycopg/qt_ipc.pyx``
+    Cython/WinAPI helpers for:
+
+    * native named-pipe frame round-trip with read-ahead;
+    * experimental native worker frame receive;
+    * experimental native Winsock socket wait.
+
+    The parent round-trip helper is retained. Worker receive and socket wait are
+    not enabled by default because controlled A/B did not justify them.
+
+Protocol and results
 ~~~~~~~~~~~~~~~~~~~~
 
-``psycopg/psycopg/pq/_qt_process_cancel.py``
-    Dedicated parent/worker cancellation channel.
-
-    Parent ``CancelControlClient`` owns an independent socket and serialises
-    cancel requests on its own lock.
-
-    Worker ``CancelControlServer`` owns a reusable ``PGcancelConn`` and a
-    dedicated control thread. It performs ``start()`` / ``poll()`` / local
-    ``select()`` and ``reset()`` without acquiring the main query transport.
-
-``psycopg/psycopg/connection_qt_process.py``
-    Opens the control channel after a successful database connection, closes it
-    before worker teardown, and routes ``cancel_safe()`` exclusively over the
-    control channel.
-
-    ``_waitRemote()`` / ``_waitRemoteAsync()`` now continue normal query WAITs
-    independently of cancellation. The obsolete pending-handle gate was removed
-    in ``a186786``.
-
-Protocol and result representation
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
 ``psycopg/psycopg/pq/_qt_process_protocol.py``
-    Shared framed request/response and snapshot types.
+    Framing, generic request/response objects, compact fast-frame encoding,
+    snapshots and ``PackedValues``.
 
-``PackedValues`` stores result cells as:
+``psycopg_c/psycopg_c/pq/pgresult.pyx``
+    Shared native result packers, including qpsycopg value/metadata helpers.
 
-* one data blob;
-* an offset table;
-* a NULL bitmap;
-* cell count.
+``psycopg_c/psycopg_c/_psycopg/qt_bulk.pyx``
+    Parent-side packed bulk decoder for supported standard loaders with Python
+    fallback for custom/unsupported cases.
 
-The Python sequence interface is fallback/compatibility behaviour; the hot bulk
-decoder reads the underlying buffers directly.
+``psycopg/psycopg/_transformer.py``
+    Preserves parent-side adaptation/context semantics while using the packed
+    decoder where safe.
 
 Worker
 ~~~~~~
 
 ``psycopg/psycopg/pq/_qt_process_worker.py``
-    Owns the real pq ``PGconn`` and normal request loop.
+    Base request handling, libpq send/wait/consume/result state machine,
+    ``10 ms`` WAIT drain and generic snapshot logic.
 
-    ``Worker._executePending()``
-        Compound fast path combining deferred send, flush, initial waiting and
-        result collection where possible.
+``psycopg/psycopg/pq/_qt_process_worker_pool.py``
+    Reusable worker entry point and current worker-side specialisations:
 
-    ``Worker._waitConnection()``
-        Handles readable WAITs, consumes input and drains immediately arriving
-        data for a bounded grace period. Current ``_WAIT_DRAIN_GRACE`` is
-        ``0.010`` seconds.
+    * session reset/reuse rules;
+    * native result metadata capability detection;
+    * cached client encoding;
+    * successful-query status inference;
+    * worker CPU profiling hooks;
+    * optional native worker receive/wait experiment gates.
 
-        Do not speculatively call ``get_result()`` from this path; result
-        boundaries belong to the normal Psycopg generator/result lifecycle.
+The production default keeps Python worker receive and Python ``select.select()``.
+Do not enable native wait by default based only on the existence of the helper.
+The 3-way validation showed it was slower.
 
-    ``_snapshotResult()``
-        Captures metadata and produces ``PackedValues``. The hot binary-worker
-        path uses the native packer when available.
+Cancellation
+~~~~~~~~~~~~
 
-Native pack/decode
-~~~~~~~~~~~~~~~~~~
+``psycopg/psycopg/pq/_qt_process_cancel.py``
+    Dedicated authenticated TCP cancel channel. The worker control thread owns a
+    reusable ``PGcancelConn`` after it is created by the main worker thread.
 
-``psycopg_c/psycopg_c/pq/pgresult.pyx``
-    Contains ``_qpsycopg_pack_values()``. It reads native ``PGresult`` cells and
-    writes the existing packed layout without per-cell Python ``bytes`` calls.
+``psycopg/psycopg/connection_qt_process.py``
+    Sync/async remote waits, safe cancellation routing and connection lifecycle.
+    ``_qt_process_lazy`` patches cancellation setup so the control channel is
+    opened lazily before the first query rather than for every connect/close pair.
 
-``psycopg_c/psycopg_c/_psycopg/qt_bulk.pyx``
-    Parent-side bulk row decoder. It reads packed buffers directly and uses
-    native specialisation for supported standard loaders while preserving
-    Python fallback for custom/unsupported loaders.
+Experimental qt-thread
+~~~~~~~~~~~~~~~~~~~~~~
 
-``psycopg/psycopg/_transformer.py``
-    Keeps normal parent-side adaptation/context semantics and delegates the
-    supported packed hot path to the native helper.
+``psycopg/psycopg/pq/pq_qt_thread.py``
+    Development proof of concept which reuses the synthetic pq facade but
+    replaces process IPC with ``queue.SimpleQueue`` and a dedicated Python thread.
+
+    Both ``_qt_process_worker`` and ``_qt_process_worker_pool`` must use the same
+    real worker pq backend in this shared interpreter. Commit ``64f2ee8`` fixed a
+    mixed-namespace state where one worker module saw ``binary`` while the other
+    saw the ``qt-thread`` proxy module.
+
+``tools/smoke_qt_thread.py``
+    Semantic gate covering adaptation, packed NULL/empty values, multiple result
+    sets, COPY, SQL error survival, caller-thread sharing, cancellation, fatal
+    backend termination and ``AsyncConnection``.
+
+``tools/validate_qt_thread.ps1``
+    Intended full direct/binary vs qt-thread vs qt-process validation. Do not run
+    it again until the standalone qt-thread smoke passes.
+
+Benchmark and profiling map
+---------------------------
+
+``tools/test.ps1``
+    Main Windows harness. Modes: ``smoke``, ``bench``, ``transport``, ``qt``,
+    ``gui`` and ``all``. Default repeated benchmark count is seven.
+
+    The current benchmark no longer repeats vanilla seven times. It performs
+    repeated qpsycopg runs plus one current vanilla sentinel; historical
+    compatible vanilla runs are aggregated separately.
+
+``tools/vanilla_baseline.py``
+    Builds a reusable compatible vanilla baseline using median/MAD and sample
+    counts. Compatibility is keyed by workload settings/version.
+
+``tools/bench_qt_process.py`` and ``tools/process_resources.py``
+    End-to-end SQL benchmark plus process-tree resource telemetry: CPU, context
+    switches, Working Set/RSS, Private Bytes, handles, threads, processes and I/O.
+
+``tools/profile_cpu.ps1``
+    Parent/tree CPU decomposition.
+
+``tools/profile_worker_hot_path.ps1``
+    Worker CPU phase decomposition.
+
+``tools/bench_ipc_transport.py``
+    Local IPC microbenchmark which compared TCP, TCP loopback-fast-path and named
+    pipes before the end-to-end transport redesign.
+
+``tools/bench_native_ipc.ps1``
+    Synthetic Python-vs-native named-pipe data-plane A/B.
+
+``tools/validate_transport.ps1``
+    Paired TCP vs named-pipe SQL/Qt/CPU validation.
+
+``tools/validate_native_ipc.ps1``
+    Same-run Python-pipe vs native parent frame-exchange validation.
+
+``tools/validate_worker_native.ps1``
+    Isolates worker native receive and native socket-wait experiments.
+
+``tools/validate_worker_architecture.ps1``
+    Direct Psycopg vs dedicated-thread vs qt-process architecture benchmark.
+
+``tools/validate_worker_qt_cancel.ps1``
+    Focused Qt/cancellation gate for those three architectures.
 
 Execution flow: warmed short query
 ----------------------------------
 
-#. Parent cursor/generator reaches remote ``send_query*``.
-#. Lazy-send records the send locally.
-#. ``qpsycopg_execute_pending`` sends one compound request.
-#. Worker invokes real libpq send/flush/wait/consume.
-#. If the result completes in the bounded fast path, result snapshots/state are
-   piggybacked back to the parent.
-#. Parent restores ``PGresult`` and normal adaptation continues.
+#. Parent cursor/generator reaches synthetic ``send_query*``.
+#. ``_qt_process_lazy`` stores the send locally.
+#. ``qpsycopg_execute_pending`` forms one compact fast request.
+#. On Windows pipe mode, the parent can exchange the complete frame through one
+   Cython/WinAPI helper call with the GIL released.
+#. Worker reconstructs the request and drives normal libpq.
+#. If complete inside the bounded fast path, raw result/state snapshots return in
+   the same response.
+#. Parent restores the synthetic ``PGresult`` and normal Psycopg adaptation
+   continues.
 
-If a warmed short SELECT starts using more than one remote request per call,
-inspect lazy-send activation and cache invalidation before redesigning transport.
+If a warmed SELECT unexpectedly uses multiple remote operations, inspect pending
+send/cache invalidation before changing transport architecture.
 
 Execution flow: large result
 ----------------------------
 
-#. Parent uses the same compound send path.
-#. If the query is still busy, the generator enters remote WAIT cycles.
-#. Worker drains readable input for up to ``10 ms`` per WAIT request.
-#. Normal generator/result logic retrieves the completed ``PGresult``.
-#. Worker native-packs cells into ``PackedValues``.
-#. Parent bulk decoder converts packed values into normal Python rows/scalars.
+#. Same deferred/compound send starts the query.
+#. If still busy, the generator enters remote WAIT cycles.
+#. Worker drains readable data for up to ``10 ms`` per WAIT request.
+#. Normal result-boundary handling retrieves the completed ``PGresult``.
+#. Native packers produce ``PackedValues`` and metadata when available.
+#. Parent packed decoder converts raw values to normal Python results.
 
-Current large-result ``fetchall()`` is near vanilla. A representative profile
-uses about ``11`` WAIT requests and about ``5 ms`` snapshot packing for
-300,000 cells.
+Large ``fetchall()`` has repeatedly stayed near vanilla. Do not return to per-cell
+packing unless profiling proves a regression.
 
-Execution flow: cancellation
+Execution flow: worker reuse
 ----------------------------
 
-#. ``cancel_safe()`` obtains the existing ``CancelControlClient``.
-#. Parent sends a control request over the independent cancel socket.
-#. Worker control thread drives its reusable ``PGcancelConn`` locally.
-#. Main query worker remains free to continue/complete its current WAIT request.
-#. Backend cancellation makes the main libpq socket readable; normal query
-   processing observes the cancellation result.
+#. ``connect_start()`` acquires an idle warmed transport if available.
+#. A new real PostgreSQL ``PGconn`` is created in that worker.
+#. Normal queries run.
+#. ``PGconn.finish()`` closes the PostgreSQL session and cancel-control channel.
+#. The transport state is reset.
+#. At most one healthy idle worker is retained for the next session.
 
-No pending-handle gate or main transport lock acquisition is required.
+Never allow an already released parent ``PGconn`` proxy to operate on the next
+session hosted by the same worker.
 
-Protocol/security model
------------------------
+What the architecture benchmarks established
+--------------------------------------------
 
-The IPC transports are localhost-only internal channels with authentication.
+The important final process-vs-thread experiment measured approximately::
 
-Main transport:
+    direct Psycopg       ~533 us SELECT median
+    dedicated thread     ~567 us
+    qt-process           ~724 us
 
-* parent creates a random 256-bit token;
-* worker receives it in process arguments and connects back to the temporary
-  listener;
-* token is verified before pickle frames are accepted.
+Paired interpretation:
 
-Cancel transport:
+* dedicated thread vs direct: roughly ``+5%`` median;
+* qt-process vs direct: roughly ``+38.6%`` median;
+* qt-process vs dedicated thread: roughly ``+31.2%`` median;
+* process CPU vs dedicated thread: roughly ``2.44x``;
+* 100k-row work: thread approximately direct, process roughly ``+6.6%`` versus
+  thread.
 
-* worker main thread creates a separate random token/listener when the control
-  channel is opened;
-* parent connects and authenticates before cancel frames are accepted.
+Context switches were approximately ``1 / 3 / 3`` per query for direct / thread /
+process. Therefore the process penalty is not simply "more context switches";
+the process boundary, serialization/framing, kernel IPC and second interpreter
+remain material costs.
 
-Pickle must remain behind these authentication boundaries.
+The focused Qt/cancel gate also established:
 
-State/caching model
--------------------
+* ``caller=thread`` Qt timer behaviour is effectively similar for all three;
+* cancellation succeeds and the connection remains usable afterwards;
+* ``caller=main`` blocks the Qt event loop for all three architectures.
 
-Parent-side mirrored state is a performance optimisation with correctness
-consequences. Review invalidation whenever query lifecycle code changes:
-
-* ``_flushCache``;
-* ``_busyCache``;
-* ``_consumeCache``;
-* ``_notifyCache``;
-* ``_resultCache``;
-* ``_statusCache``;
-* ``_transactionStatusCache``;
-* ``_clientEncodingCache``;
-* deferred ``_pendingSend`` state.
-
-A previous COPY hang came from worker-side state consumption combined with stale
-parent busy/flush state. Preserve snapshot/state piggybacking semantics.
-
-Tests and benchmark map
------------------------
-
-``tools/smoke_qt_process.py``
-    Semantic regression suite: adaptation, packed NULL/empty values, multiple
-    result sets, COPY boundaries, SQL error survival, thread sharing,
-    cancellation, unsupported parent fd, fatal backend termination and async
-    connection behaviour.
-
-``tools/bench_qt_process.py``
-    Connect, warmed SELECT, bulk execute/fetchall, RSS, shared-connection
-    threads, SQL-error survival and cancellation.
-
-``tools/bench_qt_responsiveness.py``
-    Qt timer behaviour. Thread-caller mode is the intended synchronous GUI
-    pattern; main-caller mode deliberately demonstrates blocking.
-
-``tools/profile_qt_process.py``
-    Remote-request and phase profiler. Parent and worker timings overlap; never
-    sum them as independent pipeline stages.
-
-``tools/test.ps1``
-    Windows smoke/bench/Qt/gui/all harness with repeated runs, summary/manifest
-    JSON and timestamped ZIP archives.
-
-Current validation commands::
-
-    .\tools\test.ps1 smoke
-    .\tools\test.ps1 all -Tag optimizedNN -Worker binary
-
-Windows development notes
--------------------------
-
-Typical Python package setup in the active venv::
-
-    uv pip install -e ".\psycopg[qt]" "psycopg-binary==3.3.6"
-
-The native local ``psycopg_c`` extension is needed when developing/rebuilding
-shared Cython helpers. On Windows ``PSYCOPG_PG_ROOT`` may point to an unpacked
-PostgreSQL SDK/binary tree containing ``include``, ``lib`` and ``bin``.
-
-The canonical performance worker remains ``binary``. Rebuild the generated
-binary package only when shared Cython/native code changes; Python-only worker,
-connection or control-channel edits do not require a binary rebuild.
+This evidence is the reason ``qt-thread`` exists. Do not resume by blindly
+micro-optimising process IPC.
 
 Danger zones / established decisions
 ------------------------------------
 
-Do not prefetch ``get_result()`` from WAIT
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Do not reintroduce speculative WAIT result prefetch
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-It changes result-boundary timing and previously broke fatal-termination
-behaviour.
+``get_result()`` timing is part of Psycopg's result-boundary semantics. Previous
+prefetch attempts broke fatal/COPY behaviour.
 
-Do not optimise only WAIT count
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Do not optimise only WAIT request count
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The current ``10 ms`` drain is justified because cancellation is independent and
-a representative profile already reduced WAIT RPCs to about ``11``. The
-remaining WAIT wall time is mostly real worker libpq waiting. Longer drain is
-not automatically better.
+``10 ms`` drain already removed most avoidable WAIT crossings. Remaining WAIT
+wall time is mostly real libpq/socket waiting.
 
-Do not globally substitute native adapters
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Do not trust parent-only RSS
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Connection-sensitive native loaders may assume a local native ``PGconn``.
-Native packed decoding must keep controlled specialisation and Python fallback.
+Process-backed memory must be measured as parent + worker tree. Old results which
+made qpsycopg appear to use less RSS were incomplete for architecture comparison.
 
-Do not judge PackedValues through slice materialisation
+Do not repeatedly benchmark unchanged vanilla
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Use the accumulated compatible vanilla baseline plus one sentinel unless the
+workload definition or a previously unmeasured metric changes.
+
+Do not default native worker receive or native wait
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The helpers remain useful for experiments, but the controlled 3-way validation
+found receive neutral and native wait worse. Current production default is
+Python worker receive + Python ``select.select()``.
+
+Do not return to AF_UNIX or unsafe one-read TCP framing
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Slicing deliberately rebuilds Python ``bytes`` objects for compatibility and is
-not the intended bulk path.
+AF_UNIX was rejected against the retained Windows transport path. The older
+``recv(64 KiB)`` TCP experiment also risked crossing frame boundaries without
+preserving the over-read. The current pipe adapter explicitly preserves read-ahead
+bytes.
 
-Do not reintroduce pickle protocol-5 OOB without new evidence
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Do not infer GUI responsiveness from worker topology
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Earlier OOB experiments were slower.
+Direct/thread/process all block when a synchronous query is called from the GUI
+thread. Correct caller placement or async APIs are still required.
 
-Do not switch canonical worker to ``c`` as a generic optimisation
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Current qt-thread blocker
+-------------------------
 
-The native packer already reaches the binary worker through shared generated
-Cython code. Worker switching is not a substitute for profiling a measured cost.
+The proof of concept has passed neither the standalone smoke nor full validation
+yet. The sequence so far was:
 
-Where to look by symptom
-------------------------
+#. initial implementation ``f3d45e7``;
+#. validator diagnostics fixed in ``074bc7a``;
+#. Python generator-layer selection fixed in ``756de46``;
+#. shared-interpreter worker backend consistency fixed in ``64f2ee8``;
+#. latest observed smoke still fails during ``basic adaptation`` while opening
+   the initial connection, now with enough diagnostics to identify the worker
+   stop reason.
 
-========================================  ======================================
-Symptom                                   Start with
-========================================  ======================================
-SELECT uses >1 remote RPC                 ``_qt_process_lazy.py`` and transport
-                                          cache invalidation
-One-RPC SELECT still slow                 short-query phase profile; fixed IPC /
-                                          worker dispatch / libpq round trip
-Large execute slow                        phase profiler: WAIT vs pack/serialize
-Snapshot pack >~10 ms for 100k x 3        native packer activation/fallback
-Cancellation slow                         ``_qt_process_cancel.py``; verify it is
-                                          not falling back to main transport
-COPY hangs                                busy/flush/result cache coherency
-Wrong second result set                   result-boundary handling; never WAIT
-                                          ``get_result()`` prefetch
-``fetchall`` slow                          packed bulk decoder / loader fallback
-Custom adaptation breaks                 native-loader fallback semantics
-Worker exits on ordinary SQL error        broken-connection decision
-Worker survives fatal BAD state           worker run/broken-state lifecycle
-Qt wrong-thread warning                   ``_ProcessOwner`` lifecycle/affinity
-Async Windows stall                       ``_waitRemoteAsync`` / ``to_thread``
-========================================  ======================================
+Do not run full ``validate_qt_thread.ps1`` until this connection/lifecycle issue
+is fixed and ``tools/smoke_qt_thread.py`` passes.
 
 Immediate next work
 -------------------
 
-#. Smoke-test the post-optimized16 cleanup commit ``a186786``.
-#. Profile the warmed one-RPC short SELECT path with ``worker=binary``. Separate
-   parent framing/serialization, worker dispatch, libpq wait and response costs.
-#. Use that result to decide whether the next optimisation is transport/framing,
-   worker scheduling/dispatch, or something inside the compound execute path.
-#. Compare the shared-connection thread benchmark with the short-query fixed
-   cost before adding thread-specific mechanisms.
-#. Keep native packing and ``10 ms`` WAIT drain unchanged unless a profile gives
-   evidence to revisit them.
-#. Treat connection startup as a separate structural optimisation problem, not
-   the next hot-path target.
-#. Run smoke before and after semantic/runtime changes; after a validated
-   performance improvement, create a new full tagged checkpoint.
+#. Keep ``qt-process`` unchanged as the measured reference implementation while
+   investigating the thread architecture.
+#. Fix the current ``qt-thread`` initial connection failure; use the standalone
+   smoke only while iterating.
+#. Once the complete qt-thread smoke passes, run ``validate_qt_thread.ps1`` to
+   compare real binary/direct, qt-thread and qt-process with the full synthetic
+   pq proxy/cache/snapshot layer present.
+#. Verify that the real qt-thread backend preserves COPY, multiple results,
+   cancellation, fatal backend termination, shared-connection locking and
+   ``AsyncConnection`` semantics before treating performance numbers as useful.
+#. If qt-thread remains near the earlier dedicated-thread result while passing
+   semantics, decide whether it becomes the main Qt data plane, an optional
+   backend, or a stepping stone toward a native worker/data plane.
+#. Only if qt-thread fails structurally should the next architecture study return
+   to native worker/process designs. Do not restart random process-IPC
+   micro-optimisation.
+#. After the architecture decision, create a fresh full numbered checkpoint and
+   update :doc:`qt-process-performance` again.
 
 When resuming in a new chat/session
 -----------------------------------
 
-#. Read :doc:`qt-process` for user-visible behaviour/setup.
+#. Read :doc:`qt-process`.
 #. Read this project map.
-#. Read :doc:`qt-process-performance` for the latest measurements.
-#. Inspect current branch HEAD before editing; the latest full benchmark may be
-   intentionally older than a cleanup/docs commit.
-#. Treat ``optimized16 / e24e416`` as the latest measured full checkpoint until
-   a newer tagged full run exists.
-#. Follow ``Immediate next work`` instead of repeating native packer or WAIT/
-   cancellation investigations.
+#. Read :doc:`qt-process-performance`.
+#. Inspect branch HEAD before editing.
+#. Treat ``optimized35`` as the last numbered full benchmark in the preserved
+   work, but use the later targeted native-IPC and architecture validations for
+   current design decisions.
+#. Remember that Windows ``qt-process`` now defaults to raw named pipe plus native
+   parent frame exchange when available.
+#. Remember that native worker receive/wait are experiments, not defaults.
+#. Continue from the current ``qt-thread`` smoke blocker rather than repeating
+   native packer, WAIT/cancel, TCP/AF_UNIX or worker-native experiments.

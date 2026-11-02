@@ -349,7 +349,7 @@ class Worker:
 
             snapshot = _snapshotResult(result, self.profile)
             results.append(snapshot)
-            status = result.status
+            status = snapshot.status
             if status in _COPY_RESULTS:
                 return self._sendSnapshot(obj, ("done", tuple(results), tuple(notifies)), 0, 0)
             if status == pq.ExecStatus.PIPELINE_SYNC:

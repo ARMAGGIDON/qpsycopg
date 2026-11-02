@@ -95,6 +95,31 @@ class _ThreadTransport(_base._Transport):
                 return False
         return ready
 
+    @staticmethod
+    def _brokenReason(worker: Any, request: Request, error: BaseException | None = None) -> str:
+        label = request.operation.name
+        if request.member:
+            label += f":{request.member}"
+
+        details = []
+        conn = worker.objects.get(1)
+        if conn is not None:
+            try:
+                details.append(f"status={int(conn.status)}")
+            except Exception:
+                pass
+            try:
+                message = conn.get_error_message()
+            except Exception:
+                message = ""
+            if message:
+                details.append(f"error={message!r}")
+
+        if error is not None:
+            details.insert(0, f"{type(error).__name__}: {error}")
+        suffix = f" ({', '.join(details)})" if details else ""
+        return f"{label}: worker connection became BAD{suffix}"
+
     def _run(self) -> None:
         worker = _workerPool.Worker(None)
         connectionReady = False
@@ -108,13 +133,13 @@ class _ThreadTransport(_base._Transport):
                 broken = connectionReady and worker._connectionBroken()
                 stop |= broken
                 if broken:
-                    stopReason = f"{request.operation.name}: worker connection became BAD"
+                    stopReason = self._brokenReason(worker, request)
                 response = Response(request.requestId, value=value, notices=tuple(worker.notices))
             except BaseException as error:
                 broken = connectionReady and worker._connectionBroken()
                 stop |= broken
                 if broken:
-                    stopReason = f"{request.operation.name}: {type(error).__name__}: {error}; connection BAD"
+                    stopReason = self._brokenReason(worker, request, error)
                 response = Response(
                     requestId=request.requestId,
                     error=RemoteError(type(error).__module__, type(error).__name__, str(error)),

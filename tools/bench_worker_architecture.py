@@ -53,6 +53,7 @@ class ThreadConnection:
     def __init__(self, dsn: str):
         self.requests: queue.SimpleQueue[tuple[str, Any]] = queue.SimpleQueue()
         self.responses: queue.SimpleQueue[tuple[bool, Any]] = queue.SimpleQueue()
+        self.connection: Any = None
         self.thread = threading.Thread(target=self._run, args=(dsn,), name="qpsycopg-architecture-worker")
         self.thread.start()
         ok, value = self.responses.get()
@@ -63,6 +64,7 @@ class ThreadConnection:
     def _run(self, dsn: str) -> None:
         try:
             connection = psycopg.connect(dsn)
+            self.connection = connection
         except BaseException as error:
             self.responses.put((False, error))
             return
@@ -82,11 +84,25 @@ class ThreadConnection:
                         with connection.cursor() as cursor:
                             cursor.execute("SELECT i FROM generate_series(1, %s) AS s(i)", (value,))
                             self.responses.put((True, cursor.fetchall()))
+                    elif operation == "sleep":
+                        with connection.cursor() as cursor:
+                            cursor.execute("SELECT pg_sleep(%s)", (float(value),))
+                            self.responses.put((True, cursor.fetchone()))
+                    elif operation == "sleep_batch":
+                        count, seconds = value
+                        with connection.cursor() as cursor:
+                            for _ in range(int(count)):
+                                cursor.execute("SELECT pg_sleep(%s)", (float(seconds),))
+                                cursor.fetchone()
+                        self.responses.put((True, None))
                     else:
                         raise ValueError(operation)
                 except BaseException as error:
+                    if isinstance(error, psycopg.errors.QueryCanceled):
+                        connection.rollback()
                     self.responses.put((False, error))
         finally:
+            self.connection = None
             connection.close()
 
     def call(self, operation: str, value: Any = None) -> Any:
@@ -95,6 +111,12 @@ class ThreadConnection:
         if not ok:
             raise result
         return result
+
+    def cancel(self, timeout: float = 5.0) -> None:
+        connection = self.connection
+        if connection is None:
+            raise RuntimeError("thread connection is not available")
+        connection.cancel_safe(timeout=timeout)
 
     def close(self) -> None:
         self.call("close")

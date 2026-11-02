@@ -22,6 +22,7 @@ $oldNative = $env:QPSYCOPG_NATIVE_IPC
 $oldRecv = $env:QPSYCOPG_NATIVE_RECV
 $oldWait = $env:QPSYCOPG_NATIVE_WAIT
 $bench = Join-Path $PSScriptRoot "bench_worker_architecture.py"
+$qtCancel = Join-Path $PSScriptRoot "bench_worker_qt_cancel.py"
 
 function Set-Mode([string] $mode) {
     if ($mode -eq "process") {
@@ -38,12 +39,21 @@ function Set-Mode([string] $mode) {
     }
 }
 
-function Run([string] $mode, [string] $file) {
+function Bench([string] $mode, [string] $file) {
     Set-Mode $mode
     $benchMode = if ($mode -eq "thread") { "thread" } else { "direct" }
     Write-Host "[$mode] architecture benchmark"
     & $python $bench $dsn --mode $benchMode --iterations 2000 --warmup 200 --rows 100000 > (Join-Path $outDir $file)
     if ($LASTEXITCODE -ne 0) { throw "$mode benchmark failed with code $LASTEXITCODE" }
+}
+
+function QtCancel([string] $mode, [string] $caller, [string] $file) {
+    Set-Mode $mode
+    $benchMode = if ($mode -eq "thread") { "thread" } else { "direct" }
+    Write-Host "[$mode/$caller] Qt + cancellation"
+    & $python $qtCancel $dsn --mode $benchMode --caller $caller --queries 20 --sleep-ms 25 --timer-ms 10 --cancel-delay .2 `
+        > (Join-Path $outDir $file)
+    if ($LASTEXITCODE -ne 0) { throw "$mode/$caller Qt/cancel failed with code $LASTEXITCODE" }
 }
 
 try {
@@ -54,7 +64,14 @@ try {
     )
     for ($i = 1; $i -le 6; $i++) {
         $n = "{0:D2}" -f $i
-        foreach ($mode in $orders[($i - 1) % 3]) { Run $mode "bench-$n-$mode.json" }
+        foreach ($mode in $orders[($i - 1) % 3]) { Bench $mode "bench-$n-$mode.json" }
+    }
+
+    foreach ($caller in @("thread", "main")) {
+        for ($i = 1; $i -le 3; $i++) {
+            $n = "{0:D2}" -f $i
+            foreach ($mode in $orders[$i - 1]) { QtCancel $mode $caller "qt-cancel-$caller-$n-$mode.json" }
+        }
     }
 
     [ordered]@{
@@ -62,10 +79,16 @@ try {
         branch = (& git -C $repoRoot branch --show-current).Trim()
         commit = (& git -C $repoRoot rev-parse HEAD).Trim()
         repeats = 6
+        qt_cancel_repeats = 3
         iterations = 2000
         warmup = 200
         rows = 100000
+        qt_queries = 20
+        qt_sleep_ms = 25
+        qt_timer_ms = 10
+        cancel_delay_seconds = .2
         modes = @("direct", "thread", "process")
+        callers = @("thread", "main")
         process_ipc = "pipe"
         process_parent_native = $true
         process_worker_native_recv = $false

@@ -42,12 +42,13 @@ New-Item -ItemType Directory -Path $runDir -Force | Out-Null
 $oldImpl = $env:PSYCOPG_IMPL
 $oldWorker = $env:QPSYCOPG_WORKER_IMPL
 $oldIpc = $env:QPSYCOPG_IPC
+$defaultIpc = if ($IsWindows) { "pipe" } else { "tcp" }
 
 function Set-Backend([string] $impl, [string] $worker = "", [string] $ipc = "") {
     $env:PSYCOPG_IMPL = $impl
     if ($worker) { $env:QPSYCOPG_WORKER_IMPL = $worker }
     else { Remove-Item Env:QPSYCOPG_WORKER_IMPL -ErrorAction Ignore }
-    if ($impl -eq "qt-process") { $env:QPSYCOPG_IPC = if ($ipc) { $ipc } else { "tcp" } }
+    if ($impl -eq "qt-process") { $env:QPSYCOPG_IPC = if ($ipc) { $ipc } else { $defaultIpc } }
     else { Remove-Item Env:QPSYCOPG_IPC -ErrorAction Ignore }
 }
 
@@ -75,7 +76,7 @@ function Invoke-BackendTest(
 }
 
 function Smoke {
-    Write-Host "[smoke] qt-process/$Worker"
+    Write-Host "[smoke] qt-process/$Worker/$defaultIpc"
     Set-Backend "qt-process" $Worker
     $outFile = Result "smoke" "log"
     & $python (Join-Path $repoRoot "tools\smoke_qt_process.py") $Dsn 2>&1 | Tee-Object -FilePath $outFile
@@ -127,15 +128,16 @@ function TransportBench {
 
 function QtBench {
     $qtArgs = @((Join-Path $repoRoot "tools\bench_qt_responsiveness.py"), $Dsn, "--caller", "thread")
+    $sentinelAt = [math]::Max(1, [math]::Ceiling($Repeat / 2))
 
     for ($i = 1; $i -le $Repeat; $i++) {
         $n = "{0:D2}" -f $i
-        if ($i % 2) {
-            Invoke-BackendTest "[$i/$Repeat] vanilla Qt" $Worker $qtArgs (Result "qt-$n-vanilla")
-            Invoke-BackendTest "[$i/$Repeat] qpsycopg Qt" "qt-process" $qtArgs (Result "qt-$n-qpsycopg")
-        } else {
-            Invoke-BackendTest "[$i/$Repeat] qpsycopg Qt" "qt-process" $qtArgs (Result "qt-$n-qpsycopg")
-            Invoke-BackendTest "[$i/$Repeat] vanilla Qt" $Worker $qtArgs (Result "qt-$n-vanilla")
+        if ($i -eq $sentinelAt -and $i % 2) {
+            Invoke-BackendTest "[sentinel] vanilla Qt" $Worker $qtArgs (Result "qt-$n-vanilla")
+        }
+        Invoke-BackendTest "[$i/$Repeat] qpsycopg Qt" "qt-process" $qtArgs (Result "qt-$n-qpsycopg")
+        if ($i -eq $sentinelAt -and -not ($i % 2)) {
+            Invoke-BackendTest "[sentinel] vanilla Qt" $Worker $qtArgs (Result "qt-$n-vanilla")
         }
     }
 }
@@ -207,6 +209,7 @@ function Save-Results {
         mode = $Mode
         tag = $Tag
         worker = $Worker
+        ipc_default = $defaultIpc
         iterations = $Iterations
         rows = $Rows
         threads = $Threads

@@ -91,6 +91,7 @@ class Worker(_worker.Worker):
     def __init__(self, sock: socket.socket):
         super().__init__(sock)
         self._clientEncoding: bytes | None = None
+        self._snapshotStatus: int | None = None
 
     def _closeCancelControl(self) -> None:
         control = self.cancelControl
@@ -107,6 +108,7 @@ class Worker(_worker.Worker):
 
     def _sendSnapshot(self, obj: Any, value: Any, flush: int, busy: int) -> SendSnapshot:
         status = int(obj.status)
+        self._snapshotStatus = status
         transactionStatus = int(obj.transaction_status)
         clientEncoding: bytes | None = None
         if status == int(pq.ConnStatus.OK) and (self._clientEncoding is None or _refreshesParameters(value)):
@@ -115,7 +117,13 @@ class Worker(_worker.Worker):
             clientEncoding = self._clientEncoding or None
         return SendSnapshot(value, flush, busy, status, transactionStatus, clientEncoding)
 
+    def _connectionBroken(self) -> bool:
+        if self._snapshotStatus is not None:
+            return self._snapshotStatus == int(pq.ConnStatus.BAD)
+        return super()._connectionBroken()
+
     def _handle(self, request: Request) -> Any:
+        self._snapshotStatus = None
         if request.operation in (Operation.CONNECT, Operation.CONNECT_START):
             self._closeCancelControl()
         elif request.operation == Operation.CALL and request.objectId == 1 and request.member == "finish":

@@ -15,16 +15,27 @@ from ._qt_process_protocol import Operation, Request, ResultSnapshot, sendToken
 
 
 def _snapshotResult(result: Any, profile: dict[str, float | int] | None = None) -> ResultSnapshot:
-    """Snapshot PGresult without probing diagnostics on successful results."""
+    """Snapshot PGresult using the native metadata packer when available."""
     totalStart = perf_counter() if profile is not None else 0.0
-    status = result.status
-    nfields = result.nfields
-    ntuples = result.ntuples
-    fname, ftable, ftablecol = result.fname, result.ftable, result.ftablecol
-    fformat, ftype, fmod, fsize = result.fformat, result.ftype, result.fmod, result.fsize
-    columns = tuple(
-        (fname(i), ftable(i), ftablecol(i), fformat(i), ftype(i), fmod(i), fsize(i)) for i in range(nfields)
-    )
+    snapshotMeta = getattr(result, "_qpsycopg_snapshot_meta", None)
+    if snapshotMeta is not None:
+        status, ntuples, nfields, columns, binaryTuples, paramTypes, commandStatus, commandTuples, oidValue = snapshotMeta()
+        if profile is not None:
+            profile["snapshot_native_meta_calls"] = profile.get("snapshot_native_meta_calls", 0) + 1
+    else:
+        status = result.status
+        nfields = result.nfields
+        ntuples = result.ntuples
+        fname, ftable, ftablecol = result.fname, result.ftable, result.ftablecol
+        fformat, ftype, fmod, fsize = result.fformat, result.ftype, result.fmod, result.fsize
+        columns = tuple(
+            (fname(i), ftable(i), ftablecol(i), fformat(i), ftype(i), fmod(i), fsize(i)) for i in range(nfields)
+        )
+        binaryTuples = result.binary_tuples
+        paramTypes = tuple(result.param_type(i) for i in range(result.nparams))
+        commandStatus = result.command_status
+        commandTuples = result.command_tuples
+        oidValue = result.oid_value
 
     packStart = perf_counter() if profile is not None else 0.0
     values = _worker._packResultValues(result, ntuples, nfields, profile)
@@ -51,12 +62,12 @@ def _snapshotResult(result: Any, profile: dict[str, float | int] | None = None) 
         columns=columns,
         rowCount=ntuples,
         columnCount=nfields,
-        binaryTuples=result.binary_tuples,
+        binaryTuples=binaryTuples,
         values=values,
-        paramTypes=tuple(result.param_type(i) for i in range(result.nparams)),
-        commandStatus=result.command_status,
-        commandTuples=result.command_tuples,
-        oidValue=result.oid_value,
+        paramTypes=paramTypes,
+        commandStatus=commandStatus,
+        commandTuples=commandTuples,
+        oidValue=oidValue,
     )
     if profile is not None:
         profile["snapshot_total_seconds"] = profile.get("snapshot_total_seconds", 0) + perf_counter() - totalStart

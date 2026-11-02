@@ -24,6 +24,7 @@ $oldWait = $env:QPSYCOPG_NATIVE_WAIT
 $bench = Join-Path $PSScriptRoot "bench_qt_process.py"
 $qt = Join-Path $PSScriptRoot "bench_qt_responsiveness.py"
 $smoke = Join-Path $PSScriptRoot "smoke_qt_thread.py"
+$completed = $false
 
 function Set-Mode([string] $mode) {
     if ($mode -eq "direct") {
@@ -56,8 +57,12 @@ function Run([string] $mode, [string] $label, [string[]] $pythonArgs, [string] $
 
 try {
     Set-Mode "thread"
-    & $python $smoke $dsn *> (Join-Path $outDir "smoke-thread.log")
-    if ($LASTEXITCODE -ne 0) { throw "qt-thread smoke failed with code $LASTEXITCODE" }
+    $smokeLog = Join-Path $outDir "smoke-thread.log"
+    & $python $smoke $dsn 2>&1 | Tee-Object -FilePath $smokeLog
+    if ($LASTEXITCODE -ne 0) {
+        Compress-Archive -Path (Join-Path $outDir "*") -DestinationPath $archive -CompressionLevel Optimal -Force
+        throw "qt-thread smoke failed with code $LASTEXITCODE; failure archive: $archive"
+    }
 
     $benchArgs = @($bench, $dsn, "--iterations", "1000", "--rows", "100000", "--threads", "8")
     $qtArgs = @($qt, $dsn, "--caller", "thread")
@@ -95,9 +100,10 @@ try {
     } | ConvertTo-Json | Set-Content (Join-Path $outDir "manifest.json") -Encoding utf8
 
     Compress-Archive -Path (Join-Path $outDir "*") -DestinationPath $archive -CompressionLevel Optimal -Force
-    Remove-Item $outDir -Recurse -Force
+    $completed = $true
     Write-Host "qt-thread validation archive: $archive"
 } finally {
+    if ($completed) { Remove-Item $outDir -Recurse -Force }
     if ($null -eq $oldImpl) { Remove-Item Env:PSYCOPG_IMPL -ErrorAction Ignore } else { $env:PSYCOPG_IMPL = $oldImpl }
     if ($null -eq $oldWorker) { Remove-Item Env:QPSYCOPG_WORKER_IMPL -ErrorAction Ignore } else { $env:QPSYCOPG_WORKER_IMPL = $oldWorker }
     if ($null -eq $oldIpc) { Remove-Item Env:QPSYCOPG_IPC -ErrorAction Ignore } else { $env:QPSYCOPG_IPC = $oldIpc }

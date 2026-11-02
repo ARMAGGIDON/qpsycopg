@@ -326,8 +326,23 @@ def _restoreWireValue(value: Any, flags: int) -> Any:
     return value
 
 
+def _nativeRecvFrame(sock: socket.socket) -> Any | None:
+    recv = getattr(sock, "recv_frame", None)
+    if recv is None:
+        return None
+    result = recv(_MAX_FRAME)
+    if result is None:
+        return None
+    frame, payload = result
+    flags = frame & _FRAME_FLAGS
+    return _restoreWireValue(_deserialize(payload, flags), flags)
+
+
 def recvFrame(sock: socket.socket, profile: _Profile | None = None, prefix: str = "frame") -> Any:
     if profile is None:
+        native = _nativeRecvFrame(sock)
+        if native is not None:
+            return native
         size, flags = _readHeader(sock)
         return _restoreWireValue(_deserialize(_recvExact(sock, size), flags), flags)
 

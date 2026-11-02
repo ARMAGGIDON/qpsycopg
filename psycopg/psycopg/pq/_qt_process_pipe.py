@@ -10,10 +10,11 @@ from typing import Any
 
 try:
     from psycopg_c._psycopg import qpsycopg_pipe_frame_roundtrip as _nativeFrameRoundtrip
+    from psycopg_c._psycopg import qpsycopg_pipe_recv_frame as _nativeRecvFrame
 except (ImportError, AttributeError):
-    _nativeFrameRoundtrip = None
+    _nativeFrameRoundtrip = _nativeRecvFrame = None
 if os.environ.get("QPSYCOPG_NATIVE_IPC", "1") == "0":
-    _nativeFrameRoundtrip = None
+    _nativeFrameRoundtrip = _nativeRecvFrame = None
 
 if os.name == "nt":
     import ctypes
@@ -109,6 +110,14 @@ class PipeStream:
         data = bytearray(size)
         count = self.recv_into(data)
         return bytes(memoryview(data)[:count])
+
+    def recv_frame(self, max_frame: int) -> tuple[int, bytearray] | None:
+        if _nativeRecvFrame is None or self._readStart != self._readEnd:
+            return None
+        frame, payload, readStart, readEnd = _nativeRecvFrame(self.file.fileno(), self._readBuffer, max_frame)
+        self._readStart = readStart
+        self._readEnd = readEnd
+        return frame, payload
 
     def roundtrip_frame(self, request: bytes, max_frame: int) -> tuple[int, bytearray] | None:
         if _nativeFrameRoundtrip is None or self._readStart != self._readEnd:

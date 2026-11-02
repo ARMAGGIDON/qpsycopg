@@ -96,11 +96,22 @@ def _completedHealthy(value: Any) -> bool:
     )
 
 
+def _preservesTransaction(value: Any) -> bool:
+    if not isinstance(value, tuple) or len(value) < 2 or value[0] != "done" or not isinstance(value[1], tuple):
+        return False
+    results = value[1]
+    return bool(results) and all(
+        isinstance(result, ResultSnapshot) and result.status == int(pq.ExecStatus.TUPLES_OK) for result in results
+    )
+
+
 class Worker(_worker.Worker):
     def __init__(self, sock: socket.socket):
         super().__init__(sock)
         self._clientEncoding: bytes | None = None
         self._snapshotStatus: int | None = None
+        self._transactionStatus: int | None = None
+        self._transactionStatusReusable = False
 
     def _closeCancelControl(self) -> None:
         control = self.cancelControl
@@ -113,12 +124,20 @@ class Worker(_worker.Worker):
 
     def _setConnection(self, conn: Any) -> None:
         self._clientEncoding = None
+        self._transactionStatus = None
+        self._transactionStatusReusable = False
         super()._setConnection(conn)
 
     def _sendSnapshot(self, obj: Any, value: Any, flush: int, busy: int) -> SendSnapshot:
         status = int(pq.ConnStatus.OK) if _completedHealthy(value) else int(obj.status)
         self._snapshotStatus = status
-        transactionStatus = int(obj.transaction_status)
+        if self._transactionStatusReusable and self._transactionStatus is not None and _preservesTransaction(value):
+            transactionStatus = self._transactionStatus
+        else:
+            transactionStatus = int(obj.transaction_status)
+        self._transactionStatus = transactionStatus
+        self._transactionStatusReusable = True
+
         clientEncoding: bytes | None = None
         if status == int(pq.ConnStatus.OK) and (self._clientEncoding is None or _refreshesParameters(value)):
             encoding = obj.parameter_status(b"client_encoding")
@@ -133,6 +152,14 @@ class Worker(_worker.Worker):
 
     def _handle(self, request: Request) -> Any:
         self._snapshotStatus = None
+        fastExecute = (
+            request.operation == Operation.CALL
+            and request.objectId == 1
+            and request.member == _worker._FAST_EXECUTE
+        )
+        if not fastExecute:
+            self._transactionStatusReusable = False
+
         if request.operation in (Operation.CONNECT, Operation.CONNECT_START):
             self._closeCancelControl()
         elif request.operation == Operation.CALL and request.objectId == 1 and request.member == "finish":
@@ -141,10 +168,20 @@ class Worker(_worker.Worker):
             if conn is not None:
                 conn.finish()
             self._clientEncoding = None
+            self._transactionStatus = None
+            self._transactionStatusReusable = False
             return None
 
-        value = super()._handle(request)
-        if request.operation == Operation.CALL and request.objectId == 1 and request.member == "set_client_encoding":
+        try:
+            value = super()._handle(request)
+        except BaseException:
+            self._transactionStatusReusable = False
+            raise
+
+        if request.operation == Operation.GET and request.objectId == 1 and request.member == "transaction_status":
+            self._transactionStatus = int(value)
+            self._transactionStatusReusable = True
+        elif request.operation == Operation.CALL and request.objectId == 1 and request.member == "set_client_encoding":
             self._clientEncoding = None
         return value
 

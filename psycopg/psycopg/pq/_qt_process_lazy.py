@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import os
 import socket
 import sys
 import threading
@@ -11,6 +12,7 @@ from typing import Any
 from .. import errors as e
 from . import _qt_process_protocol as _protocol
 from ._qt_process_cancel import CancelControlClient
+from ._qt_process_pipe import PipeListenerSocket
 from ._qt_process_protocol import FastExecuteFrame, Operation, Response, SendSnapshot
 from .pq_qt_process import PGresult, _SEND_MEMBERS, _Transport, _raiseRemote, _restore, _wire
 from . import pq_qt_process as _pq
@@ -44,7 +46,22 @@ class _LoopbackSocketModule:
         return sock
 
 
-def _recvToken(sock: socket.socket) -> bytes:
+class _PipeSocketModule:
+    """Present a named-pipe listener through the socket API used by _Transport."""
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(socket, name)
+
+    @staticmethod
+    def socket(*args: Any, **kwargs: Any) -> Any:
+        family = args[0] if args else kwargs.get("family", socket.AF_INET)
+        sockType = args[1] if len(args) > 1 else kwargs.get("type", socket.SOCK_STREAM)
+        if family == socket.AF_INET and sockType == socket.SOCK_STREAM:
+            return PipeListenerSocket()
+        return socket.socket(*args, **kwargs)
+
+
+def _recvToken(sock: Any) -> bytes:
     try:
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     except OSError:
@@ -341,7 +358,15 @@ def _request(
         return _originalRequest(self, operation, objectId, member, args, kwargs)
 
 
-if sys.platform == "win32" and hasattr(socket, "SIO_LOOPBACK_FAST_PATH"):
+_ipc = os.environ.get("QPSYCOPG_IPC", "tcp").lower()
+if _ipc not in ("tcp", "pipe"):
+    raise e.InterfaceError(f"unknown QPSYCOPG_IPC value: {_ipc!r}")
+if _ipc == "pipe":
+    if sys.platform != "win32":
+        raise e.NotSupportedError("QPSYCOPG_IPC=pipe is currently Windows-only")
+    _pq.socket = _PipeSocketModule()
+    _pq.recvToken = _recvToken
+elif sys.platform == "win32" and hasattr(socket, "SIO_LOOPBACK_FAST_PATH"):
     _pq.socket = _LoopbackSocketModule()
     _pq.recvToken = _recvToken
 

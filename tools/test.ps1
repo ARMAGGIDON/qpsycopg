@@ -1,6 +1,6 @@
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("smoke", "bench", "qt", "gui", "all")]
+    [ValidateSet("smoke", "bench", "transport", "qt", "gui", "all")]
     [string] $Mode = "smoke",
 
     [string] $Dsn = $env:QPSYCOPG_DSN,
@@ -40,11 +40,14 @@ New-Item -ItemType Directory -Path $runDir -Force | Out-Null
 
 $oldImpl = $env:PSYCOPG_IMPL
 $oldWorker = $env:QPSYCOPG_WORKER_IMPL
+$oldIpc = $env:QPSYCOPG_IPC
 
-function Set-Backend([string] $impl, [string] $worker = "") {
+function Set-Backend([string] $impl, [string] $worker = "", [string] $ipc = "") {
     $env:PSYCOPG_IMPL = $impl
     if ($worker) { $env:QPSYCOPG_WORKER_IMPL = $worker }
     else { Remove-Item Env:QPSYCOPG_WORKER_IMPL -ErrorAction Ignore }
+    if ($impl -eq "qt-process") { $env:QPSYCOPG_IPC = if ($ipc) { $ipc } else { "tcp" } }
+    else { Remove-Item Env:QPSYCOPG_IPC -ErrorAction Ignore }
 }
 
 function Invoke-Python([string[]] $arguments, [string] $outFile = "") {
@@ -61,10 +64,11 @@ function Invoke-BackendTest(
     [string] $label,
     [string] $impl,
     [string[]] $arguments,
-    [string] $outFile
+    [string] $outFile,
+    [string] $ipc = ""
 ) {
     Write-Host $label
-    if ($impl -eq "qt-process") { Set-Backend $impl $Worker }
+    if ($impl -eq "qt-process") { Set-Backend $impl $Worker $ipc }
     else { Set-Backend $impl }
     Invoke-Python $arguments $outFile
 }
@@ -91,6 +95,30 @@ function Bench {
         } else {
             Invoke-BackendTest "[$i/$Repeat] qpsycopg bench" "qt-process" $benchArgs (Result "bench-$n-qpsycopg")
             Invoke-BackendTest "[$i/$Repeat] vanilla bench" $Worker $benchArgs (Result "bench-$n-vanilla")
+        }
+    }
+}
+
+function TransportBench {
+    $transportRepeat = [math]::Min(5, $Repeat)
+    $benchArgs = @(
+        (Join-Path $repoRoot "tools\bench_qt_process.py"), $Dsn,
+        "--iterations", $Iterations, "--rows", $Rows, "--threads", $Threads
+    )
+
+    Write-Host "[transport] named-pipe smoke"
+    Set-Backend "qt-process" $Worker "pipe"
+    & $python (Join-Path $repoRoot "tools\smoke_qt_process.py") $Dsn *> (Result "transport-pipe-smoke" "log")
+    if ($LASTEXITCODE -ne 0) { throw "named-pipe smoke failed with code $LASTEXITCODE" }
+
+    for ($i = 1; $i -le $transportRepeat; $i++) {
+        $n = "{0:D2}" -f $i
+        if ($i % 2) {
+            Invoke-BackendTest "[$i/$transportRepeat] qpsycopg TCP" "qt-process" $benchArgs (Result "transport-$n-tcp") "tcp"
+            Invoke-BackendTest "[$i/$transportRepeat] qpsycopg pipe" "qt-process" $benchArgs (Result "transport-$n-pipe") "pipe"
+        } else {
+            Invoke-BackendTest "[$i/$transportRepeat] qpsycopg pipe" "qt-process" $benchArgs (Result "transport-$n-pipe") "pipe"
+            Invoke-BackendTest "[$i/$transportRepeat] qpsycopg TCP" "qt-process" $benchArgs (Result "transport-$n-tcp") "tcp"
         }
     }
 }
@@ -126,8 +154,8 @@ function Median([double[]] $values) {
     return ([double] $sorted[$middle - 1] + [double] $sorted[$middle]) / 2
 }
 
-function BenchSummary([string] $backend) {
-    $runs = @(Get-ChildItem $runDir -Filter "bench-*-$backend.json" | Sort-Object Name |
+function BenchSummary([string] $backend, [string] $prefix = "bench") {
+    $runs = @(Get-ChildItem $runDir -Filter "$prefix-*-$backend.json" | Sort-Object Name |
         ForEach-Object { Get-Content $_.FullName -Raw | ConvertFrom-Json })
     if (-not $runs.Count) { return $null }
 
@@ -136,6 +164,13 @@ function BenchSummary([string] $backend) {
         connect_median_ms = Median @($runs | ForEach-Object { $_.connect.median_ms })
         select_1_median_ms = Median @($runs | ForEach-Object { $_.select_1.median_ms })
         select_1_p95_ms = Median @($runs | ForEach-Object { $_.select_1.p95_ms })
+        select_cpu_us_per_call = Median @($runs | ForEach-Object { $_.select_1.resources.tree_cpu_us_per_call })
+        select_ctx_switches_per_call = Median @($runs | ForEach-Object { $_.select_1.resources.tree_ctx_switches_per_call })
+        select_rss_mb = Median @($runs | ForEach-Object { $_.select_1.resources.tree_rss_mb_after })
+        select_private_mb = Median @($runs | ForEach-Object { $_.select_1.resources.tree_private_mb_after })
+        select_handles = Median @($runs | ForEach-Object { $_.select_1.resources.tree_handles_after })
+        select_threads = Median @($runs | ForEach-Object { $_.select_1.resources.tree_threads_after })
+        select_processes = Median @($runs | ForEach-Object { $_.select_1.resources.tree_process_count_after })
         fetch_seconds = Median @($runs | ForEach-Object { $_.fetch.seconds })
         fetch_execute_seconds = Median @($runs | ForEach-Object { $_.fetch.execute_seconds })
         fetchall_seconds = Median @($runs | ForEach-Object { $_.fetch.fetchall_seconds })
@@ -143,6 +178,9 @@ function BenchSummary([string] $backend) {
         fetch_rss_before_mb = Median @($runs | ForEach-Object { $_.fetch.rss_before_mb })
         fetch_rss_after_mb = Median @($runs | ForEach-Object { $_.fetch.rss_after_mb })
         fetch_rss_delta_mb = Median @($runs | ForEach-Object { $_.fetch.rss_delta_mb })
+        fetch_private_mb = Median @($runs | ForEach-Object { $_.fetch.resources.tree_private_mb_after })
+        fetch_cpu_seconds = Median @($runs | ForEach-Object { $_.fetch.resources.tree_cpu_total_seconds })
+        fetch_ctx_switches = Median @($runs | ForEach-Object { $_.fetch.resources.tree_ctx_total })
         threads_seconds = Median @($runs | ForEach-Object { $_.threads.seconds })
         cancel_call_seconds = Median @($runs | ForEach-Object { $_.cancel.call_seconds })
     }
@@ -179,10 +217,12 @@ function Save-Results {
     $summary = [ordered]@{
         vanilla = BenchSummary "vanilla"
         qpsycopg = BenchSummary "qpsycopg"
+        transport_tcp = BenchSummary "tcp" "transport"
+        transport_pipe = BenchSummary "pipe" "transport"
         vanilla_qt = QtSummary "vanilla"
         qpsycopg_qt = QtSummary "qpsycopg"
     }
-    $summary | ConvertTo-Json -Depth 4 | Set-Content (Result "summary") -Encoding utf8
+    $summary | ConvertTo-Json -Depth 5 | Set-Content (Result "summary") -Encoding utf8
 
     Compress-Archive -Path (Join-Path $runDir "*") -DestinationPath $archive -CompressionLevel Optimal -Force
     if (-not $KeepResults) { Remove-Item $runDir -Recurse -Force }
@@ -193,6 +233,7 @@ try {
     switch ($Mode) {
         "smoke" { Smoke }
         "bench" { Bench }
+        "transport" { TransportBench }
         "qt" { QtBench }
         "gui" { GuiBlock }
         "all" { Smoke; Bench; QtBench; GuiBlock }
@@ -204,4 +245,7 @@ try {
 
     if ($null -eq $oldWorker) { Remove-Item Env:QPSYCOPG_WORKER_IMPL -ErrorAction Ignore }
     else { $env:QPSYCOPG_WORKER_IMPL = $oldWorker }
+
+    if ($null -eq $oldIpc) { Remove-Item Env:QPSYCOPG_IPC -ErrorAction Ignore }
+    else { $env:QPSYCOPG_IPC = $oldIpc }
 }

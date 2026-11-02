@@ -1,18 +1,9 @@
 #!/usr/bin/env python3
-"""Compare an upstream pq backend with qpsycopg's qt-process backend.
-
-Run this file in separate processes because PSYCOPG_IMPL is selected on import.
-Examples:
-
-    PSYCOPG_IMPL=python python tools/bench_qt_process.py DSN
-    PSYCOPG_IMPL=qt-process QPSYCOPG_WORKER_IMPL=python \
-        python tools/bench_qt_process.py DSN
-"""
+"""Compare an upstream pq backend with qpsycopg's qt-process backend."""
 
 from __future__ import annotations
 
 import argparse
-import importlib
 import json
 import os
 import statistics
@@ -24,6 +15,8 @@ from typing import Any, Callable
 
 import psycopg
 from psycopg._transformer import Transformer
+
+from process_resources import processResources, resourceWindow
 
 
 def timed(call: Callable[[], Any], count: int) -> list[float]:
@@ -46,23 +39,6 @@ def summary(samples: list[float]) -> dict[str, float]:
     }
 
 
-def processRss() -> int | None:
-    """Return parent + child RSS if optional psutil is installed."""
-    try:
-        psutil = importlib.import_module("psutil")
-    except ImportError:
-        return None
-
-    process = psutil.Process()
-    rss = process.memory_info().rss
-    for child in process.children(recursive=True):
-        try:
-            rss += child.memory_info().rss
-        except psutil.Error:
-            pass
-    return int(rss)
-
-
 def remoteRequests(connection: Any) -> int | None:
     transport = getattr(connection.pgconn, "_transport", None)
     return getattr(transport, "requestId", None)
@@ -70,6 +46,18 @@ def remoteRequests(connection: Any) -> int | None:
 
 def remoteDelta(before: int | None, after: int | None) -> int | None:
     return None if before is None or after is None else after - before
+
+
+def addResources(section: dict[str, Any], before: Any, after: Any, count: int | None = None) -> None:
+    window = resourceWindow(before, after)
+    if window is None:
+        return
+    if count:
+        if (cpu := window.get("tree_cpu_total_seconds")) is not None:
+            window["tree_cpu_us_per_call"] = cpu * 1_000_000 / count
+        if (switches := window.get("tree_ctx_total")) is not None:
+            window["tree_ctx_switches_per_call"] = switches / count
+    section["resources"] = window
 
 
 def main() -> int:
@@ -83,6 +71,7 @@ def main() -> int:
     result: dict[str, Any] = {
         "impl": psycopg.pq.__impl__,
         "worker_impl": os.environ.get("QPSYCOPG_WORKER_IMPL"),
+        "ipc": os.environ.get("QPSYCOPG_IPC", "tcp") if psycopg.pq.__impl__ == "qt-process" else None,
         "transformer": {
             "class": f"{Transformer.__module__}.{Transformer.__qualname__}",
             "decoder": getattr(Transformer, "__qpsycopg_decoder__", None),
@@ -92,10 +81,14 @@ def main() -> int:
         "threads": args.threads,
     }
 
+    resourcesBefore = processResources()
     connectSamples = timed(lambda: _connectClose(args.dsn), min(20, args.iterations))
+    resourcesAfter = processResources()
     result["connect"] = summary(connectSamples)
+    addResources(result["connect"], resourcesBefore, resourcesAfter, min(20, args.iterations))
 
     with psycopg.connect(args.dsn) as connection:
+        result["resources_connected"] = processResources()
 
         def selectOne() -> None:
             with connection.cursor() as cursor:
@@ -103,25 +96,25 @@ def main() -> int:
                 assert cursor.fetchone() == (1,)
 
         requestsBefore = remoteRequests(connection)
+        resourcesBefore = processResources()
         selectSamples = timed(selectOne, args.iterations)
+        resourcesAfter = processResources()
         requestsAfter = remoteRequests(connection)
         result["select_1"] = summary(selectSamples)
+        addResources(result["select_1"], resourcesBefore, resourcesAfter, args.iterations)
         if (requestCount := remoteDelta(requestsBefore, requestsAfter)) is not None:
-            result["select_1"].update(
-                {
-                    "remote_requests": requestCount,
-                    "remote_requests_per_call": requestCount / args.iterations,
-                }
-            )
+            result["select_1"].update({
+                "remote_requests": requestCount,
+                "remote_requests_per_call": requestCount / args.iterations,
+            })
 
-        rssBefore = processRss()
+        resourcesBefore = processResources()
         requestsBefore = remoteRequests(connection)
         start = time.perf_counter()
         with connection.cursor() as cursor:
             executeStart = time.perf_counter()
             cursor.execute(
-                "SELECT i, i::numeric / 10, clock_timestamp() "
-                "FROM generate_series(1, %s) AS s(i)",
+                "SELECT i, i::numeric / 10, clock_timestamp() FROM generate_series(1, %s) AS s(i)",
                 (args.rows,),
             )
             executeElapsed = time.perf_counter() - executeStart
@@ -131,7 +124,7 @@ def main() -> int:
             fetchallElapsed = time.perf_counter() - fetchStart
             requestsAfterFetch = remoteRequests(connection)
         elapsed = time.perf_counter() - start
-        rssAfter = processRss()
+        resourcesAfter = processResources()
         result["fetch"] = {
             "seconds": elapsed,
             "execute_seconds": executeElapsed,
@@ -139,22 +132,20 @@ def main() -> int:
             "rows": len(rows),
             "rows_per_second": len(rows) / max(elapsed, 1e-9),
         }
+        addResources(result["fetch"], resourcesBefore, resourcesAfter)
+        resources = result["fetch"].get("resources", {})
+        if "tree_rss_mb_before" in resources:
+            result["fetch"].update({
+                "rss_before_mb": resources["tree_rss_mb_before"],
+                "rss_after_mb": resources["tree_rss_mb_after"],
+                "rss_delta_mb": resources["tree_rss_mb_delta"],
+            })
         if (count := remoteDelta(requestsBefore, requestsAfterExecute)) is not None:
             result["fetch"]["execute_remote_requests"] = count
         if (count := remoteDelta(requestsAfterExecute, requestsAfterFetch)) is not None:
             result["fetch"]["fetchall_remote_requests"] = count
-        if rssBefore is not None and rssAfter is not None:
-            result["fetch"].update(
-                {
-                    "rss_before_mb": rssBefore / 1024**2,
-                    "rss_after_mb": rssAfter / 1024**2,
-                    "rss_delta_mb": (rssAfter - rssBefore) / 1024**2,
-                }
-            )
         assert rows and isinstance(rows[0][1], Decimal)
 
-        # Same Connection, different Cursor per Python thread: this is the
-        # documented Psycopg threading model and must remain serialised safely.
         barrier = threading.Barrier(args.threads)
 
         def threaded(index: int) -> int:
@@ -166,18 +157,17 @@ def main() -> int:
                 return int(row[0])
 
         requestsBefore = remoteRequests(connection)
+        resourcesBefore = processResources()
         start = time.perf_counter()
         with ThreadPoolExecutor(max_workers=args.threads) as pool:
             values = list(pool.map(threaded, range(args.threads)))
+        resourcesAfter = processResources()
         requestsAfter = remoteRequests(connection)
-        result["threads"] = {
-            "seconds": time.perf_counter() - start,
-            "values": values,
-        }
+        result["threads"] = {"seconds": time.perf_counter() - start, "values": values}
+        addResources(result["threads"], resourcesBefore, resourcesAfter, args.threads)
         if (requestCount := remoteDelta(requestsBefore, requestsAfter)) is not None:
             result["threads"]["remote_requests"] = requestCount
 
-        # A normal PostgreSQL error must not kill the worker/session.
         try:
             with connection.cursor() as cursor:
                 cursor.execute("SELECT * FROM qpsycopg_table_that_does_not_exist")
@@ -188,7 +178,6 @@ def main() -> int:
         selectOne()
         result["sql_error_survival"] = True
 
-        # Cancel is tested from another thread while the query is running.
         cancelled: list[str] = []
 
         def sleepingQuery() -> None:
@@ -203,11 +192,13 @@ def main() -> int:
         thread.start()
         time.sleep(0.5)
         requestsBefore = remoteRequests(connection)
+        resourcesBefore = processResources()
         start = time.perf_counter()
         connection.cancel_safe(timeout=5.0)
         cancelReturned = time.perf_counter()
         thread.join(10.0)
         finished = time.perf_counter()
+        resourcesAfter = processResources()
         requestsAfter = remoteRequests(connection)
         result["cancel"] = {
             "seconds": finished - start,
@@ -216,8 +207,10 @@ def main() -> int:
             "exception": cancelled[0] if cancelled else None,
             "thread_alive": thread.is_alive(),
         }
+        addResources(result["cancel"], resourcesBefore, resourcesAfter)
         if (requestCount := remoteDelta(requestsBefore, requestsAfter)) is not None:
             result["cancel"]["remote_requests"] = requestCount
+        result["resources_final"] = processResources()
 
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0

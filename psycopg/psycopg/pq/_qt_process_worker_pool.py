@@ -11,6 +11,7 @@ from psycopg import pq
 
 from .. import errors as e
 from . import _qt_process_worker as _worker
+from ._qt_process_pipe import connectPipe
 from ._qt_process_protocol import Operation, Request, ResultSnapshot, SendSnapshot
 
 
@@ -97,7 +98,7 @@ def _completedHealthy(value: Any) -> bool:
 
 
 class Worker(_worker.Worker):
-    def __init__(self, sock: socket.socket):
+    def __init__(self, sock: Any):
         super().__init__(sock)
         self._clientEncoding: bytes | None = None
         self._snapshotStatus: int | None = None
@@ -149,7 +150,9 @@ class Worker(_worker.Worker):
         return value
 
 
-def _connectWorker(host: str, port: int) -> socket.socket:
+def _connectWorker(host: str, port: int) -> Any:
+    if host.startswith("pipe:"):
+        return connectPipe(host[5:])
     if sys.platform == "win32" and hasattr(socket, "SIO_LOOPBACK_FAST_PATH"):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
@@ -162,7 +165,7 @@ def _connectWorker(host: str, port: int) -> socket.socket:
     return socket.create_connection((host, port), timeout=10.0)
 
 
-def _sendToken(sock: socket.socket, token: bytes) -> None:
+def _sendToken(sock: Any, token: bytes) -> None:
     try:
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     except OSError:

@@ -89,7 +89,7 @@ function Bench {
             Invoke-BackendTest "[$i/$Repeat] vanilla bench" $Worker $benchArgs (Result "bench-$n-vanilla")
             Invoke-BackendTest "[$i/$Repeat] qpsycopg bench" "qt-process" $benchArgs (Result "bench-$n-qpsycopg")
         } else {
-            Invoke-BackendTest "[$i/$Repeat] qpsycopg bench" "qt-process" $Worker $benchArgs (Result "bench-$n-qpsycopg")
+            Invoke-BackendTest "[$i/$Repeat] qpsycopg bench" "qt-process" $benchArgs (Result "bench-$n-qpsycopg")
             Invoke-BackendTest "[$i/$Repeat] vanilla bench" $Worker $benchArgs (Result "bench-$n-vanilla")
         }
     }
@@ -102,9 +102,9 @@ function QtBench {
         $n = "{0:D2}" -f $i
         if ($i % 2) {
             Invoke-BackendTest "[$i/$Repeat] vanilla Qt" $Worker $qtArgs (Result "qt-$n-vanilla")
-            Invoke-BackendTest "[$i/$Repeat] qpsycopg Qt" "qt-process" $Worker $qtArgs (Result "qt-$n-qpsycopg")
+            Invoke-BackendTest "[$i/$Repeat] qpsycopg Qt" "qt-process" $qtArgs (Result "qt-$n-qpsycopg")
         } else {
-            Invoke-BackendTest "[$i/$Repeat] qpsycopg Qt" "qt-process" $Worker $qtArgs (Result "qt-$n-qpsycopg")
+            Invoke-BackendTest "[$i/$Repeat] qpsycopg Qt" "qt-process" $qtArgs (Result "qt-$n-qpsycopg")
             Invoke-BackendTest "[$i/$Repeat] vanilla Qt" $Worker $qtArgs (Result "qt-$n-vanilla")
         }
     }

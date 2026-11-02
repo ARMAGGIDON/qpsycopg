@@ -135,7 +135,7 @@ def _execute(pgconn: PGconn) -> PQGen[list[PGresult]]:
     Return the list of results returned by the database (whether success
     or error).
     """
-    if pq.__impl__ == "qt-process":
+    if pq.__impl__ in ("qt-process", "qt-thread"):
         state, readyResults, notifications = pgconn.qpsycopg_execute_pending(  # type: ignore[attr-defined]
             _QT_PROCESS_EXECUTE_GRACE
         )

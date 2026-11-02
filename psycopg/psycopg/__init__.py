@@ -36,7 +36,7 @@ from ._server_cursor_async import AsyncServerCursor
 if TYPE_CHECKING:
     from .connection import Connection
     from .connection_async import AsyncConnection
-elif pq.__impl__ == "qt-process":
+elif pq.__impl__ in ("qt-process", "qt-thread"):
     from .connection_qt_process import AsyncConnection, Connection
 else:
     from .connection import Connection

@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 __impl__: str
 """The currently loaded implementation of the `!psycopg.pq` package.
 
-Possible values include ``python``, ``c``, ``binary``, ``qt-process``.
+Possible values include ``python``, ``c``, ``binary``, ``qt-process``, ``qt-thread``.
 """
 
 __build_version__: int
@@ -68,13 +68,18 @@ def import_from_libpq() -> None:
             msg = f"couldn't import requested psycopg '{name}' implementation: {error}"
             raise ImportError(msg) from error
 
-    # qpsycopg opt-in implementation. Never select it implicitly: keeping the
-    # upstream default makes comparison and upstream synchronisation trivial.
+    # qpsycopg opt-in implementations. Never select them implicitly: keeping
+    # the upstream default makes comparison and upstream synchronisation trivial.
     if impl == "qt-process":
         try:
             from . import pq_qt_process as module  # type: ignore[assignment]
         except Exception as error:
             handle_error("qt-process", error)
+    elif impl == "qt-thread":
+        try:
+            from . import pq_qt_thread as module  # type: ignore[assignment]
+        except Exception as error:
+            handle_error("qt-thread", error)
 
     # The best implementation: fast but requires the system libpq installed
     if not module and (not impl or impl == "c"):

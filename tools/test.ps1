@@ -10,7 +10,7 @@ param(
     [int] $Rows = 100000,
     [int] $Threads = 8,
     [ValidateRange(1, 20)]
-    [int] $Repeat = 3,
+    [int] $Repeat = 7,
     [string] $Tag = "",
     [switch] $KeepResults
 )
@@ -19,12 +19,20 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path $PSScriptRoot -Parent
 $python = Join-Path $repoRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $python)) { throw "Virtual environment not found: $python" }
-if (-not $Dsn) { $Dsn = "postgresql://postgres:postgres@127.0.0.1:5432/postgres" }
+if (-not $Dsn) { throw "QPSYCOPG_DSN is not set" }
+
+$resultsRoot = Join-Path $repoRoot "test-results"
+New-Item -ItemType Directory -Path $resultsRoot -Force | Out-Null
+if (-not $Tag -and $Mode -in @("bench", "all")) {
+    $lastOptimized = Get-ChildItem $resultsRoot -File -Filter "qpsycopg-*.zip" |
+        ForEach-Object { if ($_.BaseName -match '-optimized(\d+)$') { [int] $Matches[1] } } |
+        Sort-Object -Descending | Select-Object -First 1
+    $Tag = "optimized$($(if ($null -eq $lastOptimized) { 1 } else { $lastOptimized + 1 }))"
+}
 
 $safeTag = $Tag -replace '[^\w.-]', '_'
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss-fff"
 $runId = if ($safeTag) { "$timestamp-$safeTag" } else { $timestamp }
-$resultsRoot = Join-Path $repoRoot "test-results"
 $runDir = Join-Path $resultsRoot $runId
 $archive = Join-Path $resultsRoot "qpsycopg-$Mode-$runId.zip"
 New-Item -ItemType Directory -Path $runDir -Force | Out-Null

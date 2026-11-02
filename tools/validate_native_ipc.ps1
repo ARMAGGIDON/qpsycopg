@@ -19,9 +19,11 @@ $oldImpl = $env:PSYCOPG_IMPL
 $oldWorker = $env:QPSYCOPG_WORKER_IMPL
 $oldIpc = $env:QPSYCOPG_IPC
 $oldNative = $env:QPSYCOPG_NATIVE_IPC
+$oldProfile = $env:QPSYCOPG_PROFILE_PHASES
 $bench = Join-Path $PSScriptRoot "bench_qt_process.py"
 $qt = Join-Path $PSScriptRoot "bench_qt_responsiveness.py"
 $cpu = Join-Path $PSScriptRoot "profile_cpu_phases.py"
+$workerProfile = Join-Path $PSScriptRoot "profile_worker_hot_path.py"
 $smoke = Join-Path $PSScriptRoot "smoke_qt_process.py"
 
 function Set-Qpsycopg([bool] $native) {
@@ -68,6 +70,10 @@ try {
     Run $false "CPU phases" @($cpu, $dsn) "cpu-phases-python.json"
     Run $true "CPU phases" @($cpu, $dsn) "cpu-phases-native.json"
 
+    $env:QPSYCOPG_PROFILE_PHASES = "1"
+    Run $false "worker phases" @($workerProfile, $dsn) "worker-phases-python.json"
+    Run $true "worker phases" @($workerProfile, $dsn) "worker-phases-native.json"
+
     [ordered]@{
         timestamp = (Get-Date).ToString("o")
         branch = (& git -C $repoRoot branch --show-current).Trim()
@@ -75,6 +81,7 @@ try {
         sql_repeats = 5
         qt_repeats = 3
         iterations = 500
+        worker_profile_iterations = 10000
         rows = 100000
         threads = 8
         ipc = "pipe"
@@ -88,4 +95,5 @@ try {
     if ($null -eq $oldWorker) { Remove-Item Env:QPSYCOPG_WORKER_IMPL -ErrorAction Ignore } else { $env:QPSYCOPG_WORKER_IMPL = $oldWorker }
     if ($null -eq $oldIpc) { Remove-Item Env:QPSYCOPG_IPC -ErrorAction Ignore } else { $env:QPSYCOPG_IPC = $oldIpc }
     if ($null -eq $oldNative) { Remove-Item Env:QPSYCOPG_NATIVE_IPC -ErrorAction Ignore } else { $env:QPSYCOPG_NATIVE_IPC = $oldNative }
+    if ($null -eq $oldProfile) { Remove-Item Env:QPSYCOPG_PROFILE_PHASES -ErrorAction Ignore } else { $env:QPSYCOPG_PROFILE_PHASES = $oldProfile }
 }

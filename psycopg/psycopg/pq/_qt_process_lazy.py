@@ -306,7 +306,8 @@ def _request(
         if operation == Operation.CALL and objectId == 1 and member in _SEND_MEMBERS:
             _ensureCancelControl(self)
             self._clearQueryCache(objectId)
-            self._clearConnectionState()
+            self._statusCache = None
+            self._transactionStatusCache = None
             self._pendingSend = (objectId, member, args, kwargs)
             return None
 

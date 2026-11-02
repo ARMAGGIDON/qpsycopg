@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import atexit
+import socket
 import sys
 import threading
 from typing import Any
 
 from .. import errors as e
+from . import _qt_process_protocol as _protocol
 from ._qt_process_cancel import CancelControlClient
 from ._qt_process_protocol import FastExecuteFrame, Operation, Response, SendSnapshot
 from .pq_qt_process import PGresult, _SEND_MEMBERS, _Transport, _raiseRemote, _restore, _wire
@@ -23,6 +25,31 @@ _originalPgconnCall = _pq.PGconn._call
 _originalPgconnGet = _pq.PGconn._get
 _originalPgconnSet = _pq.PGconn._set
 _originalPgconnStatus = _pq.PGconn.status.fget
+
+
+class _LoopbackSocketModule:
+    """Enable the Windows TCP loopback fast path before bind/accept."""
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(socket, name)
+
+    @staticmethod
+    def socket(*args: Any, **kwargs: Any) -> socket.socket:
+        sock = socket.socket(*args, **kwargs)
+        if sock.family == socket.AF_INET and sock.type == socket.SOCK_STREAM:
+            try:
+                sock.ioctl(socket.SIO_LOOPBACK_FAST_PATH, 1)
+            except OSError:
+                pass
+        return sock
+
+
+def _recvToken(sock: socket.socket) -> bytes:
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+        pass
+    return bytes(_protocol._recvExact(sock, _protocol._TOKEN_SIZE))
 
 
 def _ownerRun(self: Any) -> None:
@@ -313,6 +340,10 @@ def _request(
 
         return _originalRequest(self, operation, objectId, member, args, kwargs)
 
+
+if sys.platform == "win32" and hasattr(socket, "SIO_LOOPBACK_FAST_PATH"):
+    _pq.socket = _LoopbackSocketModule()
+    _pq.recvToken = _recvToken
 
 _pq._ProcessOwner._run = _ownerRun
 _pq.PGconn.connect_start = classmethod(_connectStart)

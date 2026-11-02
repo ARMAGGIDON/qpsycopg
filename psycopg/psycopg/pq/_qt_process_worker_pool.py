@@ -11,7 +11,7 @@ from psycopg import pq
 
 from .. import errors as e
 from . import _qt_process_worker as _worker
-from ._qt_process_protocol import Operation, Request, ResultSnapshot, SendSnapshot, sendToken
+from ._qt_process_protocol import Operation, Request, ResultSnapshot, SendSnapshot
 
 
 def _snapshotResult(result: Any, profile: dict[str, float | int] | None = None) -> ResultSnapshot:
@@ -149,14 +149,35 @@ class Worker(_worker.Worker):
         return value
 
 
+def _connectWorker(host: str, port: int) -> socket.socket:
+    if sys.platform == "win32" and hasattr(socket, "SIO_LOOPBACK_FAST_PATH"):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.ioctl(socket.SIO_LOOPBACK_FAST_PATH, 1)
+            sock.settimeout(10.0)
+            sock.connect((host, port))
+            return sock
+        except OSError:
+            sock.close()
+    return socket.create_connection((host, port), timeout=10.0)
+
+
+def _sendToken(sock: socket.socket, token: bytes) -> None:
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+        pass
+    sock.sendall(token)
+
+
 def main() -> int:
     if len(sys.argv) != 4:
         return 2
 
     host, port, tokenHex = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-    sock = socket.create_connection((host, port), timeout=10.0)
+    sock = _connectWorker(host, port)
     sock.settimeout(None)
-    sendToken(sock, bytes.fromhex(tokenHex))
+    _sendToken(sock, bytes.fromhex(tokenHex))
     try:
         Worker(sock).run()
         return 0

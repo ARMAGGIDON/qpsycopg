@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import socket
 import sys
+from typing import Any
 
 from .. import errors as e
 from ._qt_process_protocol import Operation, Request, sendToken
@@ -20,11 +21,15 @@ class Worker(_Worker):
             raise e.OperationalError("qpsycopg cancellation control did not stop")
         self.cancelControl = None
 
-    def _handle(self, request: Request):
+    def _handle(self, request: Request) -> Any:
         if request.operation in (Operation.CONNECT, Operation.CONNECT_START):
             self._closeCancelControl()
         elif request.operation == Operation.CALL and request.objectId == 1 and request.member == "finish":
             self._closeCancelControl()
+            conn = self.objects.pop(1, None)
+            if conn is not None:
+                conn.finish()
+            return None
         return super()._handle(request)
 
 

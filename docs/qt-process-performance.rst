@@ -800,12 +800,69 @@ native crash exploration. The predeclared
 screen is **not activated**; there are no
 valid speed/CPU observations.
 
+Second forensic preflight: diagnostic FATAL_ERROR decoder misuse
+------------------------------------------------------------------
+
+The second Windows ZIP
+``qt-thread-native-result-preflight-20261103-224615-903.zip``
+(SHA256
+``b476c81827bccc0d93e0b445ce2128290d9f7168b3834aaf5e66a92119fb4fcc``)
+was captured at HEAD ``9e5ddb54``. The 40-second
+watchdog did not fire, but the child exited with
+``0xC0000005``. Its ``results.json`` retained
+flushed stage markers and a Windows
+``faulthandler`` traceback, unlike the original
+unlocalized crash.
+
+The normal SELECT case **passed** the two-queue
+native C PGresult handoff, metadata parity,
+native/hybrid row decoding, double clear
+and garbage collection. The subsequent
+``SELECT 1 / 0`` case passed native/snapshot
+metadata and error SQLSTATE parity; then the
+**diagnostic probe** called
+``hybrid Transformer.load_rows(0, 0)``
+on the FATAL_ERROR result. The crash stack
+ended in ``psycopg/_transformer.py:84``
+via ``_bulkLoadRows``. The ordinary
+``BaseCursor._check_results()`` would have
+raised the SQL error **before** decoding rows.
+
+**Classification: preflight misuse, not
+demonstrated unsafe cross-thread ownership.**
+This is also **not** full native feasibility:
+notice callbacks, result lifetime after
+``PGconn.finish()`` and final-case cleanup
+did not complete. No performance data exist.
+
+A narrowly scoped correction in
+``tools/preflight_qt_thread_native_pgresult.py``
+(commit ``54bccf73``) now decodes only
+tuple-bearing ``TUPLES_OK`` results and
+checks error/command results without row
+decoding. End-of-run invariants explicitly
+require SELECT and finished-connection
+native/hybrid row parity, error SQLSTATE
+parity, and no row decoding of DO notices.
+Production runtime, C extensions and
+canonical benchmark v3 remain unchanged.
+
+**Status: corrected preflight Windows result
+PENDING; full SELECT A/B still BLOCKED.**
+If the corrected standalone feasibility
+checks pass, a separate same-SQL
+whole-boundary performance A/B remains
+necessary and still has a >=15 us paired
+process CPU/SELECT materiality screen.
+
 Next work
 ---------
 
-#. Sync the branch and execute **one**
-   forensic preflight rerun with the
-   existing 40-second subprocess watchdog::
+#. Sync the branch and execute one
+   **corrected feasibility preflight**
+   using the existing 40-second subprocess
+   watchdog. Do not repeat the invalid
+   FATAL_ERROR row-decoding variant::
 
        .\tools\preflight_qt_thread_native_pgresult.ps1
 
@@ -813,14 +870,13 @@ Next work
    captured crash trace) to the current
    Implementation chat. Do not rerun the
    original silent preflight.
-#. Inspect the last flushed stage and any
-   ``faulthandler`` stack. Determine
-   whether failure originates in diagnostic
-   code, C PGresult ownership/clear,
-   notice callbacks or native Transformer.
-   If a fundamental safety failure
-   or unlocalised repeated crash remains,
-   **STOP** and record it.
+#. Verify that SELECT and connection-finish
+   native/hybrid row parity, error SQLSTATE,
+   notice snapshotting, cross-thread
+   ownership and double clear all pass.
+   A further real native safety failure
+   or unlocalised crash means STOP;
+   no speculative repeated crash runs.
 #. Full native SELECT 1 A/B stays
    prohibited until all ownership,
    semantic and adaptation checks pass.

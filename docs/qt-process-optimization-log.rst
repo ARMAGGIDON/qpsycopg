@@ -701,39 +701,114 @@ the measured summary and SHA256 are committed here
 for future repository-first recovery. There are
 no production runtime modifications in this stage.
 
+Real qt-thread GET status -- Coordinator-approved phase probe pending
+------------------------------------------------------------------
+
+Independent ``00 Coordinator`` review at
+``0fc10d668ac9166f07ae3a575049da7b4b14ccd1`` approved
+**CONTINUE -- real-path profiling**, following the completed enriched
+synthetic echo checkpoint. The synthetic benchmark estimated positive
+Request/Response and worker-bookkeeping costs, but had strong temporal drift
+and could not prove any semantically removable real operation.
+No runtime optimisation is authorised by that evidence.
+
+The new **diagnostic-only** pair is
+``tools/profile_qt_thread_get_real_path.py`` and
+``tools/profile_qt_thread_get_real_path.ps1``.
+The probe uses two *real* warmed qt-thread/C-worker connections in each
+independent child process:
+
+* The **clean-control** connection is constructed before any probe
+  monkeypatch and retains the production ``_run`` worker, raw
+  ``SimpleQueue`` instances and unwrapped request/response methods.
+  It executes the same no-SQL ``Operation.GET`` of PGconn status.
+* The **instrumented** connection is a separate real qt-thread
+  connection. Its original worker ``_run`` algorithm is retained,
+  but diagnostic-only queue proxies timestamp **request receipt to
+  just before response publication** on the worker thread.
+  This is the *active worker turn*, not the idle waiting lifetime of
+  the ``_run`` thread and not queue publication/wakeup cost.
+* During instrumented blocks only, temporary wrappers measure the
+  actual ``_ThreadTransport.request``,
+  ``_perform``, ``_dispatch``, ``_responseValue``,
+  ``_connectionReady``, ``_connectionBroken``,
+  ``Worker._handle`` (both pool and base),
+  worker ``_normalize`` and caller ``_wire``/``_restore``.
+  Each wrapper reads ``perf_counter_ns()`` and the calling thread's
+  own ``thread_time_ns()``. No ``cProfile`` or interpreter-global
+  profiling hook is used. Hooks are removed *before* control blocks.
+* Each of four independent subprocess repeats has 12 short
+  ``clean-profiled-clean-profiled-clean`` cycles by default.
+  Each block executes 1200 GET requests after local warmup;
+  the two profiled blocks use nearest bracketing clean
+  controls, interpolated by **actual block midpoint time**.
+  Record uninstrumented and profiled wall time, process/caller CPU,
+  context switches, paired differences, raw phase counts/timing and
+  independently aggregated **pooled phase** costs per GET.
+  Require one count for each expected phase per GET rather than silently
+  accepting an incomplete worker profile.
+* A per-repeat 90 s subprocess watchdog prevents accidental hangs.
+  The PowerShell runner reuses the isolated fork v3 environment and
+  preserves a ``qt-thread-real-get-profile-*.zip`` with manifest,
+  results and stderr, even after a diagnostic failure.
+
+**Methodology limitations:** the clean and instrumented samples run on
+two separate connection objects in the same process (two active workers).
+The control is genuinely **unwrapped** but may have session-specific
+differences. The instrumented worker uses two queue proxies and method
+clock calls; profiling changes scheduling and introduces overhead.
+Phases are **inclusive and nested**, so they must not be summed to
+obtain total cost or interpreted as removable CPU savings.
+In particular ``_dispatch`` includes waiting for the worker and
+overlaps all worker wall spans. A turn measured inside worker
+``_run`` includes worker ``_handle`` and liveness checks.
+Windows thread CPU counters are quantized; prefer repeated aggregate
+counts and independently replicated wall relationships over small
+single-block CPU numbers. A status GET is not SQL.
+
+**Status: Windows measurements pending.** The target is one falsifiable
+actual-code hypothesis that remains credible after accounting for
+instrumentation noise, control drift and all worker semantics, or an
+explicit failure to isolate an actionable bottleneck. No production
+source, benchmark-v3 workload or retained ``optimized01`` was changed.
+The previous timed-vs-untimed queue get, native worker wait,
+speculative WAIT prefetch and generic snapshot/serialization variants
+remain rejected; do not retest them without new evidence.
+
+Reproduce from the current Windows checkout::
+
+    .\tools\profile_qt_thread_get_real_path.ps1
+
+Upload the resulting ZIP to the current Implementation chat.
+The next significant Coordinator review is due **after** inspecting
+the Windows evidence, recording the decision and committing a
+recoverable GitHub handoff.
+
 Post-optimized01 priorities
 ---------------------------
 
-``optimized01`` remains RETAIN. The timed/untimed
-response-wait variant remains REJECT. The enriched
-echo diagnostic is complete, with independently
-repeated ~4 us synthetic representation and ~4 us
-synthetic bookkeeping effects plus substantial
-unattributed real-GET work. No concrete safe
-production optimisation has emerged.
+``optimized01`` remains RETAIN. The timed-vs-untimed response wait
+remains REJECT. Synthetic echo attribution was completed but did not
+isolate a real removable operation. Existing Coordinator approval
+covers only one **real-path diagnostic GET status investigation**.
 
-#. Send the completed measured enriched echo
-   checkpoint to existing ``00 Coordinator``
-   for independent milestone review. The strong
-   repeat-1 drift, Windows CPU quantization and
-   synthetic-vs-real mismatch are decision
-   constraints, not details to omit.
-#. Do not begin ``optimized02`` or repeat the
-   timed/untimed queue wait, native worker wait,
-   speculative WAIT result prefetch, snapshot/
-   serialization and bulk decoder experiments
-   without genuinely new evidence.
-#. If Coordinator chooses further diagnostic
-   work, it should target a **real** qpsycopg
-   path/phase under short, interleaved blocks
-   with independent repeats; do not keep
-   enriching a synthetic echo by default.
-#. Only an actual measured, semantically safe
-   runtime candidate may proceed to qt-thread
-   smoke and unchanged adjacent-paired v3,
-   protecting CPU/query, cancellation, Qt
-   p95/p99, bulk, connection and resource
-   guardrails.
+#. Run the staged ``profile_qt_thread_get_real_path.ps1`` probe
+   under the existing Windows PostgreSQL environment and preserve
+   its ZIP; no production change or canonical v3 rerun is due
+   until an accepted runtime candidate exists.
+#. Evaluate the real caller/worker inclusive phase counts, wall and
+   aggregated CPU with independent repeats, paired clean GET controls,
+   local drift and probe overhead. Do not sum overlapping phases.
+#. Produce **one** falsifiable actual-code hypothesis with a
+   semantic-safety rationale or clearly report that no actionable
+   target was established. Do not speculate an ``optimized02``.
+#. Maintain rejection of the untimed queue wait, worker-native wait,
+   speculative WAIT prefetch and generic snapshot/serialization work
+   absent new evidence; preserve worker exit, close, cancellation
+   and public Psycopg semantics.
+#. At the completed significant diagnostic checkpoint, update
+   performance, optimisation log and project map, then contact the
+   **existing 00 Coordinator** for independent direction review.
 
 Checkpoint rule
 ---------------

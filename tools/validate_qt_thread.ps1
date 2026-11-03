@@ -12,6 +12,15 @@ foreach ($item in $config.PSObject.Properties) {
     if ($null -eq $previous) { [Environment]::SetEnvironmentVariable($name, [string] $item.Value) }
 }
 
+$oldPath = $env:PATH
+if ($env:PSYCOPG_PG_ROOT) {
+    $pgBin = Join-Path $env:PSYCOPG_PG_ROOT "bin"
+    if (Test-Path $pgBin) {
+        $pathItems = $env:PATH -split ";"
+        if ($pathItems -notcontains $pgBin) { $env:PATH = "$pgBin;$env:PATH" }
+    }
+}
+
 $dsn = $env:QPSYCOPG_DSN
 if (-not $dsn) { throw "QPSYCOPG_DSN is not set; add it to .env or the process environment" }
 
@@ -120,6 +129,7 @@ try {
     if ($null -eq $oldNative) { Remove-Item Env:QPSYCOPG_NATIVE_IPC -ErrorAction Ignore } else { $env:QPSYCOPG_NATIVE_IPC = $oldNative }
     if ($null -eq $oldRecv) { Remove-Item Env:QPSYCOPG_NATIVE_RECV -ErrorAction Ignore } else { $env:QPSYCOPG_NATIVE_RECV = $oldRecv }
     if ($null -eq $oldWait) { Remove-Item Env:QPSYCOPG_NATIVE_WAIT -ErrorAction Ignore } else { $env:QPSYCOPG_NATIVE_WAIT = $oldWait }
+    $env:PATH = $oldPath
     foreach ($entry in $bootstrapEnv.GetEnumerator()) {
         if ($null -eq $entry.Value) { Remove-Item "Env:$($entry.Key)" -ErrorAction Ignore }
         else { [Environment]::SetEnvironmentVariable($entry.Key, [string] $entry.Value) }

@@ -333,28 +333,54 @@ Bulk decoder tuning
 Current qt-thread/process bulk decode is near upstream. Do not spend another
 iteration here while short-query CPU/latency remains materially higher.
 
-Current numbered optimisation -- optimized01
----------------------------------------------
+Current numbered optimisation -- optimized01 (retained)
+------------------------------------------------------
 
-``optimized01`` is a narrow qt-thread lifecycle experiment. Before the change,
-``Connection.connect()`` created the full cancel-control infrastructure even for a
-connection immediately closed without running a query. The implementation now:
+The first ``qt-thread`` change is a narrowly scoped cancellation-lifecycle
+optimisation. Instead of creating the cancellation-control server during
+``Connection.connect()``, it constructs the control channel immediately before
+the first normal query, with a fallback for ``cancel_safe()`` before that
+query. The ``qt-process`` code path is not modified.
 
-* skips eager cancel-control creation for qt-thread;
-* opens it immediately before the first normal ``send_query*``;
-* retains an on-demand ``cancel_safe()`` fallback;
-* leaves qt-process unchanged.
+Implementation commits: ``4637ff9``, ``371bda8``. Measurement checkpoint:
+``optimized01`` at commit ``7c781a97``. All six SQL and five Qt rounds
+completed; the semantic smoke passed, including cancellation and
+``AsyncConnection``. The upstream base, benchmark hash/reference key and
+isolated C-worker environments are compatible with ``baseline-v3``.
 
-Implementation commits are ``4637ff9`` and ``371bda8``.
+The intended result is observed::
 
-Expected signals are reduced qt-thread connection/resource overhead before the
-first query. Short-query latency is not the primary target because cancellation
-support is still established before the first query and then reused.
+    qt-thread / upstream             baseline-v3   optimized01
+    warm connection median             1.409x       1.319x
+    warm connection p95                1.930x       1.291x
+    cold connection                    1.366x       1.053x (noisy)
+    extra connected-state threads         +2           +1
+    extra connected-state handles        +14           +8
 
-``optimized01`` is not accepted yet. The next required action is to run the
-unchanged v3 benchmark as checkpoint ``optimized01`` and compare it directly with
-``baseline-v3``. Do not stack another runtime optimisation before this result is
-available.
+The warm median ratio improved about 6.4%; warm p95 improved about 33.1%.
+The thread/handle counts are exact architecture deltas at the pre-query
+connected-state snapshot. Cold-start figures are noisy and secondary.
+
+Short-query SELECT median stayed near ``1.27x`` upstream (1.273x before,
+1.262x after), as expected because the control channel still exists while
+queries execute. There is no measured RSS/private-memory win.
+
+**Watch items, not claimed regressions or improvements**:
+
+* CPU/short query ratio: ``2.000x -> 2.429x``. Baseline and current per-round
+  ranges overlap (``1.556-2.649x`` and ``1.955-3.000x``) and both are
+  variable. This merits a focused CPU-path check before claiming the change
+  neutral outside connection setup.
+* Cancel call median: ``1.048x -> 1.553x``, but current paired ratio MAD
+  about 19% and a ``0.979-3.201x`` range prevent a reliable latency
+  conclusion; semantic cancellation still passed.
+* Qt timer p95/p99 and bulk ratios fluctuate modestly across runs and do not
+  establish a causal regression. Maximum timer stall is diagnostic only.
+
+Decision: **retain optimized01** for the confirmed connection/resource benefit
+and preserved semantic smoke. Do not stack another unrelated runtime change
+before a bounded short-query profiling hypothesis is chosen. Full numbers,
+method and historical drift are in :doc:`qt-process-optimization-log`.
 
 Performance rules for future work
 ---------------------------------
@@ -374,12 +400,12 @@ Performance rules for future work
 Next work
 ---------
 
-#. Run ``optimized01`` with ``tools/benchmark_qpsycopg.ps1`` using the unchanged
-   v3 benchmark.
-#. Confirm the semantic smoke remains clean.
-#. Compare connection/resource deltas and unrelated regressions against
-   ``baseline-v3``.
-#. Retain or revert ``optimized01`` from evidence, and document the result.
-#. If retained, select the next bounded target from the remaining measured cost;
-   current evidence points to qt-thread short-query CPU/latency, not bulk decode
-   or process-IPC micro-tuning.
+#. ``optimized01`` is retained. Its connection/resource target was measured
+   against ``baseline-v3``; no further benchmark-methodology revision is
+   justified by this checkpoint.
+#. Profile and isolate remaining qt-thread short-query CPU/latency cost using
+   a local, upstream-equivalent hypothesis, not speculative process IPC tuning.
+#. Keep CPU/query, cancellation, Qt p95/p99, bulk and resource counts as
+   guardrails. Do not claim CPU neutrality from the optimized01 checkpoint alone.
+#. Make the smallest safe candidate and run qt-thread smoke plus the unchanged
+   paired v3 benchmark before retain/revert and documentation update.

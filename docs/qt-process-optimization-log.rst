@@ -575,7 +575,7 @@ No ``optimized02`` candidate, semantic change or acceptance v3 run
 was created for this diagnostic.
 
 Enriched SimpleQueue echo -- Coordinator-approved diagnostic pending
-------------------------------------------------------------------
+--------------------------------------------------------------------
 
 At reviewed HEAD ``492ab431``, independent ``00 Coordinator`` returned
 **CONTINUE** for a *diagnostic-only* extension of the minimal echo experiment.

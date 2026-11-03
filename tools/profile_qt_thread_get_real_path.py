@@ -417,10 +417,14 @@ def aggregate(reports: list[dict]) -> dict[str, Any]:
         ]),
         "warnings": [
             "All timings are inclusive and phases are nested; do not sum them.",
-            "The worker_run_turn interval covers queue receipt through just before response publication, not idle _run waiting or the queue.put wakeup.",
-            "The control is a separate uninstrumented qt-thread connection, so session-specific effects remain possible.",
-            "Method hooks, queue proxies, and thread-time reads perturb profiled time; paired delta is instrumentation overhead, not removable runtime cost.",
-            "Windows thread CPU clocks can be quantized or inconsistent on short blocks; pooled repeat totals are more meaningful than individual phase-block CPU.",
+            "worker_run_turn covers request receipt through response preparation; "
+            "it excludes idle _run waiting and queue.put wakeup.",
+            "The clean control is another qt-thread connection; "
+            "session-specific effects remain possible.",
+            "Local method hooks and queue proxies perturb measured timings. "
+            "The profiled-minus-clean delta is not a removable runtime cost.",
+            "Windows thread CPU clocks may be quantized on short blocks. "
+            "Use pooled repeat totals over isolated per-block CPU.",
             "A status GET is a diagnostic RPC and cannot by itself predict SQL performance.",
         ],
     }

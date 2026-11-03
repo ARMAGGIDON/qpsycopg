@@ -105,7 +105,7 @@ def test_no_env_file_does_not_change_upstream_selection(tmp_path):
 
 
 def test_backend_remains_fixed_after_environment_changes(tmp_path):
-    (tmp_path / ".env").write_text("PSYCOPG_IMPL=python\\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("PSYCOPG_IMPL=python\n", encoding="utf-8")
     result = _run(
         tmp_path,
         "import os, psycopg; from psycopg import pq; "

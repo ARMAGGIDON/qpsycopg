@@ -274,7 +274,11 @@ Validation and benchmark map
     against the existing no-SQL qt-thread PGconn status GET path. Uses timed
     response waits in both cases, interleaved blocks, wall/CPU/context-switch
     measurements, a child-process watchdog and a ZIP result archive.
-    Windows results are pending; runtime and benchmark v3 are unchanged.
+    The Windows comparison is complete: both modes have about two context
+    switches/call; qpsycopg has a positive extra ~19 us median paired
+    wall delay but strong temporal drift. Neither the residual nor any
+    specific allocation is proven removable. Runtime and benchmark v3
+    are unchanged.
 
 The canonical current baseline is ``baseline-v3``. Older ``initial`` and
 ``baseline-v2`` checkpoints used different benchmark definitions and must not be
@@ -303,59 +307,61 @@ Established decisions / do not repeat blindly
 Immediate next work
 -------------------
 
-#. ``optimized01`` remains **RETAIN**. The timed-vs-untimed
-   ``SimpleQueue.get()`` diagnostic is **REJECT**; its median
-   improvement was +0.01546 us (paired MAD 1.08491 us), with
-   untimed liveness failure on a worker exit without response.
-   Do not repeat that A/B without genuinely new evidence.
-#. The existing ``00 Coordinator`` independently reviewed the
-   rejection at HEAD ``577d568`` and authorised the **next
-   diagnostic-only** comparison: minimal two-SimpleQueue worker echo
-   versus the qpsycopg warmed no-SQL PGconn ``GET status``
-   request/response path. Do not modify production or benchmark v3.
-#. ``tools/bench_qt_thread_echo_baseline.py`` and
-   ``tools/bench_qt_thread_echo_baseline.ps1`` are staged.
-   They collect eight interleaved pairs by default (4000
-   calls/mode/pair, 300 warmups/mode/block), comparing the
-   **same timed response wait** in both paths. Collect per-pair
-   wall latency, process/caller/other-thread CPU and context
-   switches with median, MAD, range and sign count.
-#. Next required user input: run
-   ``.\tools\bench_qt_thread_echo_baseline.ps1`` on the
-   Windows development checkout and upload the generated
-   ``qt-thread-echo-baseline-*.zip`` to the **current
-   Implementation chat**. The entire measurement is protected
-   by a subprocess watchdog; no runtime patch is installed.
-#. Implementation owner must inspect manifest, paired results,
-   noise and host drift. Separate the minimum unavoidable
-   scheduling/queue price from additional qpsycopg handling.
-   The residual includes required semantics and is **not
-   automatically removable overhead**.
-#. Once measured, document a bounded conclusion. Do not
-   start ``optimized02`` unless one concrete, falsifiable
-   and semantically safe runtime hypothesis is supported by
-   new evidence and approved by coordination. Any future
-   production candidate requires qt-thread smoke and
-   unchanged paired benchmark v3 with CPU/query, cancellation,
-   Qt p95/p99, bulk, connection and resource guardrails.
-#. After a significant completed diagnostic checkpoint and
-   committed documentation, route the conclusion to existing
-   ``00 Coordinator`` for independent review. No new Scout
-   or alternate Implementation owner is currently needed.
+#. ``optimized01`` remains **RETAIN**. The previous timed-vs-untimed
+   response queue wait A/B remains **REJECT** (no repeatable speedup
+   and unsafe worker-exit behavior). Do not rerun that experiment.
+#. The Coordinator-authorised minimal echo versus qpsycopg no-SQL
+   status GET diagnostic is **COMPLETE**. Archive
+   ``qt-thread-echo-baseline-20261103-202519-685.zip`` reports
+   fork commit ``5dcdbd51``, 8 interleaved pairs x 4000 warmed
+   requests/mode, Python 3.13.5, C worker. No errors/watchdog fires.
+#. Measured wall medians: bare SimpleQueue echo **18.407 us/call**,
+   full qpsycopg GET status **36.367 us/call**. Median paired
+   GET-minus-echo wall difference **+18.957 us** (paired MAD
+   5.764 us; range +13.025 to +37.552 us; 8/8 positive).
+   Process CPU median paired difference +19.531 us (7/8
+   positive). Both paths have ~2 context switches per call.
+#. **Interpretation limitation:** marked temporal drift:
+   median wall difference is ~31.81 us in the first four
+   pairs versus ~13.66 us in the last four. A minimal token
+   echo isolates the baseline two-queue/scheduling round
+   trip, but the residual includes required transport and
+   worker semantics, not a proven removable cost. It does
+   not identify any single dominant allocation or function.
+#. **Decision: complete diagnostic investigation; no
+   runtime optimisation candidate accepted.** Production
+   qt-thread, benchmark v3 and retained ``optimized01``
+   remained unchanged. Do not create speculative
+   ``optimized02`` or claim a SQL speedup.
+#. Next owner is the existing **``00 Coordinator``**:
+   review the measured residual and drift limitations,
+   then choose whether to authorise a narrowly scoped
+   diagnostic-only comparison of *matched Request/Response
+   representation and validation* in an enriched echo
+   against the bare-token echo, or select another
+   evidence-backed path. No new Scout is justified
+   automatically.
+#. A future production candidate requires preserved
+   worker exit/close/error semantics, qt-thread semantic
+   smoke, unchanged paired v3 benchmark and CPU/query,
+   cancellation latency, Qt p95/p99, bulk, connection
+   and resource guardrails.
 
 When resuming in a new chat/session
 -----------------------------------
 
 #. Read :doc:`qt-process`, this project map,
    :doc:`qt-process-performance` and
-   :doc:`qt-process-coordination`; check current HEAD and
-   :doc:`qt-process-optimization-log`.
-#. ``optimized01`` is retained; timed-vs-untimed SimpleQueue
-   waiting is a measured **REJECT** and cannot be reintroduced
-   without new evidence.
-#. The echo-vs-GET diagnostic is **staged but not yet measured**
-   on the Windows target. The next action is its ZIP in the
-   current Implementation chat, not another Coordinator
-   request yet.
-#. Production code and benchmark v3 remain unchanged.
-   No Scout/Reviewer or second Implementation chat is needed.
+   :doc:`qt-process-coordination`; inspect current
+   branch HEAD and :doc:`qt-process-optimization-log`.
+#. ``optimized01`` remains retained. The timed/untimed
+   wait A/B remains rejected.
+#. The minimal echo diagnostic is **measured and recorded**,
+   not awaiting a ZIP. It establishes a significant
+   within-run qpsycopg overhead beyond minimal queue echo,
+   subject to strong temporal drift and unresolved attribution.
+#. The next action is independent review in existing
+   ``00 Coordinator`` before beginning any new optimisation
+   direction. Return to the current Implementation chat
+   after its decision. Do not silently create a competing
+   runtime branch or new Scout.

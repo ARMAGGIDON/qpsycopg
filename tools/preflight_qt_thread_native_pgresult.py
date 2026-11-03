@@ -343,8 +343,15 @@ def main() -> int:
         print(json.dumps(result, indent=2))
         return 2
     if run.returncode:
+        last_stage = next(
+            (line for line in reversed(run.stderr.splitlines())
+             if line.startswith("NATIVE_PREFLIGHT_STAGE ")), None
+        )
         result["error"] = {
-            "exit_code": run.returncode, "stderr_tail": run.stderr[-2500:],
+            "exit_code": run.returncode,
+            "exit_code_hex": f"0x{run.returncode & 0xffffffff:08X}",
+            "last_stage": last_stage,
+            "stderr_tail": run.stderr[-20000:],
             "stdout_tail": run.stdout[-1200:],
         }
         print(json.dumps(result, indent=2))

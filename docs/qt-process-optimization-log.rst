@@ -575,7 +575,7 @@ No ``optimized02`` candidate, semantic change or acceptance v3 run
 was created for this diagnostic.
 
 Enriched SimpleQueue echo -- measured, diagnostic COMPLETE
----------------------------------------------------------
+----------------------------------------------------------
 
 Independent ``00 Coordinator`` approved progressively enriched echo
 diagnostics after the previous GET-minus-bare echo result had shown

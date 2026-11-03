@@ -701,114 +701,638 @@ the measured summary and SHA256 are committed here
 for future repository-first recovery. There are
 no production runtime modifications in this stage.
 
-Real qt-thread GET status -- Coordinator-approved phase probe pending
----------------------------------------------------------------------
+Real qt-thread GET status -- measured diagnostic, no actionable target
+----------------------------------------------------------------------
 
-Independent ``00 Coordinator`` review at
-``0fc10d668ac9166f07ae3a575049da7b4b14ccd1`` approved
-**CONTINUE -- real-path profiling**, following the completed enriched
-synthetic echo checkpoint. The synthetic benchmark estimated positive
-Request/Response and worker-bookkeeping costs, but had strong temporal drift
-and could not prove any semantically removable real operation.
-No runtime optimisation is authorised by that evidence.
+Coordinator approved a bounded **real-path, diagnostic-only**
+``GET status`` phase investigation at
+``0fc10d668ac9166f07ae3a575049da7b4b14ccd1``.
+The completed Windows archive is
+``qt-thread-real-get-profile-20261103-213627-044.zip``, SHA256
+``05a5887fff00d8873cca977fedf84f0d9063ea3a0a6dde75edec9c78646ce558``.
+It is a **conversation-uploaded / Windows-local artifact**, not a
+GitHub-committed binary. Preserve the original ZIP. The archive CRC
+passed; it contains a manifest, valid results JSON and empty stderr.
 
-The new **diagnostic-only** pair is
-``tools/profile_qt_thread_get_real_path.py`` and
-``tools/profile_qt_thread_get_real_path.ps1``.
-The probe uses two *real* warmed qt-thread/C-worker connections in each
-independent child process:
+The manifest records fork commit
+``1c11f6525bfc75e3db27aeeae65c0498a56df4cd``,
+``feature/qt-process-pq``, Python 3.13.5, qt-thread
+with C worker, four independent subprocess repetitions,
+12 ``clean-profiled-clean-profiled-clean`` cycles/repeat,
+1200 warmed GET status calls/block and a 90-second
+child watchdog. All **48 cycles / 240 blocks**
+completed; **115,200 profiled calls** and
+172,800 clean-control calls, excluding warmup.
+No errors or watchdog timeouts occurred. All twelve
+expected phase counters registered **exactly once
+per profiled GET** in every repetition. No production
+runtime or canonical benchmark-v3 file was changed.
 
-* The **clean-control** connection is constructed before any probe
-  monkeypatch and retains the production ``_run`` worker, raw
-  ``SimpleQueue`` instances and unwrapped request/response methods.
-  It executes the same no-SQL ``Operation.GET`` of PGconn status.
-* The **instrumented** connection is a separate real qt-thread
-  connection. Its original worker ``_run`` algorithm is retained,
-  but diagnostic-only queue proxies timestamp **request receipt to
-  just before response publication** on the worker thread.
-  This is the *active worker turn*, not the idle waiting lifetime of
-  the ``_run`` thread and not queue publication/wakeup cost.
-* During instrumented blocks only, temporary wrappers measure the
-  actual ``_ThreadTransport.request``,
-  ``_perform``, ``_dispatch``, ``_responseValue``,
-  ``_connectionReady``, ``_connectionBroken``,
-  ``Worker._handle`` (both pool and base),
-  worker ``_normalize`` and caller ``_wire``/``_restore``.
-  Each wrapper reads ``perf_counter_ns()`` and the calling thread's
-  own ``thread_time_ns()``. No ``cProfile`` or interpreter-global
-  profiling hook is used. Hooks are removed *before* control blocks.
-* Each of four independent subprocess repeats has 12 short
-  ``clean-profiled-clean-profiled-clean`` cycles by default.
-  Each block executes 1200 GET requests after local warmup;
-  the two profiled blocks use nearest bracketing clean
-  controls, interpolated by **actual block midpoint time**.
-  Record uninstrumented and profiled wall time, process/caller CPU,
-  context switches, paired differences, raw phase counts/timing and
-  independently aggregated **pooled phase** costs per GET.
-  Require one count for each expected phase per GET rather than silently
-  accepting an incomplete worker profile.
-* A per-repeat 90 s subprocess watchdog prevents accidental hangs.
-  The PowerShell runner reuses the isolated fork v3 environment and
-  preserves a ``qt-thread-real-get-profile-*.zip`` with manifest,
-  results and stderr, even after a diagnostic failure.
+Clean controls use one original qt-thread connection
+with unwrapped methods and raw queues. Profiled blocks
+use another real connection with diagnostic-only
+method wrappers and worker request/response queue
+observers. All wrappers are local to the diagnostic
+process; the original worker ``_run`` algorithm executes.
+The worker-run observation covers request receipt to
+*before* response queue publication. Calls are paired
+against timestamp-interpolated neighboring clean controls.
+This methodology introduces considerable overhead and
+cannot support exact function self-CPU attribution.
 
-**Methodology limitations:** the clean and instrumented samples run on
-two separate connection objects in the same process (two active workers).
-The control is genuinely **unwrapped** but may have session-specific
-differences. The instrumented worker uses two queue proxies and method
-clock calls; profiling changes scheduling and introduces overhead.
-Phases are **inclusive and nested**, so they must not be summed to
-obtain total cost or interpreted as removable CPU savings.
-In particular ``_dispatch`` includes waiting for the worker and
-overlaps all worker wall spans. A turn measured inside worker
-``_run`` includes worker ``_handle`` and liveness checks.
-Windows thread CPU counters are quantized; prefer repeated aggregate
-counts and independently replicated wall relationships over small
-single-block CPU numbers. A status GET is not SQL.
+**Actual clean vs profiled wall measurements (us/GET)**::
 
-**Status: Windows measurements pending.** The target is one falsifiable
-actual-code hypothesis that remains credible after accounting for
-instrumentation noise, control drift and all worker semantics, or an
-explicit failure to isolate an actionable bottleneck. No production
-source, benchmark-v3 workload or retained ``optimized01`` was changed.
-The previous timed-vs-untimed queue get, native worker wait,
-speculative WAIT prefetch and generic snapshot/serialization variants
-remain rejected; do not retest them without new evidence.
+    independent repeat                  1       2       3       4
+    clean-control block median       30.999  30.266  30.079  29.878
+    instrumented block median        50.752  49.063  49.178  48.248
+    median paired profiled-clean     18.082  18.348  18.740  18.270
+    clean baseline start/end drift   +2.51%  -4.25%  +61.18% -5.04%
 
-Reproduce from the current Windows checkout::
+All **96/96 profiled blocks** had a positive difference
+from their bracketed clean controls. Across four
+independent-repeat median paired differences,
+the wall excess is +18.309 us (MAD 0.133 us;
+range +18.082..+18.740 us). The excess is an
+**instrumented-vs-clean measurement difference**,
+not a removable production cost. In addition to
+wrapper/timer/queue-proxy overhead, separate
+control/profiled connections may differ. The
+third repetition's +61.18% first-to-last
+baseline drift and transient within-repeat
+spikes prevent treating the system as stationary.
 
-    .\tools\profile_qt_thread_get_real_path.ps1
+**Inclusive phase wall-time**, median of four
+independent pooled per-repeat estimates (us/GET)::
 
-Upload the resulting ZIP to the current Implementation chat.
-The next significant Coordinator review is due **after** inspecting
-the Windows evidence, recording the decision and committing a
-recoverable GitHub handoff.
+    caller request                    50.906
+      caller _perform                 48.311
+        caller _dispatch              38.412
+      caller _responseValue            3.504
+        caller _restore                0.991
+      caller _wire                     1.820
+    active worker _run turn           14.137
+      worker pool _handle              6.264
+        worker base _handle            3.965
+          worker _normalize           1.298
+      worker _connectionReady          0.816
+      worker _connectionBroken         1.018
+
+The visual indentation is illustrative only; these
+are **inclusive, overlapping timings**, not an
+additive decomposition. In particular ``_dispatch``
+waits for the worker and overlaps its wall-time;
+``_run`` timing excludes idle request waiting and
+the response queue publication/wakeup. These phase
+values include instrumentation overhead, so a
+``_dispatch`` wall reading above the 30 us clean
+GET baseline **is not evidence of a larger
+removable cost**. No single measured handler,
+status check or restore operation can credibly
+explain or recover the full qpsycopg-vs-echo gap.
+
+**Windows thread CPU is not reliable at the
+per-method scale.** For all four repeats,
+worker ``_handle``, ``_normalize``,
+``_connectionReady``, ``_connectionBroken``
+and caller ``_responseValue``, ``_wire``/
+``_restore`` recorded **0 us** inclusive thread
+CPU after pooling 28,800 calls per repeat.
+The worker _run-turn CPU was only 0 or
+0.543 us/GET, reflecting coarse Windows
+clock accounting, not negligible actual work.
+Paired profiled-clean process CPU medians
+ranged approximately +13.0..+19.9 us/GET,
+but these include probe overhead. The
+context-switch delta median across repeats
+is about +0.0069/call, no evidence of
+an extra scheduling handoff.
+
+**Decision: COMPLETE -- NO ACTIONABLE RUNTIME
+TARGET.** The diagnostic confirms that
+real GET path work consists of nested caller
+queue waiting/response handling and worker
+request/bookkeeping; it does **not** produce
+a defensible *exclusive* cost for a
+specific semantically removable operation.
+Skipping worker health checks, error/notice
+processing or response validation would
+require its own correctness rationale and
+controlled production A/B; nothing here
+justifies that change. There is no
+supported ``optimized02`` hypothesis.
+``optimized01`` remains RETAIN.
+Timed-vs-untimed queue waiting, native
+worker socket waiting, speculative WAIT
+prefetch and generic serialization/snapshot
+experiments remain rejected.
+
+No new runtime changes, semantic smoke
+or adjacent-paired v3 acceptance benchmark
+were required for this negative
+diagnostic-only checkpoint.
+The next direction belongs to
+**independent 00 Coordinator review**:
+consider whether the present qpsycopg
+GET/echo profiling line has reached an
+attribution plateau, and whether a
+different evidence-backed target or
+independent Scout is warranted. Avoid
+another heavier instrumentation layer
+without a falsifiable reason to expect
+better production attribution.
+
+Native PGresult two-queue handoff -- feasibility preflight pending
+------------------------------------------------------------------
+
+Independent Scouts A and B were reviewed by the existing
+``00 Coordinator``; the selected **INVESTIGATE** direction
+is one diagnostic-only native-result boundary screen at
+base HEAD ``98a6ad178d03ff0ad94f1b28c6d3ddac6cd164a1``.
+This does not authorise runtime changes or ``optimized02``.
+
+Source-based findings at the reviewed HEAD:
+
+* PostgreSQL 18 libpq explicitly permits completed, normally
+  read-only ``PGresult`` objects to move between threads, while
+  forbidding concurrent manipulation of the same ``PGconn``
+  (or simultaneous mutation of a single ``PGresult``):
+  https://www.postgresql.org/docs/18/libpq-threading.html.
+* ``psycopg_c/psycopg_c/pq/pgresult.pyx`` owns a
+  ``libpq.PGresult*`` and invokes ``PQclear`` in
+  ``clear()``/``__dealloc__``. Native C
+  ``_psycopg.Transformer.set_pgresult`` accepts exactly
+  native C ``psycopg_c.pq.PGresult``.
+  The current qt-thread client chooses the Python/native
+  hybrid Transformer because its PGconn is synthetic;
+  that does **not** by itself establish native
+  Transformer compatibility with a qt-thread cursor's
+  adaptation context.
+* The native C connection's notice receiver constructs a
+  **borrowed** result wrapper whose pointer is set to NULL
+  after its callback. It must never be enqueued as an owned
+  cross-thread native result. Existing worker notice
+  snapshots remain necessary.
+* Worker ``_executePending`` creates ``ResultSnapshot``
+  and ``PackedValues``. The worker's
+  ``_completedHealthy`` and ``_refreshesParameters``
+  inspect ``ResultSnapshot`` specifically, while
+  caller ``_responseValue``/``_restore`` and the
+  hybrid cursor adaptation expect reconstructed
+  results. Therefore a plain identity replacement
+  of ``_snapshotResult`` is **not** a semantics-safe
+  production design. FATAL_ERROR, SET/RESET/DISCARD,
+  pipeline, COPY, notices, error/cache state and
+  cancellation/close must continue to work.
+
+The newly committed ``tools/preflight_qt_thread_native_pgresult.py``
+and ``tools/preflight_qt_thread_native_pgresult.ps1``
+perform a **separate safety/compatibility preflight**
+inside a watchdog-protected subprocess.
+A native C PGconn is created, used and finished **only in
+the worker thread**. Completed native PGresults are sent
+through two SimpleQueues to the caller. The caller compares
+native and current snapshot metadata, NULLs, values,
+SQLSTATE exception classification and decoded rows with
+the **same qt-thread cursor adaptation context**, using
+native C versus current hybrid Transformer. It additionally
+tests a result surviving worker PGconn.finish(), explicit
+double clear/destructor, and preserves notice diagnostics
+by snapshotting the borrowed callback result before return.
+The production qt-thread worker, Transformer selection,
+benchmark v3 and SQL execution implementation are untouched.
+
+**Preflight status: BLOCKED; forensic crash localized to invalid probe row decoding.**
+The first Windows attempt (details below) did not reach a Python
+PASS or a meaningful semantic assertion; it ended in a native
+process crash. The entire native-handoff performance A/B stays
+blocked. Source plausibility is not empirical feasibility.
+
+First Windows preflight attempt -- native access violation
+----------------------------------------------------------
+
+Uploaded ZIP: ``qt-thread-native-result-preflight-20261103-223124-116.zip``.
+SHA256: ``8a3e2324bb51a5297b63d1c7ab1b424320c7c799c13a18265c15ce56689b58f7``.
+Manifest confirms ``dc25abe6c1e98c9c349f5ce9596f99a93d2ba5b9``,
+branch ``feature/qt-process-pq``, CPython 3.13.5,
+qt-thread / C worker, 40-second watchdog and unchanged runtime/v3.
+ZIP CRC passes. ``results.json`` records Python diagnostic
+exit 2 because its **child process** returned Windows
+``3221225477`` (``0xC0000005``, access violation).
+The captured child's stdout/stderr and ZIP ``stderr.log``
+are all empty. This was **not** a watchdog timeout and there
+are no completed per-case results, so the crash location,
+PGresult lifetime and native Transformer parity are
+**unknown**. Treating this as proof that the proposed
+architecture is impossible would be premature; treating
+it as a PASS would be unsafe.
+
+**Bounded forensic correction, diagnostics only:** commit
+``ad3fc11b`` added ``faulthandler`` and flushed stage
+markers around native connect, worker exec/snapshot,
+queue response, metadata, both Transformers, clear,
+notice callback and connection finish. Commit
+``e0189753`` preserved the last marker, Windows
+hex exit code and an extended child stderr stack
+in ``results.json``. These changes do not alter
+the native calls, production source or v3 benchmark.
+
+The forensic rerun was performed and localized the crash,
+as recorded in the second-attempt section below. Do not repeat
+the old diagnostic with invalid row decoding. The >=15 us
+CPU/SELECT material screen remains deferred; no
+``optimized02`` candidate exists.
+
+Second Windows native preflight -- fatal-error row decoder misuse
+-----------------------------------------------------------------
+
+Forensic artifact:
+``qt-thread-native-result-preflight-20261103-224615-903.zip``,
+SHA256
+``b476c81827bccc0d93e0b445ce2128290d9f7168b3834aaf5e66a92119fb4fcc``.
+ZIP CRC passed. The manifest records ``9e5ddb547b6d0d2a0c605aa939f7f908d9591643``,
+``feature/qt-process-pq``, CPython 3.13.5,
+qt-thread / C worker, 40-second watchdog and no
+production/v3 change. Child returned Windows
+``3221225477`` (``0xC0000005``) again;
+``results.json`` carries the flushed stage trace
+and ``faulthandler`` stacks. It was **not**
+a watchdog expiry. The separate ZIP ``stderr.log``
+is empty because child stderr is in the JSON error payload.
+
+**Localization:** the first ``select`` case completed native C
+``PGresult`` handoff, metadata/snapshot parity,
+both native C and hybrid Transformer row loads,
+explicit double ``clear()``, GC and end-of-case checks.
+The ``sql_error`` case then completed worker
+``exec_(b"SELECT 1 / 0")``, snapshot and two-queue
+handoff; both metadata and SQLSTATE exception checks
+passed, and the native C Transformer ``load_rows()``
+returned. The last flushed marker was
+``caller: before hybrid Transformer.load_rows``;
+the current thread's crash stack points to
+``psycopg/_transformer.py:84``, calling
+``_bulkLoadRows`` from ``load_rows(0, 0)``
+on a ``FATAL_ERROR`` result without tuple columns.
+
+**Root-cause classification: diagnostic misuse, not a
+demonstrated cross-thread PGresult safety failure.**
+Production ``BaseCursor._check_results()`` detects a
+``FATAL_ERROR`` and raises before attempting row
+decoding; the preflight incorrectly applied normal
+row decoding to that error result. The hybrid
+bulk-row helper's crash for invalid input is
+not evidence that native result transfer failed.
+It is not a general confirmation of native
+safety either: notice, PGconn.finish and their
+associated clear/lifetime checks had not run.
+
+A minimal **diagnostic-only** correction in commit
+``54bccf73`` retains native/snapshot metadata and
+SQLSTATE error parity but only calls either row decoder
+for tuple-bearing, nonempty ``TUPLES_OK`` results.
+``FATAL_ERROR`` and ``COMMAND_OK``/notice results
+are no longer submitted to ``load_rows()``.
+A per-case ``row_decoder_checked`` flag and
+end-of-test assertions ensure that real SELECT and
+PGconn-finished result parity must still pass,
+whereas error/DO cannot masquerade as row-decoding
+checks. The same existing two queues and
+watchdog are retained. No production source,
+C extension or benchmark v3 was changed.
+
+**Gate: STILL BLOCKED — corrected Windows feasibility
+rerun required.** After synchronizing the branch,
+execute the existing preflight runner once::
+
+    .\tools\preflight_qt_thread_native_pgresult.ps1
+
+Review its new ZIP here before any native SELECT
+performance A/B. If it reveals an actual
+ownership/Transformer/notice lifetime failure,
+STOP, document and refer to Coordinator.
+If the corrected preflight passes all cases,
+that establishes only the bounded standalone
+feasibility gate; a separate full current-vs-native
+boundary A/B and the >=15 us CPU/SELECT
+screen would still be required.
+
+Native PGresult feasibility PASS -- whole-result-boundary A/B staged
+--------------------------------------------------------------------
+
+The corrected **third Windows preflight** completed at
+``c303749b6b1551901eb5fc7bf4c2bcaeb2f2ae56``, after the
+earlier forensic crash had been traced to erroneous row decoding on
+a FATAL_ERROR result. Artifact:
+``qt-thread-native-result-preflight-20261103-225359-731.zip``,
+SHA256 ``590ae47053e5b117d75ed596fceb23b71e50c78b37e97797162deac842b5145f``.
+The archive CRC passed, ``stderr.log`` was empty, and ``results.json``
+reported ``preflight_passed=true``,
+``native_handoff_ab_authorized=true``, CPython 3.13.5,
+``PSYCOPG_IMPL=qt-thread``, native C worker, no production
+or canonical v3 change. This ZIP is a conversation upload/
+Windows-local artifact, **not** a committed repository file.
+Preserve it for review.
+
+The four tests completed:
+
+* ``select``: metadata/field/cell/NULL parity,
+  native C and hybrid Transformer decoding with the **same**
+  qt-thread cursor adaptation context, expected row
+  ``(1, None, "qpsycopg", True)`` and idempotent
+  double native ``clear()``.
+* ``sql_error``: FATAL_ERROR status and matching SQLSTATE,
+  exception type and message; the corrected probe
+  **does not** decode non-row error results.
+* ``notice``: command/no-row metadata parity, a preserved
+  notice snapshot created during the borrowed native
+  callback, no transfer of the callback's invalid pointer,
+  and double clear.
+* ``connection_finished``: a completed native result
+  remains usable on the caller thread **after worker
+  PGconn.finish()**, decoded row ``(17,)`` and double clear.
+
+**Decision: PASS the *bounded standalone* native C PGresult
+ownership, lifetime, notice and basic adaptation preflight.**
+It is **not** proof that a production qt-thread worker can
+skip snapshot-specific health/error/cache logic or retain
+pipeline, COPY, multi-result, cancellation and close semantics.
+The prior Windows crashes are retained as historical
+diagnostic misuses, not architectural FAIL results.
+Their older BLOCKED statements are superseded by this PASS.
+
+The selected next bounded stage is a single diagnostic-only
+current-vs-native **complete result-boundary** CPU screen.
+New tools ``tools/bench_qt_thread_native_result_boundary.py``
+and ``tools/bench_qt_thread_native_result_boundary.ps1``
+were committed before measurement; the completed **REJECT** evidence
+is recorded in the next measured A/B section.
+They use one native C PGconn, created, used and finished
+only inside one worker thread, plus two SimpleQueues
+and a single fixed qt-thread cursor adaptation context.
+Both modes run the **same SQL and server execution**:
+``PGconn.exec_params(b"SELECT 1", ())`` on that same
+worker connection with identical request/response waits.
+The *only* alternative processing boundary after the
+completed C PGresult is:
+
+* current control: worker native ``_snapshotResult``,
+  including metadata/``PackedValues``; synthesize
+  ``pq_qt_process.PGresult`` on caller; create a fresh
+  hybrid ``adapt.Transformer(cursor)`` and decode row;
+* native alternative: enqueue the owned C PGresult,
+  create a fresh ``psycopg_c._psycopg.Transformer(cursor)``,
+  decode the same row, then explicitly release native
+  result ownership in the caller.
+
+Both paths verify exactly one integer row ``(1,)``,
+and both include native result release in their respective
+full-boundary lifetime. The worker and SQL code are the
+same, and the two queue handoffs are unchanged.
+The result cannot be directly equated with the full
+production asynchronous qt-thread SELECT 1 path:
+the experiment uses synchronous native PQexecParams,
+does not execute production health/notice/cache machinery,
+and holds the cursor context on a separate idle connection.
+Only the **incremental result-boundary difference** is
+being screened; never infer complete SQL latency savings.
+
+**Drift and noise controls:** four independent subprocess
+repeats; each contains 12 short alternating five-block
+cycles with 1000 calls/block and warmup. The modes rotate
+``snapshot-native-snapshot-native-snapshot`` versus
+``native-snapshot-native-snapshot-native``,
+so workload and order balance across cycles. For each
+target block, interpolate surrounding opposite-mode
+controls using actual block midpoint times. Report
+paired ``snapshot minus native`` process CPU/query,
+wall/query, caller/other-thread CPU, context switches,
+MAD/range/sign count; preserve raw blocks and between-repeat
+medians. Report per-mode first/last wall drift.
+
+**Predeclared material-benefit screen:**
+at least **15 us process CPU/SELECT** in the
+independent-repeat median, at least 3 of 4
+repeat medians >=15 us, all repeat medians
+positive, median >3 times between-repeat
+MAD, and no per-mode repeat >15% baseline
+drift. These conservative checks are a
+screen rather than a statistical proof.
+If the observed benefit is below the
+threshold or lost in noise/drift, **REJECT**
+without a runtime candidate. A positive
+diagnostic does not authorise production
+code changes, ``optimized02`` or a v3
+benchmark until independent Coordinator
+review and an actual semantics-preserving
+design.
+
+Run once from the synced Windows checkout::
+
+    .\tools\bench_qt_thread_native_result_boundary.ps1
+
+Upload ``test-results\qt-thread-native-boundary-ab-*.zip`` to
+the **current Implementation chat** for evaluation,
+documentation and Coordinator routing on completion.
+
+Native PGresult complete result-boundary A/B -- REJECT on drift/noise gate
+--------------------------------------------------------------------------
+
+**Completed diagnostic (no runtime candidate).** The previously passed
+standalone native-result preflight authorised one diagnostic-only whole
+result-boundary comparison, not a production branch. The Windows
+artifact is ``qt-thread-native-boundary-ab-20261103-230648-799.zip``,
+SHA256 ``997eb072dbaf3a148ef886fe3a353e1ddd16c6ca0a028605d7eb04855109f6c3``.
+The ZIP's CRC passes and contains ``manifest.json``,
+``results.json`` and empty ``stderr.log``. This is a
+user-uploaded/Windows-local ZIP, **not committed to GitHub**.
+Preserve the original artifact for future independent reanalysis.
+
+Manifest: captured branch HEAD
+``f19aafcee7d07441e704d22567f0e4abae780c74``,
+``feature/qt-process-pq``, CPython 3.13.5,
+``qt-thread`` with C worker, four independent child
+process repeats, 12 five-block cycles/repeat,
+1000 measured SELECT 1 calls/block (plus warmup),
+120 s watchdog per child. All four children finished,
+with 48 cycles / 240 measured blocks / 240,000
+actual query executions, and 96 locally bracketed
+comparisons. There is no reported crash, timeout
+or result mismatch. The script asserts the decoded
+``(1,)`` row on every operation. It records no
+production/v3 edits and does not authorise
+``optimized02``.
+
+Both modes run **identical** worker-thread
+``native_pq.PGconn.exec_params(b"SELECT 1", ())``
+on the same worker-owned PGconn and exchange
+requests/results through two ``SimpleQueue``
+instances with the same response timeout.
+Both use the same caller qt-thread cursor
+adaptation context and fresh Transformer,
+but different completed-result boundaries:
+current ``_snapshotResult`` / ``PackedValues``
+→ synthetic PGresult → hybrid Transformer,
+versus owned native C PGresult → C Transformer.
+Worker/client result ownership and release
+are included in each path. The benchmark is
+not the full production asynchronous
+``qt-thread`` SELECT path or canonical v3,
+and does not exercise all worker health,
+cache, notice, COPY, pipeline or
+cancellation semantics.
+
+**Measured paired difference:** all values
+below are **snapshot minus native**;
+positive means native is faster/uses less
+process CPU. Each figure is the median
+of 24 adjacent timestamp-interpolated
+comparisons within one independent
+repeat, not an independent 96-sample
+population::
+
+    repeat       CPU/query    wall/query   CPU positive   wall positive
+       1         +31.276 us    +35.380 us       16/24           17/24
+       2         +54.671 us    +51.540 us       20/24           20/24
+       3         +29.817 us    +77.012 us       17/24           20/24
+       4         +38.567 us    +25.192 us       18/24           15/24
+
+Across four **independent repeat medians**:
+process CPU difference +34.921 us/SELECT,
+MAD 4.375 us, range +29.817..+54.671 us;
+wall difference +43.460 us/SELECT,
+MAD 13.174 us, range +25.192..+77.012 us.
+All four independent CPU median signs
+are positive; across individual pairs,
+CPU difference is positive in **71/96**
+and wall difference in **72/96**.
+Caller thread CPU delta between repeats
+has median +23.896 us; other-thread
+CPU delta median +17.357 us. Both are
+noisy and need not sum to the independent
+median process CPU result.
+Context-switch delta median +0.0091
+switches/SELECT, near zero in practical
+terms and not evidence of a changed
+scheduling topology.
+
+**Noise and drift:** the per-pair CPU
+MAD within individual repetitions
+was **43.569, 34.974, 30.117 and
+42.770 us/SELECT** respectively, i.e.
+comparable to the size of the observed
+effect. The modes themselves had
+absolute wall medians roughly
+630..748 us/SELECT, reflecting
+synchronous native PQexecParams,
+not previously measured async
+qt-thread short-query latency.
+
+The predeclared first-to-last
+**mode-specific wall drift** (median
+of first vs last three cycles) was::
+
+    repeat       snapshot             native
+       1           -19.59%             -17.06%
+       2            -2.08%              +3.41%
+       3           +52.64%             +33.87%
+       4           +55.18%             +16.29%
+
+Thus **3/4 independent repeats** breach
+the predeclared 15% drift ceiling;
+only repeat 2 stays within it.
+Large local fluctuations also remain
+despite five-block counterbalancing
+and timestamp-bracket interpolation,
+which corrects approximately linear
+local drift, not nonstationary host
+contention. Windows process CPU
+accounting is quantized at the block
+scale. A positive paired effect is
+not enough to assert a reliable,
+portable CPU savings magnitude.
+
+**Predeclared material-benefit screen: FAIL.**
+The threshold >=15 us CPU/SELECT,
+positive median in every repeat,
+>=3/4 repeat medians above threshold,
+and independent-repeat median
+exceeding 3x MAD all pass. The
+separately required **no mode/repeat
+with >15% wall drift** condition fails.
+The script's own ``predeclared_screen.passes``
+is ``false``. This condition was set
+**before** capture; it must not
+be weakened post hoc because the
+observed median CPU delta is positive.
+
+**Decision: REJECT this native-handoff
+performance screen as insufficiently
+stable for a runtime target.**
+This is **not** a finding that native
+PGresult transfer is impossible or
+intrinsically slow; the standalone
+feasibility preflight remains PASS.
+It is also not evidence of an
+end-to-end qt-thread SQL improvement.
+No runtime candidate, ``optimized02``
+or new benchmark-v3 baseline is
+authorised by these measurements.
+Do not repeat the same A/B merely
+to obtain a cleaner or more favorable
+number without independent new
+evidence and direction review.
+
+Next owner: **existing 00 Coordinator**,
+for independent review of this
+completed significant negative
+checkpoint. Coordinator should
+choose a documented STOP/plateau
+or a *different*, evidence-backed
+bounded target, taking the positive
+but nonqualifying directionality
+and high drift into account.
+The active Implementation chat
+remains sole ordinary runtime
+owner until any explicit transfer.
 
 Post-optimized01 priorities
 ---------------------------
 
-``optimized01`` remains RETAIN. The timed-vs-untimed response wait
-remains REJECT. Synthetic echo attribution was completed but did not
-isolate a real removable operation. Existing Coordinator approval
-covers only one **real-path diagnostic GET status investigation**.
+``optimized01`` remains **RETAIN**; historical
+timed/untimed queue waiting, native worker
+wait, speculative WAIT prefetch, GET/echo
+attribution and generic snapshot microtuning
+remain rejected/completed. The standalone
+native C PGresult handoff feasibility gate
+passed, but the entire diagnostic-only
+native-result boundary SELECT 1 A/B
+**FAILED its predeclared material-benefit
+screen** due to severe temporal drift.
+Do not mistake a positive median for
+accepted production speedup.
 
-#. Run the staged ``profile_qt_thread_get_real_path.ps1`` probe
-   under the existing Windows PostgreSQL environment and preserve
-   its ZIP; no production change or canonical v3 rerun is due
-   until an accepted runtime candidate exists.
-#. Evaluate the real caller/worker inclusive phase counts, wall and
-   aggregated CPU with independent repeats, paired clean GET controls,
-   local drift and probe overhead. Do not sum overlapping phases.
-#. Produce **one** falsifiable actual-code hypothesis with a
-   semantic-safety rationale or clearly report that no actionable
-   target was established. Do not speculate an ``optimized02``.
-#. Maintain rejection of the untimed queue wait, worker-native wait,
-   speculative WAIT prefetch and generic snapshot/serialization work
-   absent new evidence; preserve worker exit, close, cancellation
-   and public Psycopg semantics.
-#. At the completed significant diagnostic checkpoint, update
-   performance, optimisation log and project map, then contact the
-   **existing 00 Coordinator** for independent direction review.
+#. Route measured evidence and this
+   **REJECT** checkpoint to existing
+   ``00 Coordinator`` for independent
+   review before any new optimisation
+   direction.
+#. Do not rerun the same native boundary
+   A/B or relax its drift condition without
+   a new, independent, falsifiable reason.
+   Preserve both the positive CPU direction
+   and its noise/drift limitation.
+#. No ``optimized02``, production runtime
+   change, canonical benchmark-v3 change
+   or speculative generic snapshot tuning.
+#. Any new Coordinator-selected candidate
+   must first address public Psycopg
+   semantics and worker health, errors,
+   notices, close, cancellation, pipeline,
+   COPY, multi-result and non-C fallback,
+   then pass qt-thread semantic smoke and
+   unchanged adjacent-paired v3 with
+   CPU/query, Qt p95/p99, bulk, resource
+   and connection guardrails.
 
 Checkpoint rule
 ---------------

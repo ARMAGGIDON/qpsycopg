@@ -460,29 +460,48 @@ Performance rules for future work
 #. Change one bounded runtime hypothesis at a time and measure before stacking the
    next optimisation.
 
+Timed/untimed queue-wait A/B -- rejected
+--------------------------------------
+
+The Coordinator-authorised diagnostic at fork commit ``516ccc8c``
+completed with eight interleaved pairs and 4000 no-SQL GET status
+requests per mode/pair. Artifact:
+``qt-thread-queue-wait-ab-20261103-195939-054.zip``.
+
+The untimed wait produced **no meaningful improvement** over timed
+``SimpleQueue.get(timeout=0.1)``: median paired wall delta
+(timed minus untimed) was +0.01546 us, paired MAD 1.08491 us,
+range -4.403 to +2.119 us, and only 4/8 pairs favored untimed.
+Median process CPU delta was 0 us and context-switch delta
+-0.001125 per request. This fails all predeclared performance
+gates (>=10 us median, >3x MAD, >=7/8 positive pairs).
+
+Remote error propagation, ordinary close and post-close rejection
+passed in both modes. When a worker exited without responding, the
+timed mode returned an ``OperationalError``; the untimed mode
+indefinitely blocked until a subprocess watchdog terminated it
+after 8 seconds. The diagnostic's ``failure_checks_pass=true``
+means expected outcomes were observed, **not** that untimed waiting
+is safe: ``untimed_detects_worker_exit=false``.
+
+**Decision: REJECT** raw untimed SimpleQueue response waiting.
+There is no measured latency/CPU advantage and worker-exit
+liveness semantics are worse. Production runtime, accepted
+``optimized01`` and canonical benchmark v3 remain unchanged.
+The approximately 40-45 us fixed no-SQL queue handoff remains
+a valid measured cost, but the 100 ms timed poll does **not**
+explain it. Do not retest this same variant without new evidence.
+Full evidence is recorded in :doc:`qt-process-optimization-log`.
+
 Next work
 ---------
 
-#. The existing ``00 Coordinator`` reviewed the completed CPU profiling
-   checkpoint ``ae01f74f`` and approved only a **diagnostic-only**
-   timed/untimed response-wait A/B. Production qt-thread runtime and
-   benchmark v3 remain unchanged.
-#. Run ``.\tools\bench_qt_thread_queue_wait.ps1`` in the current Windows
-   checkout and examine eight repeated interleaved pairs of the same
-   warmed no-SQL PGconn status request. The screen is >=10 us median
-   timed-minus-untimed wall reduction, above 3x paired MAD, with
-   at least N-1 positive pairs. Confirm CPU/context-switch measures.
-#. Inspect subprocess watchdog checks for worker exit without response,
-   remote error propagation and normal close. A raw untimed wait is
-   known to lose periodic dead-worker detection. Its expected watchdog
-   hang is a **production safety failure**, not evidence of correctness.
-#. If the measured hypothesis fails or no safe design is possible,
-   document **REJECT** and do not begin ``optimized02``.
-   If positive, design a liveness-preserving candidate before any
-   runtime change, then require semantic smoke, unchanged paired v3,
-   and CPU/query, cancellation, Qt p95/p99, bulk, connection/resource
-   regression checks.
-#. Once this bounded investigation reaches a committed decision,
-   send the result to ``00 Coordinator`` for mandatory independent review.
-   Until then, stay in the current implementation chat; no Scout is
-   needed.
+#. Route the completed REJECT checkpoint to the existing
+   ``00 Coordinator`` for independent review and selection of
+   the next bounded cost hypothesis. Do not start ``optimized02``.
+#. Preserve qt-thread worker-exit/close/error semantics and keep
+   CPU/query, cancellation, Qt p95/p99, bulk, connection and
+   resource measurements as acceptance guardrails.
+#. Continue to avoid already rejected native wait, speculative
+   WAIT prefetch, serialization/snapshot tuning and unnecessary
+   bulk decoder optimisation.

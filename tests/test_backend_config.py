@@ -7,7 +7,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
 
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "psycopg"
@@ -74,7 +73,7 @@ def test_process_environment_overrides_dotenv(tmp_path):
 
 def test_explicit_relative_env_file(tmp_path):
     (tmp_path / ".env.local").write_text(
-        "export PSYCOPG_IMPL='python' # this is inside the value\n"
+        "export PSYCOPG_IMPL='python' # trailing comment\n"
         "QPSYCOPG_IPC=tcp # comment\n",
         encoding="utf-8",
     )
@@ -101,5 +100,19 @@ def test_no_env_file_does_not_change_upstream_selection(tmp_path):
         "import psycopg; from psycopg import pq; "
         "assert pq.__impl__ == 'python'",
         settings={"PSYCOPG_IMPL": "python"},
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_backend_remains_fixed_after_environment_changes(tmp_path):
+    (tmp_path / ".env").write_text("PSYCOPG_IMPL=python\\n", encoding="utf-8")
+    result = _run(
+        tmp_path,
+        "import os, psycopg; from psycopg import pq; "
+        "before = (pq.__impl__, psycopg.Connection, psycopg.connect); "
+        "os.environ['PSYCOPG_IMPL'] = 'qt-thread'; "
+        "import psycopg as again; "
+        "assert again is psycopg; "
+        "assert (pq.__impl__, psycopg.Connection, psycopg.connect) == before",
     )
     assert result.returncode == 0, result.stderr

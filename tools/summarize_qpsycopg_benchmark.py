@@ -58,10 +58,12 @@ def resource(run: Json, name: str) -> float:
 
 
 METRICS: list[tuple[str, str, str, Callable[[Json], float], str]] = [
-    ("Connection", "Connect median", "ms/connection", lambda r: nested(r, "connect", "median_ms"), "lower"),
-    ("Connection", "Connect p95", "ms/connection", lambda r: nested(r, "connect", "p95_ms"), "lower"),
+    ("Connection", "Cold connect", "ms/connection", lambda r: nested(r, "connect_cold", "ms"), "lower"),
+    ("Connection", "Warm connect median", "ms/connection", lambda r: nested(r, "connect_warm", "median_ms"), "lower"),
+    ("Connection", "Warm connect p95", "ms/connection", lambda r: nested(r, "connect_warm", "p95_ms"), "lower"),
     ("Short query", "SELECT 1 median", "ms/query", lambda r: nested(r, "select_1", "median_ms"), "lower"),
     ("Short query", "SELECT 1 p95", "ms/query", lambda r: nested(r, "select_1", "p95_ms"), "lower"),
+    ("Short query", "SELECT 1 p99", "ms/query", lambda r: nested(r, "select_1", "p99_ms"), "lower"),
     ("CPU", "CPU time per short query", "us CPU/query", lambda r: nested(r, "select_1", "resources", "tree_cpu_us_per_call"), "lower"),
     ("Scheduling", "Context switches", "switches/query", lambda r: nested(r, "select_1", "resources", "tree_ctx_switches_per_call"), "lower"),
     ("Bulk", "Execute 100k rows", "ms/100k rows", lambda r: nested(r, "fetch", "execute_seconds") * 1000, "lower"),
@@ -70,13 +72,16 @@ METRICS: list[tuple[str, str, str, Callable[[Json], float], str]] = [
     ("Bulk", "Throughput", "krows/s", lambda r: nested(r, "fetch", "rows_per_second") / 1000, "higher"),
     ("Concurrency", "N-thread workload", "ms/batch", lambda r: nested(r, "threads", "seconds") * 1000, "lower"),
     ("Concurrency", "Concurrent throughput", "queries/s", lambda r: len(r["threads"]["values"]) / nested(r, "threads", "seconds"), "higher"),
-    ("Cancellation", "Cancel-to-return", "ms/cancel", lambda r: nested(r, "cancel", "call_seconds") * 1000, "lower"),
+    ("Cancellation", "Cancel call median", "ms/cancel", lambda r: nested(r, "cancel", "call", "median_ms"), "lower"),
+    ("Cancellation", "Cancel call p95", "ms/cancel", lambda r: nested(r, "cancel", "call", "p95_ms"), "lower"),
+    ("Cancellation", "Query finish after cancel median", "ms/cancel", lambda r: nested(r, "cancel", "query_finish", "median_ms"), "lower"),
     ("Memory", "Process-tree RSS", "MiB", lambda r: resource(r, "rss_bytes") / MiB, "lower"),
     ("Memory", "Process-tree private memory", "MiB", lambda r: resource(r, "private_bytes") / MiB, "lower"),
 ]
 
 QT_METRICS: list[tuple[str, str, str, Callable[[Json], float], str]] = [
     ("Qt responsiveness", "Event-loop/timer p95", "ms", lambda r: nested(r, "timer", "p95_ms"), "lower"),
+    ("Qt responsiveness", "Event-loop/timer p99", "ms", lambda r: nested(r, "timer", "p99_ms"), "lower"),
     ("Qt responsiveness", "Maximum stall", "ms", lambda r: nested(r, "timer", "max_stall_ms"), "lower"),
 ]
 
@@ -86,11 +91,11 @@ ARCHITECTURE: list[tuple[str, str, Callable[[Json], float]]] = [
     ("Handles", "handles", lambda r: resource(r, "handles")),
 ]
 
-HOST_METRICS: list[tuple[str, str, Callable[[Json], float]]] = [
-    ("System CPU load", "%", lambda r: r["cpu_percent"]),
-    ("CPU frequency", "MHz", lambda r: r["cpu_frequency_mhz"]),
-    ("Available memory", "MiB", lambda r: r["memory_available_mib"]),
-    ("System process count", "processes", lambda r: r["process_count"]),
+HOST_METRICS: list[tuple[str, str, Callable[[Json], float | None]]] = [
+    ("System CPU load", "%", lambda r: r.get("cpu_percent")),
+    ("CPU frequency", "MHz", lambda r: r.get("cpu_frequency_mhz")),
+    ("Available memory", "MiB", lambda r: r.get("memory_available_mib")),
+    ("System process count", "processes", lambda r: r.get("process_count")),
 ]
 
 
@@ -154,13 +159,32 @@ def hostRows(referenceDir: Path, checkpointDir: Path, modes: tuple[str, ...]) ->
     current = {mode: loadMany(checkpointDir, f"host-*-{mode}-*.json") for mode in ("upstream", *modes)}
     rows: list[Json] = []
     for metric, unit, getter in HOST_METRICS:
-        referenceItems = [float(getter(item)) for item in reference if getter(item) is not None]
+        referenceItems = [float(value) for item in reference if (value := getter(item)) is not None]
         row: Json = {"metric": metric, "unit": unit, "reference_upstream": med(referenceItems)}
         for mode, modeRuns in current.items():
-            items = [float(getter(item)) for item in modeRuns if getter(item) is not None]
+            items = [float(value) for item in modeRuns if (value := getter(item)) is not None]
             row[mode] = med(items)
         rows.append(row)
     return rows
+
+
+def processInventory(runs: list[Json]) -> list[Json]:
+    countsByRun: list[dict[tuple[str, str, str], int]] = []
+    signatures: set[tuple[str, str, str]] = set()
+    for run in runs:
+        counts: dict[tuple[str, str, str], int] = {}
+        for process in nested(run, "resources_connected", "processes"):
+            executable = str(process.get("exe", "")).replace("\\", "/").rsplit("/", 1)[-1]
+            signature = (str(process.get("role", "")), str(process.get("name", "")), executable)
+            counts[signature] = counts.get(signature, 0) + 1
+            signatures.add(signature)
+        countsByRun.append(counts)
+
+    result = []
+    for role, name, executable in sorted(signatures):
+        count = med([float(run.get((role, name, executable), 0)) for run in countsByRun])
+        result.append({"role": role, "name": name, "exe": executable, "count": count})
+    return result
 
 
 def main() -> int:
@@ -193,17 +217,23 @@ def main() -> int:
     referenceManifest = json.loads((args.reference / "manifest.json").read_text(encoding="utf-8-sig"))
     checkpointManifest = json.loads((args.checkpoint / "manifest.json").read_text(encoding="utf-8-sig"))
     hosts = hostRows(args.reference, args.checkpoint, modes)
+    inventories = {"upstream": processInventory(upstreamRuns)}
+    inventories.update({mode: processInventory(modeRuns) for mode, modeRuns in runs.items()})
     result = {
         "method": {
             "primary_ratio": "median of per-round fork/upstream ratios",
             "drift": "current upstream median / historical reference upstream median",
             "mad_pct": "median absolute deviation / median * 100",
             "range_pct": "(max - min) / median * 100",
+            "connect": "first connection is cold; following connections are reported separately as warm",
+            "cancellation": "multiple cancellation attempts per SQL run",
+            "qt": "p95 and p99 are primary tail metrics; max stall is diagnostic only",
         },
         "reference": referenceManifest,
         "checkpoint": checkpointManifest,
         "metrics": rows,
         "architecture": architecture,
+        "process_inventory": inventories,
         "host_state": hosts,
     }
     (args.checkpoint / "comparison.json").write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -211,6 +241,7 @@ def main() -> int:
     lines = [
         "Primary Ratio is the median of per-round Fork/Upstream ratios. Current Upstream is rerun in every checkpoint.",
         "Historical Reference is used only to show machine/environment drift. MAD and observed range describe measured noise; they are not confidence intervals.",
+        "Cold and warm connection startup are separate. Cancellation uses repeated attempts. Qt p95/p99 are primary; maximum stall is diagnostic.",
         "",
         "| Category | Metric | Unit | Current Upstream | Fork direct | Ratio | qt-thread | Ratio | qt-process | Ratio |",
         "|---|---|---|---:|---:|---:|---:|---:|---:|---:|",
@@ -246,6 +277,17 @@ def main() -> int:
             f"| {row['metric']} | {row['unit']} | {fmt(row['upstream'])} | {fmt(row['direct'])} | {row['direct_delta']:+.1f} | "
             f"{fmt(row['thread'])} | {row['thread_delta']:+.1f} | {fmt(row['process'])} | {row['process_delta']:+.1f} |"
         )
+
+    lines += [
+        "",
+        "| Process inventory | Role | Name | Executable | Median count |",
+        "|---|---|---|---|---:|",
+    ]
+    for mode, inventory in inventories.items():
+        for item in inventory:
+            lines.append(
+                f"| {mode} | {item['role']} | {item['name'] or '-'} | {item['exe'] or '-'} | {fmt(item['count'])} |"
+            )
 
     lines += [
         "",

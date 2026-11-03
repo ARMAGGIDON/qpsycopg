@@ -574,32 +574,166 @@ Record this completed significant profiling checkpoint for independent
 No ``optimized02`` candidate, semantic change or acceptance v3 run
 was created for this diagnostic.
 
+Enriched SimpleQueue echo -- measured, diagnostic COMPLETE
+----------------------------------------------------------
+
+Independent ``00 Coordinator`` approved progressively enriched echo
+diagnostics after the previous GET-minus-bare echo result had shown
+persistent positive overhead but severe temporal drift. The completed
+Windows archive ``qt-thread-enriched-echo-20261103-205855-365.zip``
+has a valid ZIP CRC, ``manifest.json``, ``results.json`` and an
+empty ``stderr.log``. SHA256 of the uploaded ZIP:
+``431a523188cf1929d053107c9235616bc37639ed1380b002ef1cfb9baa4b6763``.
+The manifest records HEAD
+``d1b6a5a1899ac5690961a2ff335b96debd24cb6e``,
+branch ``feature/qt-process-pq``, CPython 3.13.5,
+qt-thread with C worker, four independent subprocess repeats,
+16 cycles per repeat, 600 calls per block, 250 initial
+warmup calls per mode and a 90 s watchdog/repeat. All
+four child processes returned successfully, yielding 64 complete
+six-block cycles and 384 measured blocks (230,400 total calls).
+No production runtime code or canonical v3 benchmark changed.
+
+Each short cycle brackets four rotated/reversed stages with a
+minimal two-SimpleQueue token echo **before and after**; each
+stage is compared to a timestamp-interpolated bare control.
+Each mode occupied each ordinal position exactly four times
+within each independent repetition. This limits first-order
+within-cycle temporal bias, but cannot remove nonlinear drift,
+host scheduling variation or unbalanced worker activity.
+
+**Wall results, us/call above interpolated bare echo.**
+Each column is the median of 16 cycles of one independent
+subprocess repeat (not a pooled pseudo-sample)::
+
+    mode                               repeat 1  repeat 2  repeat 3  repeat 4
+    Request/Response envelope          +3.209    +4.072    +3.990    +4.722
+    envelope + validation              +4.084    +5.316    +5.138    +5.210
+    synthetic bookkeeping              +9.673    +8.731    +9.635    +9.204
+    actual qt-thread GET status        +13.505   +14.148   +14.195   +14.537
+
+Across-repeat medians for the four **independent repeat medians**:
+envelope +4.031 us (MAD 0.366); validation stage total
++5.174 us (MAD 0.089); bookkeeping total +9.420 us
+(MAD 0.235); actual qpsycopg GET total +14.172 us
+(MAD 0.195). The last figure differs from the earlier
+~18.96 us GET-minus-echo diagnostic because the new
+shorter/bracketed experimental design and host conditions
+differ; it is not a new runtime speedup.
+
+**Incremental-stage wall differences**, independently computed
+as within-cycle differences and *then* summarized per repeat::
+
+    delta                                repeat 1  repeat 2  repeat 3  repeat 4
+    validation minus envelope           +0.676    +0.569    +1.033    +1.140
+    bookkeeping minus validation        +5.205    +4.019    +4.155    +4.212
+    actual GET minus bookkeeping        +3.410    +5.133    +5.185    +4.899
+
+Across-repeat median increments are +0.855 us validation,
++4.184 us bookkeeping and +5.016 us actual GET above the
+synthetic bookkeeping proxy. Across **all 64 within-cycle
+comparisons**, envelope/bare was positive in 60/64,
+validation/envelope in only 44/64,
+bookkeeping/validation in 61/64, and
+GET/bookkeeping in 59/64. Thus the validation increment
+is weak relative to within-cycle variability; even the
+more consistent ~4-5 us stage increments are *synthetic
+diagnostic signals*, not proof of removable implementation
+work. Medians of nested stage differences need not
+add exactly to medians of their totals.
+
+**Temporal drift:** first-to-last bare baseline changed
++131.77% in repeat 1 (15.486 -> 35.892 us/call),
++6.50% in repeat 2, +3.53% in repeat 3,
+and +6.70% in repeat 4. One of four repeats
+exceeded the predeclared 15% drift flag. Even repeat
+2 and repeat 3 had transient bare-control spikes
+within individual cycles. Timestamp-based linear
+bracketing improves comparison but cannot guarantee
+a stationary or causal cost decomposition.
+Do not use the first repeat's raw absolute timings
+as an optimisation reference.
+
+**CPU and context-switch limitations:** 600-call
+Windows process/thread CPU counters are quantized:
+some incremental CPU medians are exactly zero,
+some implied other-thread CPU deltas are negative
+after subtraction, and repeated caller CPU estimates
+disagree. They cannot localize several microseconds
+of Python work reliably. The per-stage
+context-switch difference stays near zero;
+no new scheduling boundary is established.
+
+**Decision: diagnostic COMPLETE; no production candidate.**
+A no-SQL status round trip costs materially more than a
+bare two-queue token echo. The progressive synthetic
+analogue suggests representation and bookkeeping each
+have a positive measurable wall effect. But the
+bookkeeping stage is *not* real qpsycopg code: it has
+a fake PGconn, simplified state, synthetic notices,
+and different validation/cache/exception paths.
+The remaining ~5 us real GET-minus-proxy gap
+likewise cannot be assigned to one function.
+No single actual qpsycopg allocation/check or
+semantically removable operation was identified,
+and no SQL-query speedup is justified. The
+earlier timed-vs-untimed response wait remains
+**REJECT** for no speed signal and lost worker-exit
+detection; ``optimized01`` remains **RETAIN**.
+Neither ``optimized02`` nor a v3 acceptance benchmark
+is warranted absent a runtime variant.
+
+**Proposed next decision for Coordinator:** treat this
+as a bounded attribution plateau; choose whether
+further profiling should instrument *real* qpsycopg
+GET status / worker bookkeeping in a new narrowly
+controlled diagnostic, or whether independent
+exploration is warranted. Do not stack another
+synthetic enriched echo or repeat prior rejected
+native wait, WAIT-prefetch or serialization work
+on these data alone.
+
+**Evidence locality:** the ZIP was supplied as a
+conversation attachment and is not a committed
+GitHub artifact. Preserve the user's original
+``test-results\qt-thread-enriched-echo-20261103-205855-365.zip``;
+the measured summary and SHA256 are committed here
+for future repository-first recovery. There are
+no production runtime modifications in this stage.
+
 Post-optimized01 priorities
 ---------------------------
 
-``optimized01`` remains RETAIN; the timed-vs-untimed queue wait
-comparison remains REJECT. The completed minimal queue echo diagnostic
-measured roughly half of warmed no-SQL GET status wall-time in the
-minimal echo and a positive residual qpsycopg cost, but did not
-identify a removable production bottleneck.
+``optimized01`` remains RETAIN. The timed/untimed
+response-wait variant remains REJECT. The enriched
+echo diagnostic is complete, with independently
+repeated ~4 us synthetic representation and ~4 us
+synthetic bookkeeping effects plus substantial
+unattributed real-GET work. No concrete safe
+production optimisation has emerged.
 
-#. Return the committed echo-vs-GET evidence and drift limitations to
-   the existing ``00 Coordinator`` for independent milestone review.
-#. Do not implement ``optimized02`` based solely on the ~19 us residual
-   or extrapolate this no-SQL result to SQL query speedups.
-#. If the coordinator approves further diagnosis, compare a *matched,
-   enriched* Request/Response echo against the bare-token echo under
-   repeated paired conditions to isolate protocol/bookkeeping costs.
-   Such a diagnostic must not replace the existing queue wait or
-   production worker architecture.
-#. Continue avoiding the rejected untimed queue wait (lost worker-exit
-   detection), native worker socket wait, speculative WAIT prefetch,
-   snapshot/serialization guesses and bulk decoder micro-tuning
-   without new measurements.
-#. A later semantically safe runtime candidate would still require
-   qt-thread smoke and the unchanged adjacent-paired v3 benchmark
-   with CPU/query, cancellation, Qt p95/p99, bulk, connection and
-   resource guardrails.
+#. Send the completed measured enriched echo
+   checkpoint to existing ``00 Coordinator``
+   for independent milestone review. The strong
+   repeat-1 drift, Windows CPU quantization and
+   synthetic-vs-real mismatch are decision
+   constraints, not details to omit.
+#. Do not begin ``optimized02`` or repeat the
+   timed/untimed queue wait, native worker wait,
+   speculative WAIT result prefetch, snapshot/
+   serialization and bulk decoder experiments
+   without genuinely new evidence.
+#. If Coordinator chooses further diagnostic
+   work, it should target a **real** qpsycopg
+   path/phase under short, interleaved blocks
+   with independent repeats; do not keep
+   enriching a synthetic echo by default.
+#. Only an actual measured, semantically safe
+   runtime candidate may proceed to qt-thread
+   smoke and unchanged adjacent-paired v3,
+   protecting CPU/query, cancellation, Qt
+   p95/p99, bulk, connection and resource
+   guardrails.
 
 Checkpoint rule
 ---------------

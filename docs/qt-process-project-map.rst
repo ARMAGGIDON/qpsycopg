@@ -280,6 +280,17 @@ Validation and benchmark map
     specific allocation is proven removable. Runtime and benchmark v3
     are unchanged.
 
+``tools/bench_qt_thread_enriched_echo.py`` and
+``tools/bench_qt_thread_enriched_echo.ps1``
+    Coordinator-approved diagnostic-only progressively enriched queue echo:
+    bare token, real Request/Response NamedTuple, validation, synthetic worker
+    bookkeeping, and real qt-thread no-SQL GET. Independent subprocess runs,
+    short balanced blocks, bracketing bare controls and timestamp-based
+    linear drift adjustment. Four independent Windows repetitions are complete:
+    representation and synthetic bookkeeping stages show positive effects,
+    but one repeat has severe drift and no removable real production
+    bottleneck was isolated. Runtime and benchmark v3 remain unchanged.
+
 The canonical current baseline is ``baseline-v3``. Older ``initial`` and
 ``baseline-v2`` checkpoints used different benchmark definitions and must not be
 used as the direct before-state for numbered optimisations.
@@ -307,61 +318,179 @@ Established decisions / do not repeat blindly
 Immediate next work
 -------------------
 
-#. ``optimized01`` remains **RETAIN**. The previous timed-vs-untimed
-   response queue wait A/B remains **REJECT** (no repeatable speedup
-   and unsafe worker-exit behavior). Do not rerun that experiment.
-#. The Coordinator-authorised minimal echo versus qpsycopg no-SQL
-   status GET diagnostic is **COMPLETE**. Archive
-   ``qt-thread-echo-baseline-20261103-202519-685.zip`` reports
-   fork commit ``5dcdbd51``, 8 interleaved pairs x 4000 warmed
-   requests/mode, Python 3.13.5, C worker. No errors/watchdog fires.
-#. Measured wall medians: bare SimpleQueue echo **18.407 us/call**,
-   full qpsycopg GET status **36.367 us/call**. Median paired
-   GET-minus-echo wall difference **+18.957 us** (paired MAD
-   5.764 us; range +13.025 to +37.552 us; 8/8 positive).
-   Process CPU median paired difference +19.531 us (7/8
-   positive). Both paths have ~2 context switches per call.
-#. **Interpretation limitation:** marked temporal drift:
-   median wall difference is ~31.81 us in the first four
-   pairs versus ~13.66 us in the last four. A minimal token
-   echo isolates the baseline two-queue/scheduling round
-   trip, but the residual includes required transport and
-   worker semantics, not a proven removable cost. It does
-   not identify any single dominant allocation or function.
-#. **Decision: complete diagnostic investigation; no
-   runtime optimisation candidate accepted.** Production
-   qt-thread, benchmark v3 and retained ``optimized01``
-   remained unchanged. Do not create speculative
-   ``optimized02`` or claim a SQL speedup.
-#. Next owner is the existing **``00 Coordinator``**:
-   review the measured residual and drift limitations,
-   then choose whether to authorise a narrowly scoped
-   diagnostic-only comparison of *matched Request/Response
-   representation and validation* in an enriched echo
-   against the bare-token echo, or select another
-   evidence-backed path. No new Scout is justified
-   automatically.
-#. A future production candidate requires preserved
-   worker exit/close/error semantics, qt-thread semantic
-   smoke, unchanged paired v3 benchmark and CPU/query,
-   cancellation latency, Qt p95/p99, bulk, connection
-   and resource guardrails.
+#. ``optimized01`` remains **RETAIN**. The timed-vs-untimed
+   response wait stays **REJECT** (no speed benefit and
+   dead-worker liveness regression). Avoid all other
+   documented rejected wait/prefetch/snapshot experiments.
+#. The Coordinator-approved enriched echo investigation
+   is **COMPLETE**. The Windows diagnostic ZIP
+   ``qt-thread-enriched-echo-20261103-205855-365.zip``
+   was captured at ``d1b6a5a``: four fresh subprocess
+   repeats, 16 bracketed short-block cycles/repeat,
+   600 calls/block, and original timed queue get.
+   All 64 cycles finished without reported errors.
+#. Across four independent-repeat medians, overhead
+   above interpolated bare echo: envelope +4.031 us,
+   envelope plus validation +5.174 us, synthetic
+   bookkeeping +9.420 us, actual GET +14.172 us.
+   Incremental validation +0.855 us (44/64 cycles
+   positive), bookkeeping +4.184 us (61/64), and
+   actual GET beyond proxy +5.016 us (59/64).
+#. **Drift warning:** bare echo rose +131.8% across
+   the first repetition, compared with +3.5-6.7% in
+   the remaining three. Timestamp bracket correction
+   handles only approximate linear local drift.
+   Windows CPU clock quantization prevents reliable
+   microsecond-level per-function attribution.
+#. **Decision: diagnostic COMPLETE, no runtime
+   candidate.** The synthetic stage costs do not
+   identify a dominant removable actual qpsycopg
+   operation or predict SQL improvements. Production
+   code, accepted ``optimized01`` and benchmark v3
+   were unchanged. Do not start ``optimized02``.
+#. **Independent Coordinator review COMPLETE** at
+   ``d226f8e6``: **CONTINUE -- real-path profiling**.
+   The enriched synthetic measurements are useful
+   for scale but cannot identify an avoidable
+   real operation. Do not add more synthetic
+   echo stages or start ``optimized02``.
+#. **Next owner: existing ``10 Implementation — current``**.
+   Perform one diagnostic-only investigation of the
+   actual qt-thread no-SQL GET status path, focusing
+   on request construction/transport entry, worker
+   request handling and reply, and caller response
+   restore. Keep all production code and canonical
+   v3 unchanged. Capture uninstrumented controls
+   and narrowly bracketed real-path inclusive
+   wall/thread-CPU phases with fresh independent
+   runs, short paired blocks and explicit drift
+   analysis; do not sum overlapping phases.
+#. The deliverable is one reproducible, falsifiable
+   **real-code** cost hypothesis (or an explicit
+   finding that no such target is supported).
+   In particular, do not interpret synthetic
+   4-5 us stages or coarse Windows CPU counters
+   as a removable production saving. Preserve
+   connection, worker-exit/close/error semantics,
+   and compare any eventual safe runtime candidate
+   using smoke plus the unchanged paired v3.
+#. No new Critic/Scout is needed yet. If real-path
+   profiling fails to isolate an actionable cost,
+   stop the local sequence and return to Coordinator
+   for a fresh direction/Scout decision.
+
+Coordinator review -- enriched echo decision
+--------------------------------------------
+
+* **Role and outcome:** existing ``00 Coordinator`` independently
+  reviewed the enriched SimpleQueue echo checkpoint on branch
+  ``feature/qt-process-pq`` at observed HEAD ``d226f8e6``.
+  Decision: **CONTINUE with real-path, diagnostic-only
+  attribution**; no new runtime optimisation or Scout.
+* **Evidence:** four independent repeats and 64 cycles
+  support positive synthetic representation/bookkeeping
+  overhead but cannot identify a dominant removable
+  qpsycopg function. Repeat-1 bare baseline drifted
+  +131.8%; Windows microsecond CPU attribution is
+  unreliable. The ZIP remains local-only, identified
+  by SHA256 in the optimisation log.
+* **Ownership and next action:** ``10 Implementation — current``
+  continues as sole runtime owner. No code or
+  benchmark-v3 change was approved. Inspect the real
+  GET/request/worker/response path using bounded
+  instrumented phases and uninstrumented paired
+  controls; preserve original liveness semantics.
+  Report a falsifiable actual-code hypothesis or
+  stop without ``optimized02``. Then update docs
+  and return any significant completed checkpoint
+  for independent review.
+* **Recovery and context:** this Coordinator stage has
+  no uncommitted runtime work or local measurement.
+  The Implementation rolling snapshot below remains
+  historical evidence of its own last handoff.
+
+Rolling recovery snapshot -- current Implementation owner
+---------------------------------------------------------
+
+* **Owner / branch:** this current Implementation/Optimisation
+  chat is the sole ordinary runtime owner for
+  ``ARMAGGIDON/qpsycopg``, branch
+  ``feature/qt-process-pq``. The next action belongs
+  to the **existing 00 Coordinator** for *review*,
+  not runtime editing. Do not activate concurrent
+  implementation chats.
+* **Base / observed HEAD:** the enriched diagnostic
+  stage began at ``492ab4317eba0e0d3fb48b37963e37404551ed26``;
+  the Windows capture was at
+  ``d1b6a5a1899ac5690961a2ff335b96debd24cb6e``.
+  HEAD observed before this snapshot edit:
+  ``f955a0d2f2a29ad193daa3f80802a6fcf8eb9f18``.
+  Verify current HEAD when resuming.
+* **Hypothesis and evidence:** progressive enriched
+  SimpleQueue echo tried to partition Request/Response,
+  validation and synthetic worker bookkeeping from the
+  real no-SQL GET. All four repetitions succeeded and
+  the synthetic envelope/bookkeeping stages show
+  measurable wall effects. One repeat has extreme
+  baseline drift, and the synthetic proxy differs
+  materially from real worker code. **Open question:**
+  which, if any, real-path function is costly enough
+  and semantically safe to optimize? No such target
+  is established by the current artifact.
+* **Changes / rejected approaches:** the stage
+  analysis changed **docs only** (optimization log,
+  performance and this project map). The prior
+  diagnostic Python/PowerShell files already exist.
+  No production or v3 source was edited, and there
+  is no new candidate. ``optimized01`` stays RETAIN.
+  Timed-vs-untimed queue wait remains REJECT;
+  rejected native worker wait, speculative WAIT
+  prefetch and generic snapshot tuning should not
+  be repeated without new evidence.
+* **Local-only evidence:** the original
+  ``test-results\qt-thread-enriched-echo-20261103-205855-365.zip``
+  is a Windows-local artifact attached to the chat,
+  **not committed to GitHub**. The optimization log
+  records the archive SHA256 and detailed medians.
+  Preserve the ZIP for independent review. Windows
+  worktree state was not independently inspected;
+  no uncommitted local changes are known from
+  this GitHub-only workflow.
+* **Tests / next action:** no semantic smoke or
+  canonical v3 acceptance benchmark was rerun
+  because there is no runtime change. Next:
+  check branch HEAD and four qt-process docs;
+  send this completed checkpoint to existing
+  ``00 Coordinator``. **Do not run another
+  Windows profile or start optimized02 until
+  Coordinator selects the next bounded target.**
+  There is no pending architectural or runtime
+  ownership transfer.
+* **Context-risk assessment: CAUTION.** This is
+  a long, tool-heavy chat, but critical branch/
+  decision/evidence state remains recoverable.
+  No guessed context percentage/token count;
+  no HANDOFF NOW signs currently observed.
+  If material inconsistency appears, first
+  commit a fresh recovery snapshot, then
+  prepare an explicit same-role continuation
+  prompt. The previous owner must stop editing
+  when a new owner takes over.
 
 When resuming in a new chat/session
 -----------------------------------
 
-#. Read :doc:`qt-process`, this project map,
+#. Read :doc:`qt-process`, this map,
    :doc:`qt-process-performance` and
-   :doc:`qt-process-coordination`; inspect current
-   branch HEAD and :doc:`qt-process-optimization-log`.
-#. ``optimized01`` remains retained. The timed/untimed
-   wait A/B remains rejected.
-#. The minimal echo diagnostic is **measured and recorded**,
-   not awaiting a ZIP. It establishes a significant
-   within-run qpsycopg overhead beyond minimal queue echo,
-   subject to strong temporal drift and unresolved attribution.
-#. The next action is independent review in existing
-   ``00 Coordinator`` before beginning any new optimisation
-   direction. Return to the current Implementation chat
-   after its decision. Do not silently create a competing
-   runtime branch or new Scout.
+   :doc:`qt-process-coordination`; inspect
+   HEAD and :doc:`qt-process-optimization-log`.
+#. Enriched echo is **measured and documented**,
+   not awaiting another ZIP. The result is a
+   synthetic attribution plateau, not permission
+   for a production optimization.
+#. Next owner is existing ``00 Coordinator``
+   for independent review. Runtime ownership
+   stays with the current implementation role;
+   a same-role context handoff, if required,
+   must explicitly transfer ownership and
+   never create two simultaneous owners.

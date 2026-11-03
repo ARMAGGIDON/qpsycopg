@@ -348,14 +348,66 @@ Immediate next work
    operation or predict SQL improvements. Production
    code, accepted ``optimized01`` and benchmark v3
    were unchanged. Do not start ``optimized02``.
-#. **Next owner: existing ``00 Coordinator``** for
-   independent review and selection of the next
-   evidence-backed target. The observed plateau
-   suggests real-path profiling might be more useful
-   than further synthetic echoes, but the decision
-   belongs to Coordinator. No Scout or other
-   implementation owner is required by this
-   checkpoint itself.
+#. **Independent Coordinator review COMPLETE** at
+   ``d226f8e6``: **CONTINUE -- real-path profiling**.
+   The enriched synthetic measurements are useful
+   for scale but cannot identify an avoidable
+   real operation. Do not add more synthetic
+   echo stages or start ``optimized02``.
+#. **Next owner: existing ``10 Implementation — current``**.
+   Perform one diagnostic-only investigation of the
+   actual qt-thread no-SQL GET status path, focusing
+   on request construction/transport entry, worker
+   request handling and reply, and caller response
+   restore. Keep all production code and canonical
+   v3 unchanged. Capture uninstrumented controls
+   and narrowly bracketed real-path inclusive
+   wall/thread-CPU phases with fresh independent
+   runs, short paired blocks and explicit drift
+   analysis; do not sum overlapping phases.
+#. The deliverable is one reproducible, falsifiable
+   **real-code** cost hypothesis (or an explicit
+   finding that no such target is supported).
+   In particular, do not interpret synthetic
+   4-5 us stages or coarse Windows CPU counters
+   as a removable production saving. Preserve
+   connection, worker-exit/close/error semantics,
+   and compare any eventual safe runtime candidate
+   using smoke plus the unchanged paired v3.
+#. No new Critic/Scout is needed yet. If real-path
+   profiling fails to isolate an actionable cost,
+   stop the local sequence and return to Coordinator
+   for a fresh direction/Scout decision.
+
+Coordinator review -- enriched echo decision
+--------------------------------------------
+
+* **Role and outcome:** existing ``00 Coordinator`` independently
+  reviewed the enriched SimpleQueue echo checkpoint on branch
+  ``feature/qt-process-pq`` at observed HEAD ``d226f8e6``.
+  Decision: **CONTINUE with real-path, diagnostic-only
+  attribution**; no new runtime optimisation or Scout.
+* **Evidence:** four independent repeats and 64 cycles
+  support positive synthetic representation/bookkeeping
+  overhead but cannot identify a dominant removable
+  qpsycopg function. Repeat-1 bare baseline drifted
+  +131.8%; Windows microsecond CPU attribution is
+  unreliable. The ZIP remains local-only, identified
+  by SHA256 in the optimisation log.
+* **Ownership and next action:** ``10 Implementation — current``
+  continues as sole runtime owner. No code or
+  benchmark-v3 change was approved. Inspect the real
+  GET/request/worker/response path using bounded
+  instrumented phases and uninstrumented paired
+  controls; preserve original liveness semantics.
+  Report a falsifiable actual-code hypothesis or
+  stop without ``optimized02``. Then update docs
+  and return any significant completed checkpoint
+  for independent review.
+* **Recovery and context:** this Coordinator stage has
+  no uncommitted runtime work or local measurement.
+  The Implementation rolling snapshot below remains
+  historical evidence of its own last handoff.
 
 Rolling recovery snapshot -- current Implementation owner
 ---------------------------------------------------------

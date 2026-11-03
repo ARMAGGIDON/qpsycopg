@@ -64,7 +64,7 @@ function Set-Mode([string] $mode) {
 
 function Run([string] $mode, [string] $label, [string[]] $scriptArgs, [string] $file, [string] $directory) {
     Set-Mode $mode
-    $py = if ($mode -eq "upstream") { $upstreamPython } else { $python }
+    $py = if ($mode -eq "upstream") { $upstreamPython } else { $forkPython }
     $stem = [IO.Path]::GetFileNameWithoutExtension($file)
     Write-Host "[$mode] $label"
     & $py $hostState > (Join-Path $directory "host-$stem-before.json")
@@ -106,7 +106,9 @@ try {
     $referenceDir = Join-Path $root "reference-$key"
     $upstreamRoot = Join-Path $root ("upstream-" + $upstreamBase.Substring(0, 12))
     $upstreamVenv = Join-Path $upstreamRoot ".venv-bench"
+    $forkVenv = Join-Path $root ".venv-fork-bench"
     $upstreamPython = Join-Path $upstreamVenv "Scripts\python.exe"
+    $forkPython = Join-Path $forkVenv "Scripts\python.exe"
     New-Item -ItemType Directory -Path $root -Force | Out-Null
 
     if (-not (Test-Path (Join-Path $upstreamRoot ".git"))) {
@@ -120,15 +122,21 @@ try {
         & $uv.Source venv $upstreamVenv --python $basePython
         if ($LASTEXITCODE -ne 0) { throw "failed to create upstream benchmark venv" }
     }
+    if (-not (Test-Path $forkPython)) {
+        Write-Host "[fork] create benchmark venv"
+        & $uv.Source venv $forkVenv --python $basePython
+        if ($LASTEXITCODE -ne 0) { throw "failed to create fork benchmark venv" }
+    }
 
     Write-Host "[upstream] rebuild pristine environment against local libpq"
-    & $uv.Source pip install --python $upstreamPython --reinstall -e (Join-Path $upstreamRoot "psycopg") `
-        -e (Join-Path $upstreamRoot "psycopg_c") "psutil==$psutilVersion" "PySide6-Essentials==$qtVersion"
+    & $uv.Source pip install --python $upstreamPython --reinstall (Join-Path $upstreamRoot "psycopg") `
+        (Join-Path $upstreamRoot "psycopg_c") "psutil==$psutilVersion" "PySide6-Essentials==$qtVersion"
     if ($LASTEXITCODE -ne 0) { throw "failed to install upstream benchmark environment" }
 
-    Write-Host "[fork] rebuild psycopg-c against the same local libpq"
-    & $uv.Source pip install --python $python --reinstall --no-deps -e (Join-Path $repoRoot "psycopg_c")
-    if ($LASTEXITCODE -ne 0) { throw "fork psycopg-c rebuild failed with code $LASTEXITCODE" }
+    Write-Host "[fork] rebuild isolated environment against the same local libpq"
+    & $uv.Source pip install --python $forkPython --reinstall (Join-Path $repoRoot "psycopg") `
+        (Join-Path $repoRoot "psycopg_c") "psutil==$psutilVersion" "PySide6-Essentials==$qtVersion"
+    if ($LASTEXITCODE -ne 0) { throw "failed to install fork benchmark environment" }
 
     $timestamp = Get-Date -Format "yyyyMMdd-HHmmss-fff"
     $commit = (& git -C $repoRoot rev-parse HEAD).Trim()
@@ -140,7 +148,7 @@ try {
 
     Set-Mode "thread"
     Write-Host "[thread] smoke"
-    & $python $runner $smoke $dsn 2>&1 | Tee-Object -FilePath (Join-Path $outDir "smoke-thread.log")
+    & $forkPython $runner $smoke $dsn 2>&1 | Tee-Object -FilePath (Join-Path $outDir "smoke-thread.log")
     if ($LASTEXITCODE -ne 0) { throw "qt-thread smoke failed with code $LASTEXITCODE" }
 
     $benchArgs = @($bench, $dsn, "--iterations", "1000", "--rows", "100000", "--threads", "8")
@@ -181,6 +189,7 @@ try {
         platform = $platform
         benchmark_hash = $benchmarkHash
         methodology = "paired/interleaved upstream + direct + qt-thread + qt-process"
+        environment = "isolated non-editable upstream/fork benchmark venvs"
         repeats = 6
         qt_repeats = 3
         iterations = 1000
@@ -219,7 +228,7 @@ try {
     }
 
     Write-Host "[summary] paired current upstream vs fork + historical drift"
-    & $python $summary $referenceDir $outDir
+    & $forkPython $summary $referenceDir $outDir
     if ($LASTEXITCODE -ne 0) { throw "benchmark summary failed with code $LASTEXITCODE" }
 
     Compress-Archive -Path (Join-Path $outDir "*") -DestinationPath $archive -CompressionLevel Optimal -Force

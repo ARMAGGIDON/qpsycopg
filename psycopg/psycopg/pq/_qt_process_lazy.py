@@ -69,14 +69,29 @@ def _recvToken(sock: Any) -> bytes:
     return bytes(_protocol._recvExact(sock, _protocol._TOKEN_SIZE))
 
 
+def _workerArguments(module: str, host: str, port: int, token: str) -> list[str]:
+    args = [host, str(port), token]
+    root = os.environ.get("PSYCOPG_PG_ROOT")
+    if sys.platform != "win32" or not root:
+        return ["-m", module, *args]
+
+    binDir = os.path.join(root, "bin")
+    code = (
+        "import os,runpy;"
+        f"_qpsycopg_dll_dir=os.add_dll_directory({binDir!r});"
+        f"runpy.run_module({module!r},run_name='__main__')"
+    )
+    return ["-c", code, *args]
+
+
 def _ownerRun(self: Any) -> None:
     process = None
     try:
         process = _pq.QProcess()
         process.setProgram(sys.executable)
-        process.setArguments([
-            "-m", "psycopg.pq._qt_process_worker_pool", self.host, str(self.port), self.token
-        ])
+        process.setArguments(
+            _workerArguments("psycopg.pq._qt_process_worker_pool", self.host, self.port, self.token)
+        )
         env = _pq.QProcessEnvironment.systemEnvironment()
         env.insert("PSYCOPG_IMPL", _pq._workerImpl())
         process.setProcessEnvironment(env)

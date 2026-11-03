@@ -115,8 +115,8 @@ class Echo:
             self.responses.put(response)
 
     def _roundtrip(self, request: Any) -> Any:
-        if not self.worker.is_alive():
-            raise RuntimeError("synthetic worker stopped")
+        # Keep the bare and envelope stages minimal: the explicit pre-submit
+        # worker-liveness guard belongs to the bookkeeping enrichment.
         self.requests.put(request)
         while True:
             try:
@@ -132,6 +132,8 @@ class Echo:
                     raise RuntimeError("synthetic transport closed")
                 if self.pending is not None:
                     raise AssertionError("unexpected pending synthetic operation")
+                if not self.worker.is_alive():
+                    raise RuntimeError("synthetic worker stopped")
                 self.request_id += 1
                 request = Request(
                     self.request_id, Operation.GET, 1, "status", _base._wire(()), ()

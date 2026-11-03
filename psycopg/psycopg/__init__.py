@@ -38,6 +38,8 @@ if TYPE_CHECKING:
     from .connection_async import AsyncConnection
 elif pq.__impl__ in ("qt-process", "qt-thread"):
     from .connection_qt_process import AsyncConnection, Connection
+    if pq.__impl__ == "qt-thread":
+        from .pq import _qt_thread_lazy as _qt_thread_lazy  # noqa: F401
 else:
     from .connection import Connection
     from .connection_async import AsyncConnection

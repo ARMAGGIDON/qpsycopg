@@ -545,21 +545,63 @@ is to compare a richer echo with matched Request/Response
 and validation costs against the minimal echo, without
 modifying production, before attempting any local tuning.
 
+Enriched echo protocol/bookkeeping isolation -- pending diagnostic
+---------------------------------------------------------------
+
+At the minimal-echo checkpoint (fork HEAD ``492ab431``), real
+no-SQL qt-thread GET status exceeded a bare two-SimpleQueue echo
+by median ~18.96 us wall per call. The difference was positive
+in 8/8 paired blocks, but strong temporal drift (first four
+pairs median ~31.81 us, last four ~13.66 us) makes the cost
+nonstationary and does **not** identify removable overhead.
+
+Independent ``00 Coordinator`` review authorised a *diagnostic-only*
+progressively enriched echo. Standalone scripts
+``tools/bench_qt_thread_enriched_echo.py`` and
+``tools/bench_qt_thread_enriched_echo.ps1`` compare:
+bare token; real ``Request/Response`` NamedTuple representation;
+added caller/worker validation; synthetic transport/worker
+bookkeeping; and unchanged real qt-thread no-SQL GET status.
+
+The measurement design uses four fresh subprocess repetitions
+by default, 16 cycles/repetition and six shorter 600-call
+blocks/cycle: a bare echo baseline, four modes in balanced
+rotating/reversed order, and another bare echo baseline.
+Each mode is warmed before measurements. Actual block midpoint
+timestamps interpolate local bare baseline to reduce approximately
+linear drift; medians, MAD, ranges, signs, incremental-stage
+deltas, baseline drift and independent-repeat variability
+remain available in the resulting JSON.
+
+All synthetic stages share one worker thread and two SimpleQueue
+objects, using the original timed response get. The
+bookkeeping proxy imitates selected qpsycopg branches with a
+fake status object, not a real PGconn, and is **not** a complete
+reimplementation of the worker. Effects from its synthetic
+branches, scheduling and Python CPU quantisation may interact.
+An incremental stage delta is not automatically a production
+optimisation opportunity and cannot predict SQL speedups.
+
+**Status: Windows ZIP pending; production runtime, accepted
+optimized01 and canonical paired v3 benchmark unchanged.**
+Do not start optimized02 or redo the rejected timed-vs-untimed
+queue wait, native-worker wait, speculative result prefetch
+or snapshot/serialization tuning without new evidence.
+
 Next work
 ---------
 
-#. Submit the completed echo baseline and its strong temporal-drift
-   limitation to the existing ``00 Coordinator`` for milestone review.
-#. Do not treat the GET-minus-echo residual as a proven, removable
-   optimisation or stack ``optimized02``.
-#. If approved, run a strictly diagnostic matched Request/Response
-   echo comparison and use repeated paired CPU/wall/context data
-   to isolate the protocol and worker bookkeeping contribution.
-#. Keep ``optimized01`` RETAIN and prior timed/untimed queue wait
-   REJECT; avoid previously rejected worker native-wait,
-   speculative WAIT result prefetch, snapshot/serialization and
-   bulk decoder experiments without new evidence.
-#. Any future production candidate still requires qt-thread
-   semantic smoke and unchanged paired v3 benchmark with
-   CPU/query, cancellation, Qt p95/p99, bulk, connection and
-   resource guardrails.
+#. Run ``.\tools\bench_qt_thread_enriched_echo.ps1`` on the
+   Windows machine with the existing fork benchmark venv.
+#. Inspect four **independent** repetitions, within-cycle
+   bare-bracket drift and enriched-stage paired residuals,
+   including CPU and context-switch consistency. Reject
+   unstable or contradictory attribution.
+#. Record a bounded evidence-based finding (or explicit
+   failure to isolate one cost) in the optimisation log
+   and this performance document. Do not claim a safe
+   runtime change from synthetic deltas alone.
+#. After the significant completed profiling decision
+   and repository update, route to existing
+   ``00 Coordinator`` for independent review. New Scout
+   or other implementation owner is not currently needed.

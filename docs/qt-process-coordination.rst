@@ -235,6 +235,73 @@ patterns:
 Do not ask a saturated chat to generate the only handoff summary. Update the
 repository first, then start a fresh chat from repository state.
 
+Proactive context-risk and early handoff
+----------------------------------------
+
+Neither ChatGPT chat memory nor this protocol provides a reliable remaining-token
+counter. Never invent a context percentage, token balance or guaranteed number of
+remaining requests. All context-risk labels below are *operational heuristics*,
+not measurements of the model's available context window.
+
+Every role, including ``00 Coordinator``, must independently protect its own
+handoff buffer. Check context risk at substantial responses and *before* starting
+long investigations, large tool-output reviews or multi-file edits. Use these
+signals:
+
+* ``NORMAL``: current task, branch, decisions and evidence remain consistent
+  with repository state; the rolling handoff is up to date.
+* ``CAUTION``: a long or tool-heavy conversation, approximately 8-12 substantial
+  exchanges since the last handoff update, several experiments without a state
+  update, or increasing need to reconstruct earlier details. This is a prompt
+  to refresh handoff, **not** a claim that the window is nearly full.
+* ``HANDOFF NOW``: loss of a critical decision, inability to reconcile current
+  HEAD, repeated stale assumptions, contradictory recollection, or observed
+  platform context-limit/compression symptoms. Stop starting new substantial
+  work and hand off while adequate working context remains.
+
+Keep a small rolling **in-progress** recovery snapshot in the most relevant
+repository handoff document (normally ``qt-process-project-map.rst``, with
+measurements/attempts in the performance or optimisation log). Refresh it after
+each material experiment/decision and at least once per roughly 8-12 substantial
+exchanges during long work, even if no benchmark has been accepted yet. This is
+a conservative maintenance cadence rather than context usage telemetry. Avoid
+committing an identical snapshot or adding one for every trivial message.
+
+An in-progress snapshot is distinct from a completed milestone. Record:
+
+* role/current owner, working branch, base and observed HEAD;
+* exact unfinished task and why it was undertaken;
+* current hypothesis, findings, attempted/rejected approaches and open questions;
+* code/commits and any **uncommitted/local-only** changes that GitHub cannot see;
+* tests/benchmarks already run, results, failures, missing measurements;
+* the exact next reproducible command/action and any environmental prerequisites;
+* whether architectural decisions or runtime ownership remain pending.
+
+Do not claim that GitHub contains uncommitted local changes or unuploaded
+benchmark artifacts. If essential evidence is local-only, request that the user
+preserve/attach it and record its location or absence honestly.
+
+When ``CAUTION`` is reached, explicitly tell the user that a proactive snapshot
+was made (or what still needs to be recorded) and continue only if the state is
+recoverable. When ``HANDOFF NOW`` is reached, finish the smallest safe action,
+record the snapshot, and supply a short copy-ready bootstrap for a **new chat of
+the same role** (for example, ``11 Implementation — continuation 2``).
+The new chat reads repository state, verifies ownership and resumes; the old
+chat stops editing. No two implementation owners may edit the same active path
+concurrently.
+
+A context-risk replacement does not by itself require a coordinator milestone
+review or a new Critic. Escalate to ``00 Coordinator`` only for a significant
+completed checkpoint, architecture conflict or unresolved ownership decision.
+If the coordinator itself needs replacement, create a fresh coordinator chat
+and use the same repository-first recovery process.
+
+A chat cannot initiate another chat or notify the user while no message is being
+processed. Context checks and warnings occur during its responses. At the end
+of a substantial response add a concise ``CONTEXT`` notice only for ``CAUTION``
+or ``HANDOFF NOW``, including the actual next action; never state speculative
+remaining-token percentages.
+
 Mandatory milestone review
 --------------------------
 

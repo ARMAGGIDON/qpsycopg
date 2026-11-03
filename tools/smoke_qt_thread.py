@@ -10,6 +10,8 @@ import time
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from qpsycopg_env import dsn  # isort: skip
+
 import psycopg
 
 
@@ -144,9 +146,9 @@ async def mainAsync(dsn: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("dsn")
+    parser.add_argument("dsn", nargs="?", help="override QPSYCOPG_DSN from .env/environment")
     args = parser.parse_args()
-    asyncio.run(mainAsync(args.dsn))
+    asyncio.run(mainAsync(dsn(args.dsn)))
     print("qpsycopg qt-thread smoke test: OK", flush=True)
     return 0
 

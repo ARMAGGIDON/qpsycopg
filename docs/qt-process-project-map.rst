@@ -291,6 +291,16 @@ Validation and benchmark map
     but one repeat has severe drift and no removable real production
     bottleneck was isolated. Runtime and benchmark v3 remain unchanged.
 
+``tools/profile_qt_thread_get_real_path.py`` and
+``tools/profile_qt_thread_get_real_path.ps1``
+    Coordinator-approved real qt-thread no-SQL GET status diagnostic.
+    One untouched control connection and one instrumented connection per
+    independent subprocess; short clean-profiled-clean-profiled-clean
+    blocks and timestamp-bracketed drift controls. Temporary method
+    wrappers time actual caller request/perform/dispatch/response,
+    worker handle/normalize/connection checks and active _run worker
+    turn; no cProfile or production code changes. Windows data pending.
+
 The canonical current baseline is ``baseline-v3``. Older ``initial`` and
 ``baseline-v2`` checkpoints used different benchmark definitions and must not be
 used as the direct before-state for numbered optimisations.
@@ -318,66 +328,51 @@ Established decisions / do not repeat blindly
 Immediate next work
 -------------------
 
-#. ``optimized01`` remains **RETAIN**. The timed-vs-untimed
-   response wait stays **REJECT** (no speed benefit and
-   dead-worker liveness regression). Avoid all other
-   documented rejected wait/prefetch/snapshot experiments.
-#. The Coordinator-approved enriched echo investigation
-   is **COMPLETE**. The Windows diagnostic ZIP
-   ``qt-thread-enriched-echo-20261103-205855-365.zip``
-   was captured at ``d1b6a5a``: four fresh subprocess
-   repeats, 16 bracketed short-block cycles/repeat,
-   600 calls/block, and original timed queue get.
-   All 64 cycles finished without reported errors.
-#. Across four independent-repeat medians, overhead
-   above interpolated bare echo: envelope +4.031 us,
-   envelope plus validation +5.174 us, synthetic
-   bookkeeping +9.420 us, actual GET +14.172 us.
-   Incremental validation +0.855 us (44/64 cycles
-   positive), bookkeeping +4.184 us (61/64), and
-   actual GET beyond proxy +5.016 us (59/64).
-#. **Drift warning:** bare echo rose +131.8% across
-   the first repetition, compared with +3.5-6.7% in
-   the remaining three. Timestamp bracket correction
-   handles only approximate linear local drift.
-   Windows CPU clock quantization prevents reliable
-   microsecond-level per-function attribution.
-#. **Decision: diagnostic COMPLETE, no runtime
-   candidate.** The synthetic stage costs do not
-   identify a dominant removable actual qpsycopg
-   operation or predict SQL improvements. Production
-   code, accepted ``optimized01`` and benchmark v3
-   were unchanged. Do not start ``optimized02``.
-#. **Independent Coordinator review COMPLETE** at
-   ``d226f8e6``: **CONTINUE -- real-path profiling**.
-   The enriched synthetic measurements are useful
-   for scale but cannot identify an avoidable
-   real operation. Do not add more synthetic
-   echo stages or start ``optimized02``.
-#. **Next owner: existing ``10 Implementation — current``**.
-   Perform one diagnostic-only investigation of the
-   actual qt-thread no-SQL GET status path, focusing
-   on request construction/transport entry, worker
-   request handling and reply, and caller response
-   restore. Keep all production code and canonical
-   v3 unchanged. Capture uninstrumented controls
-   and narrowly bracketed real-path inclusive
-   wall/thread-CPU phases with fresh independent
-   runs, short paired blocks and explicit drift
-   analysis; do not sum overlapping phases.
-#. The deliverable is one reproducible, falsifiable
-   **real-code** cost hypothesis (or an explicit
-   finding that no such target is supported).
-   In particular, do not interpret synthetic
-   4-5 us stages or coarse Windows CPU counters
-   as a removable production saving. Preserve
-   connection, worker-exit/close/error semantics,
-   and compare any eventual safe runtime candidate
-   using smoke plus the unchanged paired v3.
-#. No new Critic/Scout is needed yet. If real-path
-   profiling fails to isolate an actionable cost,
-   stop the local sequence and return to Coordinator
-   for a fresh direction/Scout decision.
+#. The last synthetic enriched echo diagnostic is **COMPLETE**;
+   it did not identify a production-removable operation.
+   Coordinator review at base HEAD
+   ``0fc10d668ac9166f07ae3a575049da7b4b14ccd1``
+   selected **CONTINUE -- real-path profiling**.
+#. ``optimized01`` remains RETAIN and previous timed-vs-untimed
+   queue waiting remains REJECT. Do not repeat native worker wait,
+   speculative WAIT prefetch, snapshot/serialization guesses or
+   bulk decode experiments without new evidence.
+#. The current Implementation owner staged only
+   ``tools/profile_qt_thread_get_real_path.py`` and
+   ``tools/profile_qt_thread_get_real_path.ps1``
+   (and documentation). Production runtime and canonical
+   benchmark v3 are unchanged; no ``optimized02`` candidate.
+#. The real GET diagnostic profiles actual
+   ``_ThreadTransport.request/_perform/_dispatch/_responseValue``,
+   ``Worker._handle/_normalize``, connection readiness/broken
+   checks, and worker _run **receipt-to-response-publication turn**.
+   All phase timers are inclusive and overlapping.
+#. Four fresh child repeats by default, 12
+   ``clean-profiled-clean-profiled-clean`` cycles per repeat,
+   1200 real no-SQL status GET calls/block, local warmup
+   and a 90 s subprocess watchdog. The control connection
+   has original methods and raw queues; the profiled
+   connection has temporary method hooks and transparent
+   worker queue proxies. Phase call-count invariants
+   explicitly guard against incomplete samples.
+#. **Next action:** sync current Windows checkout and run
+   ``.\tools\profile_qt_thread_get_real_path.ps1``.
+   Send the resulting ``qt-thread-real-get-profile-*.zip``
+   to this **current Implementation chat**. Retain
+   the ZIP: it is a local artifact, not automatically
+   committed to the repository.
+#. Analyse all independent repeats, timestamp-bracketed
+   control drift, instrumentation overhead, inclusive
+   wall/local thread CPU and actual phase call counts.
+   Decide on **one falsifiable real-code hypothesis**
+   or explicitly that no actionable bottleneck was found.
+   Never treat a raw inclusive phase or the probe's
+   overhead as an automatic performance improvement.
+#. After Windows evidence, commit the completed
+   decision and recoverable snapshot, then route
+   this significant checkpoint to the **existing
+   00 Coordinator** for independent review.
+   No Scout/new Implementation owner is currently needed.
 
 Coordinator review -- enriched echo decision
 --------------------------------------------
@@ -412,85 +407,109 @@ Coordinator review -- enriched echo decision
 Rolling recovery snapshot -- current Implementation owner
 ---------------------------------------------------------
 
-* **Owner / branch:** this current Implementation/Optimisation
+* **Role / ownership:** current Implementation/Optimisation
   chat is the sole ordinary runtime owner for
   ``ARMAGGIDON/qpsycopg``, branch
-  ``feature/qt-process-pq``. The next action belongs
-  to the **existing 00 Coordinator** for *review*,
-  not runtime editing. Do not activate concurrent
-  implementation chats.
-* **Base / observed HEAD:** the enriched diagnostic
-  stage began at ``492ab4317eba0e0d3fb48b37963e37404551ed26``;
-  the Windows capture was at
-  ``d1b6a5a1899ac5690961a2ff335b96debd24cb6e``.
-  HEAD observed before this snapshot edit:
-  ``f955a0d2f2a29ad193daa3f80802a6fcf8eb9f18``.
-  Verify current HEAD when resuming.
-* **Hypothesis and evidence:** progressive enriched
-  SimpleQueue echo tried to partition Request/Response,
-  validation and synthetic worker bookkeeping from the
-  real no-SQL GET. All four repetitions succeeded and
-  the synthetic envelope/bookkeeping stages show
-  measurable wall effects. One repeat has extreme
-  baseline drift, and the synthetic proxy differs
-  materially from real worker code. **Open question:**
-  which, if any, real-path function is costly enough
-  and semantically safe to optimize? No such target
-  is established by the current artifact.
-* **Changes / rejected approaches:** the stage
-  analysis changed **docs only** (optimization log,
-  performance and this project map). The prior
-  diagnostic Python/PowerShell files already exist.
-  No production or v3 source was edited, and there
-  is no new candidate. ``optimized01`` stays RETAIN.
-  Timed-vs-untimed queue wait remains REJECT;
-  rejected native worker wait, speculative WAIT
-  prefetch and generic snapshot tuning should not
-  be repeated without new evidence.
-* **Local-only evidence:** the original
-  ``test-results\qt-thread-enriched-echo-20261103-205855-365.zip``
-  is a Windows-local artifact attached to the chat,
-  **not committed to GitHub**. The optimization log
-  records the archive SHA256 and detailed medians.
-  Preserve the ZIP for independent review. Windows
-  worktree state was not independently inspected;
-  no uncommitted local changes are known from
-  this GitHub-only workflow.
-* **Tests / next action:** no semantic smoke or
-  canonical v3 acceptance benchmark was rerun
-  because there is no runtime change. Next:
-  check branch HEAD and four qt-process docs;
-  send this completed checkpoint to existing
-  ``00 Coordinator``. **Do not run another
-  Windows profile or start optimized02 until
-  Coordinator selects the next bounded target.**
-  There is no pending architectural or runtime
-  ownership transfer.
-* **Context-risk assessment: CAUTION.** This is
-  a long, tool-heavy chat, but critical branch/
-  decision/evidence state remains recoverable.
-  No guessed context percentage/token count;
-  no HANDOFF NOW signs currently observed.
-  If material inconsistency appears, first
-  commit a fresh recovery snapshot, then
-  prepare an explicit same-role continuation
-  prompt. The previous owner must stop editing
-  when a new owner takes over.
+  ``feature/qt-process-pq``. The existing
+  ``00 Coordinator`` approved this bounded
+  *diagnostic only* and should not be contacted
+  again until the significant measurement
+  checkpoint is complete. No other Implementation
+  chat may edit this runtime path concurrently.
+* **Base / known HEAD:** Coordinator-approved
+  base ``0fc10d668ac9166f07ae3a575049da7b4b14ccd1``.
+  New diagnostic Python tool commit
+  ``ad0c44ea``, call-count invariant fix
+  ``48feeee5``, PowerShell runner
+  ``a3622a54``, optimization-log staging
+  ``cd5ea05a`` and performance staging
+  ``c0bc86ee``. HEAD before this snapshot
+  update was ``c0bc86ee68ace39cf003d0c3964c948998d52154``.
+  Verify the new HEAD rather than inferring
+  repository state from this historic pointer.
+* **Unfinished task:** measure the *real*
+  qt-thread GET-status request/response and
+  active worker-loop path, after the enriched
+  synthetic echo attribution plateau. Compare
+  short profiled blocks to genuine unwrapped
+  GET controls in four independent repeats;
+  account for temporal drift and Windows CPU
+  quantization. The prospective actionable
+  hypothesis remains **unselected** pending
+  real Windows measurements.
+* **Code / uncommitted state:** standalone
+  ``tools/profile_qt_thread_get_real_path.py``
+  and ``tools/profile_qt_thread_get_real_path.ps1``
+  are committed in GitHub. Only these new
+  diagnostic files and documentation have
+  changed in this bounded stage; **no
+  production runtime or v3 change**.
+  This chat works through live GitHub
+  tools; it has **not inspected the
+  user's local Windows worktree** and
+  cannot assert that it is clean.
+* **Tests / missing evidence:** static design
+  and GitHub patch inspection only so far;
+  no full Windows/PostgreSQL run of this
+  new probe, semantic smoke or canonical
+  paired v3 benchmark. No new results ZIP
+  exists in this chat yet. The previous
+  enriched echo ZIP was user-supplied
+  local-only evidence, recorded by SHA
+  and medians in the optimisation log.
+* **Rejections / constraints:** keep
+  ``optimized01`` RETAIN; raw untimed
+  response waiting REJECT due to absent
+  speedup and lost worker-exit detection.
+  Do not redo worker-native wait,
+  speculative prefetch, generic snapshot/
+  serialization or bulk microtuning.
+  Maintain public Psycopg, connection
+  close/error/cancellation and worker
+  exit semantics. All timers are
+  inclusive, nested and perturbed by
+  instrumentation; profiling is not
+  acceptance benchmarking.
+* **Next reproducible action:** after
+  syncing the feature branch on Windows,
+  ensure the existing benchmark fork venv,
+  root ``.env``, PostgreSQL/libpq DLL
+  directory and DSN are configured.
+  Run ``.\tools\profile_qt_thread_get_real_path.ps1``,
+  upload ``test-results\qt-thread-real-get-profile-*.zip``
+  to this chat, inspect manifest/JSON/errors
+  and record a bounded result. Contact
+  existing ``00 Coordinator`` **only after**
+  the result and decision are documented.
+* **Context risk: CAUTION.** This is a
+  long, tool-heavy implementation chat.
+  State remains consistent with repository
+  evidence and this rolling snapshot
+  supports recovery. No claimed token
+  count/window percentage and no observed
+  ``HANDOFF NOW`` symptoms. If critical
+  inconsistency occurs, first preserve
+  work in GitHub and explicitly transfer
+  to a fresh **same-role** chat. The
+  former owner must stop runtime edits.
 
 When resuming in a new chat/session
 -----------------------------------
 
-#. Read :doc:`qt-process`, this map,
-   :doc:`qt-process-performance` and
-   :doc:`qt-process-coordination`; inspect
-   HEAD and :doc:`qt-process-optimization-log`.
-#. Enriched echo is **measured and documented**,
-   not awaiting another ZIP. The result is a
-   synthetic attribution plateau, not permission
-   for a production optimization.
-#. Next owner is existing ``00 Coordinator``
-   for independent review. Runtime ownership
-   stays with the current implementation role;
-   a same-role context handoff, if required,
-   must explicitly transfer ownership and
-   never create two simultaneous owners.
+#. Re-read :doc:`qt-process`, this map,
+   :doc:`qt-process-performance`,
+   :doc:`qt-process-coordination` and
+   :doc:`qt-process-optimization-log`,
+   and independently inspect HEAD.
+#. The real-path diagnostic is staged,
+   **not yet measured**, and owned by
+   this Implementation role. Previous
+   synthetic results do not authorise
+   production runtime changes.
+#. Next action is a Windows ZIP from
+   ``profile_qt_thread_get_real_path.ps1``,
+   then real phase attribution and a
+   documented hypothesis/no-target
+   decision. Do not contact Coordinator
+   yet or create another Implementation
+   owner without explicit transfer.

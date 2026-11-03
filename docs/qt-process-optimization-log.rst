@@ -1016,38 +1016,150 @@ feasibility gate; a separate full current-vs-native
 boundary A/B and the >=15 us CPU/SELECT
 screen would still be required.
 
+Native PGresult feasibility PASS -- whole-result-boundary A/B staged
+--------------------------------------------------------------------
+
+The corrected **third Windows preflight** completed at
+``c303749b6b1551901eb5fc7bf4c2bcaeb2f2ae56``, after the
+earlier forensic crash had been traced to erroneous row decoding on
+a FATAL_ERROR result. Artifact:
+``qt-thread-native-result-preflight-20261103-225359-731.zip``,
+SHA256 ``590ae47053e5b117d75ed596fceb23b71e50c78b37e97797162deac842b5145f``.
+The archive CRC passed, ``stderr.log`` was empty, and ``results.json``
+reported ``preflight_passed=true``,
+``native_handoff_ab_authorized=true``, CPython 3.13.5,
+``PSYCOPG_IMPL=qt-thread``, native C worker, no production
+or canonical v3 change. This ZIP is a conversation upload/
+Windows-local artifact, **not** a committed repository file.
+Preserve it for review.
+
+The four tests completed:
+
+* ``select``: metadata/field/cell/NULL parity,
+  native C and hybrid Transformer decoding with the **same**
+  qt-thread cursor adaptation context, expected row
+  ``(1, None, "qpsycopg", True)`` and idempotent
+  double native ``clear()``.
+* ``sql_error``: FATAL_ERROR status and matching SQLSTATE,
+  exception type and message; the corrected probe
+  **does not** decode non-row error results.
+* ``notice``: command/no-row metadata parity, a preserved
+  notice snapshot created during the borrowed native
+  callback, no transfer of the callback's invalid pointer,
+  and double clear.
+* ``connection_finished``: a completed native result
+  remains usable on the caller thread **after worker
+  PGconn.finish()**, decoded row ``(17,)`` and double clear.
+
+**Decision: PASS the *bounded standalone* native C PGresult
+ownership, lifetime, notice and basic adaptation preflight.**
+It is **not** proof that a production qt-thread worker can
+skip snapshot-specific health/error/cache logic or retain
+pipeline, COPY, multi-result, cancellation and close semantics.
+The prior Windows crashes are retained as historical
+diagnostic misuses, not architectural FAIL results.
+Their older BLOCKED statements are superseded by this PASS.
+
+The selected next bounded stage is a single diagnostic-only
+current-vs-native **complete result-boundary** CPU screen.
+New tools ``tools/bench_qt_thread_native_result_boundary.py``
+and ``tools/bench_qt_thread_native_result_boundary.ps1``
+have been committed; **Windows A/B results are pending**.
+They use one native C PGconn, created, used and finished
+only inside one worker thread, plus two SimpleQueues
+and a single fixed qt-thread cursor adaptation context.
+Both modes run the **same SQL and server execution**:
+``PGconn.exec_params(b"SELECT 1", ())`` on that same
+worker connection with identical request/response waits.
+The *only* alternative processing boundary after the
+completed C PGresult is:
+
+* current control: worker native ``_snapshotResult``,
+  including metadata/``PackedValues``; synthesize
+  ``pq_qt_process.PGresult`` on caller; create a fresh
+  hybrid ``adapt.Transformer(cursor)`` and decode row;
+* native alternative: enqueue the owned C PGresult,
+  create a fresh ``psycopg_c._psycopg.Transformer(cursor)``,
+  decode the same row, then explicitly release native
+  result ownership in the caller.
+
+Both paths verify exactly one integer row ``(1,)``,
+and both include native result release in their respective
+full-boundary lifetime. The worker and SQL code are the
+same, and the two queue handoffs are unchanged.
+The result cannot be directly equated with the full
+production asynchronous qt-thread SELECT 1 path:
+the experiment uses synchronous native PQexecParams,
+does not execute production health/notice/cache machinery,
+and holds the cursor context on a separate idle connection.
+Only the **incremental result-boundary difference** is
+being screened; never infer complete SQL latency savings.
+
+**Drift and noise controls:** four independent subprocess
+repeats; each contains 12 short alternating five-block
+cycles with 1000 calls/block and warmup. The modes rotate
+``snapshot-native-snapshot-native-snapshot`` versus
+``native-snapshot-native-snapshot-native``,
+so workload and order balance across cycles. For each
+target block, interpolate surrounding opposite-mode
+controls using actual block midpoint times. Report
+paired ``snapshot minus native`` process CPU/query,
+wall/query, caller/other-thread CPU, context switches,
+MAD/range/sign count; preserve raw blocks and between-repeat
+medians. Report per-mode first/last wall drift.
+
+**Predeclared material-benefit screen:**
+at least **15 us process CPU/SELECT** in the
+independent-repeat median, at least 3 of 4
+repeat medians >=15 us, all repeat medians
+positive, median >3 times between-repeat
+MAD, and no per-mode repeat >15% baseline
+drift. These conservative checks are a
+screen rather than a statistical proof.
+If the observed benefit is below the
+threshold or lost in noise/drift, **REJECT**
+without a runtime candidate. A positive
+diagnostic does not authorise production
+code changes, ``optimized02`` or a v3
+benchmark until independent Coordinator
+review and an actual semantics-preserving
+design.
+
+Run once from the synced Windows checkout::
+
+    .\tools\bench_qt_thread_native_result_boundary.ps1
+
+Upload ``test-results\qt-thread-native-boundary-ab-*.zip`` to
+the **current Implementation chat** for evaluation,
+documentation and Coordinator routing on completion.
+
 Post-optimized01 priorities
 ---------------------------
 
-``optimized01`` remains **RETAIN**; the timed-vs-untimed
-queue wait, worker-native socket wait, speculative WAIT
-prefetch, and generic serialization/snapshot microtuning
-remain rejected. The current, distinct architectural
-hypothesis is **native owned PGresult transfer through
-two SimpleQueues**, replacing the complete snapshot/
-reconstruction/native decode boundary only if safe.
+``optimized01`` remains RETAIN and prior timed-vs-untimed
+SimpleQueue wait, native worker socket wait, speculative
+WAIT prefetch and generic snapshot micro-tuning remain
+rejected. The **distinct native PGresult whole-boundary**
+hypothesis has now passed its *standalone safety preflight*.
+No runtime performance signal has been measured yet.
 
-#. First run and inspect the committed, diagnostic-only
-   native PGresult ownership/Transformer preflight.
-   If the target Windows checks fail, **STOP** and
-   record the negative result.
-#. If feasibility passes, design and run **one**
-   diagnostic-only same-SQL warmed SELECT 1 whole-boundary
-   comparison with equal adaptation context, queue
-   topology, outputs, independent interleaved repeats,
-   process CPU/query, wall, switches and drift.
-   Predeclared material-benefit screen: >=15 us
-   repeatable paired CPU/query improvement beyond noise.
-#. On absent material gain or semantic uncertainty,
-   REJECT without a production runtime candidate
-   or ``optimized02``.
-#. After a measured completed checkpoint, update
-   performance notes, this log and project map;
-   return to the **existing 00 Coordinator**
-   for independent review before any runtime candidate.
-   Retain all Psycopg semantics and cancellation,
-   worker lifetime/error/close, Qt p95/p99,
-   bulk/connection/resource acceptance guardrails.
+#. Run and analyse the one permitted, diagnostic-only
+   paired native-result boundary SELECT 1 A/B using the
+   staged Python/PowerShell tools; preserve the full ZIP.
+#. Require correct row parity, same SQL execution,
+   two queue handoffs, same cursor adaptation,
+   independent repeats and paired process CPU/query,
+   wall, context-switch and drift evidence.
+#. Apply the predeclared >=15 us CPU/SELECT
+   materiality screen. Missing, negative, unstable or
+   low materiality evidence means **REJECT**.
+   A positive screen requires further independent
+   semantics/architecture review, not optimized02.
+#. After this bounded A/B, update this log, performance
+   notes and project-map recovery state, then submit
+   the **completed significant checkpoint** to the
+   existing 00 Coordinator for review. Do not start
+   an unapproved second runtime path.
 
 Checkpoint rule
 ---------------

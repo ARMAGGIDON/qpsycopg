@@ -156,7 +156,7 @@ def test_windows_invalid_pg_root_fails_early(tmp_path):
 @pytest.mark.parametrize("impl", ["qt-process", "qt-thread"])
 def test_dotenv_selects_qt_backends(tmp_path, impl):
     (tmp_path / ".env").write_text(
-        f"PSYCOPG_IMPL={impl}\\nQPSYCOPG_WORKER_IMPL=python\\n",
+        f"PSYCOPG_IMPL={impl}\nQPSYCOPG_WORKER_IMPL=python\n",
         encoding="utf-8",
     )
     result = _run(

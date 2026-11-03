@@ -256,8 +256,8 @@ with path-level evidence and one local hypothesis, while preserving the
 optimized01 lifecycle and monitoring its CPU/cancellation guardrails.
 
 
-CPU/short-query profiling checkpoint -- diagnostic probe pending
---------------------------------------------------------------
+CPU profiling setup and first invalid attempt
+---------------------------------------------
 
 Coordinator decision at ``0ecd0377``: CONTINUE, but **do not start speculative
 optimized02**. The next bounded stage is attribution of the remaining
@@ -343,7 +343,7 @@ The status RPC is not the same operation as the fast-execute query; it
 isolates the boundary but cannot alone prove a runtime improvement.
 
 Completed diagnostic checkpoint -- CPU boundary attribution
----------------------------------------------------------
+-----------------------------------------------------------
 
 The corrected Windows archive ``qt-thread-cpu-profile-20261103-192809-646.zip``
 was captured at HEAD ``9b0f7108c9e2e3f5e9f84b9dccff8d62d31e12e6``.
@@ -425,17 +425,24 @@ checkpoint and proposed next direction to ``00 Coordinator``
 for independent milestone review before starting a new runtime
 optimisation direction.
 
-Optimisation order after optimized01
-------------------------------------
+Post-optimized01 priorities
+---------------------------
 
-Do not optimise every visible ratio at once. After ``optimized01``:
+The retained ``optimized01`` already delivered the measured connect/resource
+benefit. The completed CPU investigation narrows the next decision to the
+synchronous qt-thread request/response handoff; it does not establish a
+production optimisation yet.
 
-#. compare connection/resource deltas and confirm smoke remains clean;
-#. if the lifecycle change is supported, target the remaining qt-thread short
-   query CPU/latency overhead rather than bulk decoding;
-#. keep bulk decode deprioritised while it remains near upstream;
-#. choose later worker reuse, thread-native command/response or cancellation
-   transport work only from measured remaining cost.
+#. Request independent ``00 Coordinator`` milestone review of the profiling
+   evidence and the single timed-vs-untimed response-wait diagnostic hypothesis.
+#. If approved, perform the diagnostic-only A/B before touching production
+   runtime. Reject the hypothesis if the fixed handoff does not measurably
+   improve, or if worker/connection liveness cannot be preserved.
+#. Do not repeat rejected worker-native wait, speculative WAIT prefetch,
+   snapshot/serialization experiments or bulk decoding optimisation.
+#. An accepted future runtime candidate must pass qt-thread semantic smoke
+   and unchanged adjacent-paired v3 benchmarks with CPU/query, cancellation,
+   Qt p95/p99, bulk, connection and resources as guardrails.
 
 Checkpoint rule
 ---------------

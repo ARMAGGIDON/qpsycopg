@@ -495,7 +495,7 @@ connect and resource guardrails remain applicable to any future
 candidate.
 
 Minimal SimpleQueue echo versus qpsycopg status GET -- completed
----------------------------------------------------------------
+----------------------------------------------------------------
 
 Coordinator selected a diagnostic-only two-queue echo comparison following the
 REJECT decision for timed-vs-untimed SimpleQueue waiting. The Windows artifact

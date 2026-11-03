@@ -263,9 +263,10 @@ Validation and benchmark map
     controls; separate process/caller CPU; worker dispatch/wait phase timers;
     synthetic no-SQL status request as a control for handoff cost. The earlier
     Python 3.13 cProfile attribution was rejected after producing negative
-    per-function CPU and cross-thread stack contamination. The replacement
-    uses only local inclusive timers; the Windows re-run is pending. Production
-    runtime and canonical paired v3 workload are unchanged.
+    per-function CPU and cross-thread stack contamination. The corrected
+    phase-only Windows archive is now analysed and identifies the synchronous
+    thread request/response handoff as the largest fixed non-SQL phase.
+    Production runtime and canonical paired v3 workload are unchanged.
 
 The canonical current baseline is ``baseline-v3``. Older ``initial`` and
 ``baseline-v2`` checkpoints used different benchmark definitions and must not be
@@ -294,47 +295,51 @@ Established decisions / do not repeat blindly
 Immediate next work
 -------------------
 
-#. ``optimized01`` is retained. Its warm connection and connected-state
-   thread/handle improvement is measured against ``baseline-v3`` and its
-   qt-thread semantic smoke passed. Keep this lifecycle unchanged.
-#. The Coordinator decision at ``0ecd0377`` is CONTINUE with a bounded
-   qt-thread CPU/short-query profiling stage, **not** speculative
-   ``optimized02``.
-#. Run ``.\tools\profile_qt_thread_short_query.ps1`` on the existing Windows
-   benchmark installation. The probe profiles upstream, fork direct and qt-thread
-   with a clean warm control and separate caller/worker phase attribution.
-   It does not alter the v3 acceptance benchmark.
-#. Interpret the profile ZIP: distinguish Python caller CPU, protocol
-   allocations/conversions, worker handling, and libpq wait/scheduling time.
-   Choose **one measured dominant cost** and falsifiable local hypothesis.
-   Do not treat instrumented timings as an optimisation speedup measurement.
-#. Only after profiling evidence, make the smallest targeted implementation
-   change. Preserve public Psycopg semantics and run semantic smoke followed
-   by the unchanged paired v3 benchmark.
-#. Check CPU/query, short-query latency, cancellation latency, Qt p95/p99,
-   bulk, connect and connected-state resources as guardrails. Retain or revert
-   based on evidence and update the performance and optimisation log.
-#. After a significant completed checkpoint, route the result to the existing
-   ``00 Coordinator`` chat for independent review, as required by the
-   coordination protocol. Do not create a Scout unless profiling reveals a
-   genuine architectural dispute or plateau.
+#. The bounded qt-thread short-query CPU profiling investigation is **complete**.
+   The corrected diagnostic archive
+   ``qt-thread-cpu-profile-20261103-192809-646.zip`` contains two valid
+   upstream/direct/qt-thread rounds at ``9b0f7108``. Production runtime
+   remains unchanged, and ``optimized01`` remains RETAIN.
+#. Clean qt-thread CPU is 250-255 us/SELECT, compared with fork direct
+   125-146 us. The no-SQL worker status GET costs 40-45 us wall and 36-47 us
+   process CPU per request, with about two extra context switches; its
+   ``_dispatch`` wait occupies approximately 35-39 us inclusive wall.
+   This is a measured **fixed thread handoff** cost, not a complete
+   decomposition of the 104-130 us SELECT CPU gap.
+#. ``_wait`` includes actual PostgreSQL socket waiting and nested timings
+   overlap. Upstream Windows itself uses Python ``select.select()``
+   rather than native ``wait_c``. Do not restart the rejected native
+   wait, speculative result prefetch, snapshot or serialization work.
+#. Next action belongs to the existing ``00 Coordinator`` chat:
+   independently review the completed diagnostic and decide whether the
+   following *single local hypothesis* merits a diagnostic-only A/B:
+   ``_ThreadTransport._dispatch`` uses
+   ``SimpleQueue.get(timeout=0.1)``, and its timed-response wait might
+   contribute >=10 us to the observed 35-39 us fixed handoff wall.
+   Compare timed vs untimed waits in a controlled **non-production**
+   no-SQL worker request, preserving a clear liveness/error criterion.
+#. If the hypothesis is not measurably supported, reject it without
+   creating ``optimized02``. A production untimed wait must never
+   silently lose fatal worker/close detection. If the Coordinator approves
+   a safe variant after local evidence, the implementation owner shall
+   run semantic smoke and unchanged paired benchmark v3 with CPU/query,
+   cancellation, Qt p95/p99, bulk, connect and resources as guardrails.
+#. A new Critic/Scout is **not required** by current evidence. Only one
+   implementation chat owns any subsequent runtime experiment.
 
 When resuming in a new chat/session
 -----------------------------------
 
 #. Read :doc:`qt-process`, this project map, :doc:`qt-process-performance`
-   and :doc:`qt-process-coordination`; then inspect current HEAD.
-#. Review :doc:`qt-process-optimization-log` for the canonical v3 results.
-#. Treat ``optimized01`` as **retained**, not pending measurement.
-#. Do not restart the old qt-thread smoke blocker or previously rejected
-   process-IPC/native-wait experiments.
-#. The first Windows CPU attribution ZIP was analysed: uninstrumented
-   thread process CPU is ~230 us/query with ~115 us in the caller and
-   ~115-120 us in other threads, but the cProfile function breakdown was
-   invalid (cross-thread stacks and negative self CPU).
-#. The updated phase-only runner at ``a4d11e37`` still needs one Windows
-   run. The next input is its new profile ZIP including no-SQL status RPC
-   control. Do not treat the invalid earlier profile as a dominant-cost proof.
-#. Continue in the current implementation chat until the bounded profiling
-   decision is complete. Do not stack optimized02 or create a competing
-   implementation path in another chat.
+   and :doc:`qt-process-coordination`; inspect current HEAD and
+   :doc:`qt-process-optimization-log`.
+#. ``optimized01`` is retained, not pending measurement; semantic smoke
+   passed at that checkpoint. Do not repeat rejected experiments.
+#. The corrected CPU profiling archive was analysed, with the result
+   recorded in the optimisation log and performance notes. The invalid
+   Python 3.13 cProfile function rankings are rejected.
+#. This is a completed investigation checkpoint requiring independent
+   review by the **existing 00 Coordinator** before new optimisation
+   direction. The next action is coordinator review of the bounded
+   timed-vs-untimed thread-handoff diagnostic hypothesis, not an
+   implementation change and not another Windows profile rerun.

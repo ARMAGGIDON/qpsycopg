@@ -292,10 +292,11 @@ boundary. A source-level difference is not a measured bottleneck.
 Diagnostic-only tools introduced for this bounded stage:
 
 * ``tools/profile_qt_thread_short_query.py`` profiles caller and worker
-  separately using ``cProfile(timer=time.thread_time)``, and collects
-  inclusive/exclusive CPU, call counts and bounded phase wall/CPU totals for
-  ``_fastExecute``, ``_dispatch``, ``_responseValue``,
-  ``Worker._handle``, ``_executePending`` and ``_wait``.
+  in **sequential, never overlapping passes** using
+  ``cProfile(timer=time.thread_time)``, and collects inclusive/exclusive
+  CPU, call counts and bounded phase wall/CPU totals for ``_fastExecute``,
+  ``_dispatch``, ``_responseValue``, ``Worker._handle``,
+  ``_executePending`` and ``_wait``.
 * ``tools/profile_qt_thread_short_query.ps1`` runs upstream, fork direct and
   qt-thread in alternating order using the **existing** isolated v3 benchmark
   venvs and local libpq; a warm uninstrumented control precedes each
@@ -309,6 +310,16 @@ Diagnostic-only tools introduced for this bounded stage:
 Run from the local Windows checkout after fetching the latest branch::
 
     .\tools\profile_qt_thread_short_query.ps1
+
+The first Windows attempt at ``94d8ad1e`` failed during the qt-thread
+profile after upstream profile 1/2, with ``ValueError: Another profiling tool
+is already active``. On CPython 3.13 two simultaneous ``cProfile`` instances
+for caller/worker conflict over the interpreter monitoring tool. This was a
+**diagnostic harness failure**, not a runtime regression. Commit ``7e62e346``
+separated caller-only and worker-only profile passes and resets worker profiling
+before connection close, retaining the uninstrumented warm control. The runner
+is unchanged. Sequential cross-thread profiling was independently sanity-tested
+under Python 3.13.5; a full Windows/PostgreSQL retest is still required.
 
 This checkpoint is **not yet measured** on the target Windows environment.
 After the profile ZIP is inspected, choose **one falsifiable local hypothesis**.

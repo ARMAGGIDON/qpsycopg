@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
+import subprocess
 from pathlib import Path
-
-
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "psycopg"
 
 
-def _run(tmp_path: Path, code: str, *, settings: dict[str, str] | None = None):
+def _run(
+    tmp_path: Path, code: str, *, settings: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     for key in (
         "PSYCOPG_IMPL",
@@ -22,9 +22,7 @@ def _run(tmp_path: Path, code: str, *, settings: dict[str, str] | None = None):
         "QPSYCOPG_ENV_FILE",
     ):
         env.pop(key, None)
-    env["PYTHONPATH"] = os.pathsep.join(
-        (str(_PACKAGE_ROOT), env.get("PYTHONPATH", ""))
-    )
+    env["PYTHONPATH"] = os.pathsep.join((str(_PACKAGE_ROOT), env.get("PYTHONPATH", "")))
     if settings:
         env.update(settings)
     return subprocess.run(
@@ -97,8 +95,7 @@ def test_malformed_backend_value_reports_source(tmp_path):
 def test_no_env_file_does_not_change_upstream_selection(tmp_path):
     result = _run(
         tmp_path,
-        "import psycopg; from psycopg import pq; "
-        "assert pq.__impl__ == 'python'",
+        "import psycopg; from psycopg import pq; " "assert pq.__impl__ == 'python'",
         settings={"PSYCOPG_IMPL": "python"},
     )
     assert result.returncode == 0, result.stderr

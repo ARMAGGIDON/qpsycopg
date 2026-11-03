@@ -342,15 +342,88 @@ the instrumented query/status phase counts and nonnegative CPU totals.
 The status RPC is not the same operation as the fast-execute query; it
 isolates the boundary but cannot alone prove a runtime improvement.
 
-The revised probe has **not yet run** on the target Windows machine.
-Do not select a dominant function or start speculative ``optimized02``
-until focused evidence is internally consistent. Any later candidate
-must pass semantic smoke and unchanged paired benchmark v3, checking
-CPU/query, cancellation, Qt p95/p99, bulk, connect and resources.
+Completed diagnostic checkpoint -- CPU boundary attribution
+---------------------------------------------------------
 
-Next diagnostic command from the Windows checkout::
+The corrected Windows archive ``qt-thread-cpu-profile-20261103-192809-646.zip``
+was captured at HEAD ``9b0f7108c9e2e3f5e9f84b9dccff8d62d31e12e6``.
+The archive contains six valid profiles (two rounds each of pristine upstream
+C, fork direct C and qt-thread) and a manifest: 3000 measured SELECTs after
+200 warmups per run. The diagnostic runner uses the same isolated v3
+benchmark environments, but **these are not canonical v3 acceptance ratios**.
 
-    .\tools\profile_qt_thread_short_query.ps1
+Clean, pre-instrumentation SELECT 1 results (per run)::
+
+    metric (us/query unless noted) upstream C     fork direct C    qt-thread
+    process CPU                       88.5 / 130.2  125.0 / 145.8   255.2 / 250.0
+    caller CPU                        88.5 / 130.2  125.0 / 145.8   114.6 / 135.4
+    wall                              606.2 / 589.5 574.9 / 648.7   898.4 / 748.4
+    context switches/query              1.00 / 1.01   1.00 / 1.02     3.12 / 3.03
+
+Thus the qt-thread excess process CPU versus fork direct is approximately
+104-130 us/query in these two rounds. The qt-thread process CPU comprises
+about 115-135 us caller CPU and 115-141 us other-thread CPU. These
+process-level differences are credible, but Windows CPU accounting has
+coarse quantization: the direct in-process status read, for example,
+shows ~0.17 us *wall* but 5.21 us *CPU* per call. Do not assign a
+few microseconds of significance to individual CPU function counters.
+
+The **clean no-SQL status GET control**, which forces one genuine
+qt-thread Request/Response round trip but performs no SQL and no libpq
+socket wait, measured::
+
+    metric                              run 1         run 2
+    qt-thread wall (us/GET)             45.13         40.02
+    qt-thread process CPU (us/GET)      46.88         36.46
+    qt-thread context switches/GET       2.04          2.01
+    direct local status wall (us)        0.17          0.17
+
+The phase instrument (not the clean control) reports one worker dispatch
+per GET, with **35.24 / 39.22 us inclusive caller queue-handoff wall**
+and only 5.83 / 6.39 us worker GET handler wall. This identifies the
+**synchronous _dispatch / queue wakeup boundary** as the largest measured
+fixed non-SQL phase, rather than the trivial status operation itself.
+The GET process CPU of ~36-47 us is on the order of 35% of the
+104-130 us excess SELECT CPU; this is a *scale comparison*, **not**
+an additive decomposition or proof that precisely 35% of SELECT is queue
+cost. The GET and fast-execute workloads are different.
+
+For SELECT 1, the instrumented worker executes one _executePending and
+one socket _wait per query. _wait includes approximately 539-581 us wall
+and 73-83 us inclusive thread CPU, while its nested
+_executePending/_handle clocks overlap. Most of its wall duration is
+real socket waiting for PostgreSQL; neither its wall time nor inclusive
+CPU can be labelled avoidable without a controlled local A/B.
+Upstream's Windows waiting.py also chooses Python select.select()
+instead of native wait_c because of documented CPU issues.
+Do not repeat the previously rejected worker-native wait variant or
+resnapshot/serialization experiments on this evidence.
+
+**Decision -- CPU investigation COMPLETE, no runtime variant accepted.**
+The next candidate is the narrowly measured fixed request/response
+handoff, not a speculative rewrite of libpq socket wait.
+
+**One falsifiable local hypothesis for coordinator review:** the timed
+response-wait mechanism inside _ThreadTransport._dispatch
+(SimpleQueue.get(timeout=0.1)) contributes a measurable fraction of the
+~35-39 us no-SQL handoff wall cost, beyond the unavoidable two
+cross-thread wakeups. First run a diagnostic-only same-machine A/B
+of timed versus untimed SimpleQueue response waiting on the same
+no-SQL status workload, without changing the production runtime.
+The hypothesis is rejected if there is no repeatable reduction of
+at least ~10 us per no-SQL round trip or if liveness/error delivery
+cannot be preserved. An untimed production wait **must not** be
+introduced without a design preserving fatal worker/close detection.
+Only if targeted evidence supports a safe production variant may
+a single local code experiment proceed through semantic smoke and
+the unchanged paired v3 benchmark; CPU/query, cancellation, Qt
+p95/p99, bulk, connection and resource deltas remain guardrails.
+
+No runtime code was changed during this investigation. The
+implementation owner should submit this completed profiling
+checkpoint and proposed next direction to ``00 Coordinator``
+for independent milestone review before starting a new runtime
+optimisation direction.
 
 Optimisation order after optimized01
 ------------------------------------

@@ -373,9 +373,12 @@ Immediate next work
    Worker PGconn remains on worker thread only.
 #. **Next user action:** sync the Windows checkout and run
    ``.\tools\preflight_qt_thread_native_pgresult.ps1``.
-   Upload the resulting
-   ``test-results\qt-thread-native-result-preflight-*.zip``
-   to **this current Implementation chat**. The
+   This command has already produced one CRASHING run:
+   ``qt-thread-native-result-preflight-20261103-223124-116.zip``
+   at ``dc25abe6``. Child exit ``0xC0000005`` was an
+   access violation, not watchdog timeout; stderr was empty.
+   Re-run ONCE with newly added faulthandler/trace diagnostics,
+   then upload the resulting NEW ZIP to this chat. The
    probe runs in a subprocess with a watchdog and
    preserves a ZIP even on failure.
 #. **Gate:** do **not** begin the full native

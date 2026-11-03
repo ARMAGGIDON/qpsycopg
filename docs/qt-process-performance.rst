@@ -494,7 +494,7 @@ explain it. Do not retest this same variant without new evidence.
 Full evidence is recorded in :doc:`qt-process-optimization-log`.
 
 Minimal SimpleQueue echo baseline -- measured diagnostic
--------------------------------------------------------
+--------------------------------------------------------
 
 The Windows diagnostic archive ``qt-thread-echo-baseline-20261103-202519-685.zip``
 was collected at branch commit ``5dcdbd51`` (Python 3.13.5,

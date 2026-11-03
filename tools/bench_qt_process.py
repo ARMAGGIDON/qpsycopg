@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Compare an upstream pq backend with qpsycopg's qt-process backend."""
+"""Compare upstream and qpsycopg pq backends under the same SQL workload."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import statistics
 import threading
@@ -28,14 +29,19 @@ def timed(call: Callable[[], Any], count: int) -> list[float]:
     return samples
 
 
-def summary(samples: list[float]) -> dict[str, float]:
+def percentile(samples: list[float], fraction: float) -> float:
     ordered = sorted(samples)
+    return ordered[min(len(ordered) - 1, max(0, math.ceil(len(ordered) * fraction) - 1))]
+
+
+def summary(samples: list[float]) -> dict[str, float]:
     return {
         "mean_ms": statistics.fmean(samples),
         "median_ms": statistics.median(samples),
-        "p95_ms": ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))],
-        "min_ms": ordered[0],
-        "max_ms": ordered[-1],
+        "p95_ms": percentile(samples, 0.95),
+        "p99_ms": percentile(samples, 0.99),
+        "min_ms": min(samples),
+        "max_ms": max(samples),
     }
 
 
@@ -66,6 +72,9 @@ def main() -> int:
     parser.add_argument("--iterations", type=int, default=200)
     parser.add_argument("--rows", type=int, default=20_000)
     parser.add_argument("--threads", type=int, default=4)
+    parser.add_argument("--connect-iterations", type=int, default=20)
+    parser.add_argument("--cancel-iterations", type=int, default=5)
+    parser.add_argument("--cancel-settle-ms", type=float, default=100.0)
     args = parser.parse_args()
 
     defaultIpc = "pipe" if os.name == "nt" else "tcp"
@@ -80,13 +89,24 @@ def main() -> int:
         "iterations": args.iterations,
         "rows": args.rows,
         "threads": args.threads,
+        "connect_iterations": args.connect_iterations,
+        "cancel_iterations": args.cancel_iterations,
+        "cancel_settle_ms": args.cancel_settle_ms,
     }
 
     resourcesBefore = processResources()
-    connectSamples = timed(lambda: _connectClose(args.dsn), min(20, args.iterations))
+    start = time.perf_counter_ns()
+    _connectClose(args.dsn)
+    coldConnectMs = (time.perf_counter_ns() - start) / 1_000_000
     resourcesAfter = processResources()
-    result["connect"] = summary(connectSamples)
-    addResources(result["connect"], resourcesBefore, resourcesAfter, min(20, args.iterations))
+    result["connect_cold"] = {"ms": coldConnectMs}
+    addResources(result["connect_cold"], resourcesBefore, resourcesAfter, 1)
+
+    resourcesBefore = processResources()
+    connectSamples = timed(lambda: _connectClose(args.dsn), args.connect_iterations)
+    resourcesAfter = processResources()
+    result["connect_warm"] = summary(connectSamples)
+    addResources(result["connect_warm"], resourcesBefore, resourcesAfter, args.connect_iterations)
 
     with psycopg.connect(args.dsn) as connection:
         result["resources_connected"] = processResources()
@@ -180,36 +200,64 @@ def main() -> int:
         selectOne()
         result["sql_error_survival"] = True
 
-        cancelled: list[str] = []
-
-        def sleepingQuery() -> None:
-            try:
-                with connection.cursor() as cursor:
-                    cursor.execute("SELECT pg_sleep(30)")
-            except psycopg.errors.QueryCanceled:
-                cancelled.append("QueryCanceled")
-                connection.rollback()
-
-        thread = threading.Thread(target=sleepingQuery)
-        thread.start()
-        time.sleep(0.5)
         requestsBefore = remoteRequests(connection)
         resourcesBefore = processResources()
-        start = time.perf_counter()
-        connection.cancel_safe(timeout=5.0)
-        cancelReturned = time.perf_counter()
-        thread.join(10.0)
-        finished = time.perf_counter()
+        cancelCallSamples: list[float] = []
+        cancelFinishSamples: list[float] = []
+        cancelTotalSamples: list[float] = []
+        cancelExceptions: list[str] = []
+
+        for _ in range(args.cancel_iterations):
+            queryStarted = threading.Event()
+            cancelled: list[str] = []
+            queryErrors: list[BaseException] = []
+
+            def sleepingQuery() -> None:
+                try:
+                    with connection.cursor() as cursor:
+                        queryStarted.set()
+                        cursor.execute("SELECT pg_sleep(30)")
+                except psycopg.errors.QueryCanceled:
+                    cancelled.append("QueryCanceled")
+                    connection.rollback()
+                except BaseException as error:
+                    queryErrors.append(error)
+
+            thread = threading.Thread(target=sleepingQuery, name="qpsycopg-cancel-bench")
+            thread.start()
+            if not queryStarted.wait(2.0):
+                raise AssertionError("cancellation benchmark query did not start")
+            time.sleep(args.cancel_settle_ms / 1000)
+
+            start = time.perf_counter_ns()
+            connection.cancel_safe(timeout=5.0)
+            cancelReturned = time.perf_counter_ns()
+            thread.join(10.0)
+            finished = time.perf_counter_ns()
+
+            if thread.is_alive():
+                raise AssertionError("cancellation benchmark query did not finish")
+            if queryErrors:
+                raise queryErrors[0]
+            if cancelled != ["QueryCanceled"]:
+                raise AssertionError(f"unexpected cancellation result: {cancelled!r}")
+
+            cancelCallSamples.append((cancelReturned - start) / 1_000_000)
+            cancelFinishSamples.append((finished - cancelReturned) / 1_000_000)
+            cancelTotalSamples.append((finished - start) / 1_000_000)
+            cancelExceptions.append(cancelled[0])
+
         resourcesAfter = processResources()
         requestsAfter = remoteRequests(connection)
         result["cancel"] = {
-            "seconds": finished - start,
-            "call_seconds": cancelReturned - start,
-            "query_finish_seconds": finished - cancelReturned,
-            "exception": cancelled[0] if cancelled else None,
-            "thread_alive": thread.is_alive(),
+            "iterations": args.cancel_iterations,
+            "call": summary(cancelCallSamples),
+            "query_finish": summary(cancelFinishSamples),
+            "total": summary(cancelTotalSamples),
+            "exceptions": cancelExceptions,
+            "thread_alive": False,
         }
-        addResources(result["cancel"], resourcesBefore, resourcesAfter)
+        addResources(result["cancel"], resourcesBefore, resourcesAfter, args.cancel_iterations)
         if (requestCount := remoteDelta(requestsBefore, requestsAfter)) is not None:
             result["cancel"]["remote_requests"] = requestCount
         result["resources_final"] = processResources()

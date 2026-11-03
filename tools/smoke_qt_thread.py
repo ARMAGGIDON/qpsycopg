@@ -21,21 +21,44 @@ def stage(name: str) -> None:
 
 def fatalConnectionSmoke(dsn: str) -> None:
     stage("fatal backend termination")
+    stage("fatal / connect victim")
     victim = psycopg.connect(dsn)
+    stage("fatal / connect killer")
     killer = psycopg.connect(dsn, autocommit=True)
+    errors: list[BaseException] = []
     try:
         pid = victim.info.backend_pid
+        stage("fatal / terminate backend")
         assert killer.execute("SELECT pg_terminate_backend(%s)", (pid,)).fetchone() == (True,)
-        try:
-            victim.execute("SELECT 1")
-        except psycopg.OperationalError:
-            pass
-        else:
-            raise AssertionError("terminated backend didn't break the connection")
+
+        stage("fatal / query terminated backend")
+
+        def queryVictim() -> None:
+            try:
+                victim.execute("SELECT 1")
+            except BaseException as error:
+                errors.append(error)
+
+        thread = threading.Thread(target=queryVictim, name="qt-thread-fatal-query", daemon=True)
+        thread.start()
+        thread.join(5.0)
+        if thread.is_alive():
+            transport = getattr(victim.pgconn, "_transport", None)
+            if transport is not None:
+                transport.kill()
+            thread.join(1.0)
+            raise AssertionError("terminated-backend query hung for more than 5 seconds")
+
+        assert len(errors) == 1, errors
+        assert isinstance(errors[0], psycopg.OperationalError), errors[0]
+        stage("fatal / verify broken")
         assert victim.broken
     finally:
+        stage("fatal / close victim")
         victim.close()
+        stage("fatal / close killer")
         killer.close()
+        stage("fatal / cleanup complete")
 
 
 def syncSmoke(dsn: str) -> None:

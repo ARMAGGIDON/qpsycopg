@@ -259,11 +259,13 @@ Validation and benchmark map
 
 ``tools/profile_qt_thread_short_query.py`` and
 ``tools/profile_qt_thread_short_query.ps1``
-    Diagnostic CPU attribution only: current ``qt-thread`` caller and worker
-    thread, upstream and fork direct controls, explicit worker dispatch/wait
-    phase accounting. The runner uses existing isolated benchmark venvs and
-    does not change the canonical v3 workload or any production runtime code.
-    Results are pending from the target Windows machine.
+    Diagnostic CPU attribution: upstream/fork direct/qt-thread warm SELECT
+    controls; separate process/caller CPU; worker dispatch/wait phase timers;
+    synthetic no-SQL status request as a control for handoff cost. The earlier
+    Python 3.13 cProfile attribution was rejected after producing negative
+    per-function CPU and cross-thread stack contamination. The replacement
+    uses only local inclusive timers; the Windows re-run is pending. Production
+    runtime and canonical paired v3 workload are unchanged.
 
 The canonical current baseline is ``baseline-v3``. Older ``initial`` and
 ``baseline-v2`` checkpoints used different benchmark definitions and must not be
@@ -326,8 +328,13 @@ When resuming in a new chat/session
 #. Treat ``optimized01`` as **retained**, not pending measurement.
 #. Do not restart the old qt-thread smoke blocker or previously rejected
    process-IPC/native-wait experiments.
-#. The standalone CPU attribution runner is staged but has not yet been run
-   on the target Windows machine. The next input is its profile ZIP.
+#. The first Windows CPU attribution ZIP was analysed: uninstrumented
+   thread process CPU is ~230 us/query with ~115 us in the caller and
+   ~115-120 us in other threads, but the cProfile function breakdown was
+   invalid (cross-thread stacks and negative self CPU).
+#. The updated phase-only runner at ``a4d11e37`` still needs one Windows
+   run. The next input is its new profile ZIP including no-SQL status RPC
+   control. Do not treat the invalid earlier profile as a dominant-cost proof.
 #. Continue in the current implementation chat until the bounded profiling
    decision is complete. Do not stack optimized02 or create a competing
    implementation path in another chat.

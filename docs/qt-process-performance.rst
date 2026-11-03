@@ -855,34 +855,118 @@ whole-boundary performance A/B remains
 necessary and still has a >=15 us paired
 process CPU/SELECT materiality screen.
 
+Native owned PGresult -- preflight passed, full-boundary A/B pending
+--------------------------------------------------------------------
+
+The corrected standalone C PGresult feasibility probe
+**PASSED** on Windows at commit
+§§c303749b6b1551901eb5fc7bf4c2bcaeb2f2ae56§§.
+Archive:
+§§qt-thread-native-result-preflight-20261103-225359-731.zip§§,
+SHA256 §§590ae47053e5b117d75ed596fceb23b71e50c78b37e97797162deac842b5145f§§.
+The archive contains a clean manifest, valid JSON and empty
+stderr; four cases all report complete success:
+
+* Native PGresult survives two SimpleQueue handoffs;
+  SELECT text/int/bool/NULL metadata, values and native
+  C Transformer match current snapshot/hybrid adaptation
+  with the same qt-thread cursor context.
+* FATAL_ERROR classification and SQLSTATE match,
+  **without** the prior invalid row decoding.
+* Server notice is preserved via snapshot inside
+  borrowed C callback and is not transmitted as
+  a stale native pointer.
+* Completed native result remains readable
+  **after PGconn.finish on its worker thread**;
+  double clear/garbage-collection succeed.
+
+This is a **basic standalone feasibility PASS**, not
+proof of full production semantics for pipeline, COPY,
+multi-result, worker health/parameter caching, error/
+notice delivery, cancellation, resource lifetime
+and non-C-worker fallback.
+
+One diagnostic **current-vs-native whole-result-boundary**
+A/B is now staged in
+§§tools/bench_qt_thread_native_result_boundary.py§§
+and §§tools/bench_qt_thread_native_result_boundary.ps1§§.
+The worker owns one native C PGconn and executes the
+same warmed §§PGconn.exec_params(b"SELECT 1", ())§§
+on every request. Both alternatives use identical
+two SimpleQueue handoffs, timeout checks and
+one qt-thread cursor adaptation context.
+Only the completed result handling differs:
+
+* snapshot control: native result metadata/values
+  packing via §§_snapshotResult§§, synthetic
+  PGresult reconstruction and fresh hybrid
+  Transformer;
+* native alternative: owned native C PGresult
+  crossing the response queue, fresh native C
+  Transformer and caller-side release.
+
+Both must produce exactly one row §§(1,)§§.
+This is a **result-boundary diagnostic**, not a
+full upstream/qt-thread execution comparison:
+the shared synchronous native PQexecParams operation
+does not implement asynchronous production dispatch,
+worker liveness/cache logic or other Psycopg
+behaviors. It tests neither end-to-end public
+semantics nor canonical benchmark v3.
+
+Four independent subprocess repeats (each with a
+fresh worker/PGconn) contain 12 five-block cycles
+of 1000 requests per block. Alternating
+§§S-N-S-N-S§§ and §§N-S-N-S-N§§ bracket two
+target blocks with three opposite-mode controls
+and balance ordering. Paired differences are
+**snapshot minus native** (positive favors
+native), interpolated using block midpoint
+timestamps. Collect process CPU/query as
+the primary metric, wall, caller/other CPU,
+context switches and within-cycle/across-repeat
+drift. A watchdog protects every subprocess.
+
+**Performance status: PENDING. No benchmark
+results or CPU savings have been observed.**
+The predeclared material screen requires at
+least +15 us paired process CPU/SELECT, with
+>=3/4 independent repeat medians at or above
+15 us, all repeats positive, median >3x
+between-repeat MAD and no mode/repeat showing
+>15% wall drift. If not met, REJECT the
+performance hypothesis and do not start
+§§optimized02§§. If met, separately review
+all remaining production semantic/lifetime
+invariants **before** any runtime design.
+No production code, C extension or v3
+benchmark has been edited.
+
 Next work
 ---------
 
-#. Sync the branch and execute one
-   **corrected feasibility preflight**
-   using the existing 40-second subprocess
-   watchdog. Do not repeat the invalid
-   FATAL_ERROR row-decoding variant::
+#. Run once in the synced Windows checkout::
 
-       .\tools\preflight_qt_thread_native_pgresult.ps1
+       .\tools\bench_qt_thread_native_result_boundary.ps1
 
-   Upload the new ZIP (manifest, results and
-   captured crash trace) to the current
-   Implementation chat. Do not rerun the
-   original silent preflight.
-#. Verify that SELECT and connection-finish
-   native/hybrid row parity, error SQLSTATE,
-   notice snapshotting, cross-thread
-   ownership and double clear all pass.
-   A further real native safety failure
-   or unlocalised crash means STOP;
-   no speculative repeated crash runs.
-#. Full native SELECT 1 A/B stays
-   prohibited until all ownership,
-   semantic and adaptation checks pass.
-   No optimized02 or production/v3 edit.
-#. After a completed STOP/feasibility
-   checkpoint, refresh the optimization
-   log, project map and performance notes;
-   request independent 00 Coordinator
-   review. Keep one runtime owner.
+   Preserve the resulting
+   ``test-results\qt-thread-native-boundary-ab-*.zip``.
+   Do not run canonical v3 or edit runtime.
+#. Inspect full manifest and all four
+   independent repeats, paired process
+   CPU/SELECT, wall/context switches,
+   noise and temporal drift. Verify
+   equal SQL work, result, queue
+   handoffs and cursor adaptation context.
+#. Apply the predeclared >=15 us
+   materiality screen to a valid A/B.
+   Document REJECT on insufficient
+   or unstable signal; positive
+   boundary-level signal is not an
+   accepted production candidate.
+#. Record completed evidence in
+   optimisation log, this performance
+   file and project map; return
+   the significant checkpoint to
+   existing ``00 Coordinator``
+   for independent review.

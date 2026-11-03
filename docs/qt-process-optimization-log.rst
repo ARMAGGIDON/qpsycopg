@@ -574,6 +574,81 @@ Record this completed significant profiling checkpoint for independent
 No ``optimized02`` candidate, semantic change or acceptance v3 run
 was created for this diagnostic.
 
+Enriched SimpleQueue echo -- Coordinator-approved diagnostic pending
+------------------------------------------------------------------
+
+At reviewed HEAD ``492ab431``, independent ``00 Coordinator`` returned
+**CONTINUE** for a *diagnostic-only* extension of the minimal echo experiment.
+The prior artifact ``qt-thread-echo-baseline-20261103-202519-685.zip``
+found ~18.96 us paired GET-minus-token wall latency, 8/8 positive pairs,
+but clear temporal drift. This residual is **not** a stable, removable
+allocation or dispatch cost.
+
+Standalone tools created for this bounded stage:
+
+* ``tools/bench_qt_thread_enriched_echo.py``: a synthetic worker with
+  **one** pair of ``SimpleQueue`` objects, a single worker thread and the
+  production-equivalent **timed** response get (0.1 seconds). It has
+  progressively enriched modes:
+
+  - ``bare`` -- identical token echo;
+  - ``envelope`` -- create the real ``Request`` and ``Response``
+    ``NamedTuple`` representations, return a fixed status;
+  - ``validation`` -- add worker request operation/member/object checks
+    and caller response ID/error/notices validation;
+  - ``bookkeeping`` -- add a *synthetic* object table/status lookup,
+    connection state check, notices handling, transport-like RLock,
+    pending-request guard, and existing ``_wire``/``_restore`` helpers;
+  - ``qpsycopg`` -- the unchanged real warmed qt-thread transport
+    ``GET status`` (no SQL).
+
+* ``tools/bench_qt_thread_enriched_echo.ps1``: runs the diagnostic
+  under the existing isolated fork benchmark venv / local .env,
+  collects machine-readable output and SHA/HEAD manifest, and preserves
+  a ``qt-thread-enriched-echo-*.zip`` even if the diagnostic fails.
+
+**Temporal-drift controls:** four independent *subprocess* repetitions
+by default, each with a fresh connection and synthetic worker.
+Within every repetition, 16 cycles each contain six **short**
+600-call blocks: ``bare-before``, four enriched/real modes in
+rotating/reversed balanced order, and ``bare-after``. Each mode
+receives 250 pre-warmup calls per repetition. For each mode,
+interpolate the surrounding bare controls using the **actual
+block midpoint timestamps**, not ordinal position. Report paired
+residuals for each mode, incremental enriched-stage differences,
+median/MAD/range and counts by cycle **and** independent-repeat
+medians. Track the bare before/after control slope, bracket drift
+and repeats with >15% absolute baseline drift.
+
+**Inference limits:** the enriched code is deliberately a Python
+**analogue** of selected qpsycopg branches, not the actual worker:
+its fake status lookup/validation/notices and empty argument
+conversions do not reproduce all real libpq, transport,
+cache or scheduling costs. Nested/checking costs may interact.
+Even a consistently positive incremental stage cost is **not**
+automatically removable or semantically safe. Cross-host CPU
+comparisons are unreliable at sub-microsecond scale on Windows;
+CPU and context-switch deltas support, but do not replace,
+paired wall evidence. The test also cannot establish a SQL
+query speedup.
+
+**Status: diagnostic tool staged, no Windows result yet.**
+This approval authorises measurement, not a runtime candidate;
+production, accepted ``optimized01``, rejected timed/untimed
+wait and benchmark v3 remain unchanged. Do not start ``optimized02``
+or reuse rejected native-wait, speculative WAIT-prefetch or
+snapshot/serialization microtuning without fresh evidence.
+
+After syncing the Windows checkout::
+
+    .\tools\bench_qt_thread_enriched_echo.ps1
+
+The next input is the generated ZIP in the current Implementation
+chat. The implementation owner must inspect completeness,
+multi-repeat drift and phase attribution, record a bounded result
+and then send the *completed* significant checkpoint to
+the existing ``00 Coordinator`` for independent review.
+
 Post-optimized01 priorities
 ---------------------------
 

@@ -618,83 +618,136 @@ Detailed per-repeat results, drift and SHA
 of the locally supplied ZIP are in
 :doc:`qt-process-optimization-log`.
 
-Real qt-thread no-SQL GET path attribution -- pending
-------------------------------------------------------
+Real qt-thread no-SQL GET path attribution -- complete
+----------------------------------------------------
 
-The previous enriched echo diagnosed repeatable synthetic
-representation/bookkeeping scale but did **not** identify a
-semantically removable operation in production. The
-``00 Coordinator`` reviewed it and approved **CONTINUE --
-real-path, diagnostic-only profiling** at
-``0fc10d668ac9166f07ae3a575049da7b4b14ccd1``.
-The new standalone tools are
-``tools/profile_qt_thread_get_real_path.py`` and
-``tools/profile_qt_thread_get_real_path.ps1``.
-The production qt-thread backend, accepted ``optimized01``
-and canonical paired benchmark v3 have not been changed.
+The Coordinator-authorised real-path diagnostic
+``qt-thread-real-get-profile-20261103-213627-044.zip``
+was captured on Windows Python 3.13.5,
+``feature/qt-process-pq`` at
+``1c11f6525bfc75e3db27aeeae65c0498a56df4cd``.
+It contains 4 independent subprocess repeats,
+12 short five-block cycles/repeat, 1200 real
+no-SQL GET status calls per block and an
+empty stderr log. All 48 cycles and twelve
+expected phase-call invariants passed:
+115,200 profiled and 172,800 unwrapped
+control GETs, excluding warmups.
+No production runtime or canonical v3
+benchmark code was changed.
 
-The Python diagnostic creates two real, warmed qt-thread
-connections per independent subprocess: one untouched
-GET-status control connection, and one instrumented
-connection with temporary local phase clocks and worker
-queue observers. Each cycle executes five short blocks:
-``clean-profiled-clean-profiled-clean``.
-The two profiled blocks are compared against neighboring
-clean controls interpolated by actual block midpoint
-time. Defaults are four independent subprocess repeats,
-12 cycles/repeat, 1200 calls/block and 90-second watchdog.
-Per-block wall, process/caller CPU and context switches,
-per-phase call counts, and pooled phase timing per repeat
-are available in the resulting JSON ZIP.
+In each cycle two instrumented GET blocks
+were bracketed by three clean GET controls
+on a separate real qt-thread connection.
+The target connection used temporary
+local method clocks and queue observers
+with the original worker ``_run`` logic.
+Control-to-profiled differences therefore
+include **instrumentation and connection
+differences**, not removable runtime work.
 
-The actual operations measured include caller request,
-``_perform``, ``_dispatch``, ``_responseValue``,
-``_wire`` and ``_restore``; worker pool/base
-``_handle``, ``_normalize``,
-``_connectionReady``, ``_connectionBroken`` and
-an active worker ``_run`` turn (from request receipt
-to immediately before response publication).
-All phases are **inclusive** and may nest or overlap;
-the worker turn excludes idle queue wait and the
-response queue publication/wakeup itself.
+Clean, profiled and paired wall-time
+(above local interpolated clean controls)
+across independent repeats, us/GET::
 
-There is **instrumentation bias**: the clean and profiled
-samples use separate real connections/workers, and the
-profiled connection has queue proxies and method
-wrappers. Do not subtract inclusive timers to claim
-precise avoidable CPU or treat instrumented latency
-as a v3 acceptance metric. Windows thread CPU
-quantization remains an important limitation;
-pooled repeated phase counts and independent
-replication are preferred. The previous invalid
-cross-thread cProfile, failed timed/untimed
-SimpleQueue wait, native worker socket wait,
-speculative WAIT prefetch and generic snapshot
-tuning must not be repeated without new evidence.
+    repeat                         1       2       3       4
+    clean block median          30.999  30.266  30.079  29.878
+    profiled block median       50.752  49.063  49.178  48.248
+    paired profiled - clean     18.082  18.348  18.740  18.270
+    clean start/end drift       +2.51%  -4.25% +61.18%  -5.04%
 
-**Status: measured results pending on Windows; no
-``optimized02`` candidate.** The decision gate is
-one concrete actual-code, falsifiable and
-semantically safe hypothesis, or a documented
-absence of an actionable target.
+All 96 paired profiled blocks were positive.
+The independent-repeat median instrumentation
+difference is +18.309 us/GET (MAD 0.133 us).
+Repeat 3 had a severe +61.18% clean baseline
+drift, and multiple repeats had transient
+within-cycle spikes. Bracketing reduces
+linear drift but cannot eliminate
+nonstationary system scheduling effects.
+
+Inclusive wall-time medians across
+four pooled independent repeats, us/GET::
+
+    caller request                    50.906
+      _perform                        48.311
+        _dispatch                     38.412
+      _responseValue                   3.504
+        _restore                       0.991
+      _wire                            1.820
+    active worker _run turn           14.137
+      worker pool _handle              6.264
+        worker base _handle            3.965
+          worker _normalize           1.298
+      worker _connectionReady          0.816
+      worker _connectionBroken         1.018
+
+These durations overlap and include
+profiling overhead; the indentation
+does not imply an additive wall budget.
+In particular, dispatch includes
+waiting for the worker, while active
+_run-turn excludes idle waiting and
+response queue publication. The
+instrumented request's ~51 us wall
+exceeds the ~30 us unwrapped control,
+so attributing 38 us dispatch wall
+to production overhead would be wrong.
+
+**Windows CPU attribution is inadequate
+at individual method scale.** Across
+all four pooled repeats, worker
+handle/normalize/health-check methods
+and caller wire/restore/response-value
+recorded 0 us inclusive thread CPU
+despite nonzero wall-time. The
+worker turn yielded 0 or ~0.543 us CPU
+per GET, demonstrating coarse
+thread-clock quantization. The
+profiled-clean process CPU excess
+is about 13-20 us/GET but also
+includes instrumentation. Context
+switches differed by only ~0.007
+per call; no additional queue
+handoff was demonstrated.
+
+**Decision: diagnostic COMPLETE, NO
+ACTIONABLE RUNTIME TARGET.** The
+experiment correctly captured
+actual-code phase counts and
+nested wall intervals but found
+no defensible exclusive, avoidable
+operation whose removal preserves
+worker exit, close, errors,
+cancellation and public Psycopg
+semantics. The previously rejected
+timed/untimed response wait,
+worker-native wait, speculative
+WAIT prefetch and serialization/
+snapshot approaches remain rejected.
+``optimized01`` stays **RETAIN**.
+No speculative ``optimized02``, smoke
+or v3 acceptance benchmark should
+be initiated on this evidence.
+The optimization log records
+the local-only ZIP SHA256 and
+details of all repeats.
 
 Next work
 ---------
 
-#. Run ``.\tools\profile_qt_thread_get_real_path.ps1``
-   after syncing ``feature/qt-process-pq`` on the
-   Windows development machine. Preserve the ZIP,
-   including manifest, results and diagnostic errors.
-#. Examine all independent repeats, control drift,
-   paired clean/profiled deltas, phase call-count
-   invariants, inclusive worker/caller wall and
-   accumulated thread CPU. Do not infer precision
-   where clocks or instrumentation are too noisy.
-#. Update optimisation/performance evidence and
-   project-map handoff with the actual measured
-   result and explicit single-hypothesis/no-target
-   decision. Preserve public Psycopg and worker
-   liveness/cancellation semantics.
-#. Only then request independent
-   ``00 Coordinator`` review. No Scout/new
-   implementation owner is needed at present.
+#. Route this completed measured negative
+   checkpoint to the existing ``00 Coordinator``
+   for independent review and decision
+   whether the qpsycopg GET/echo line has
+   reached an attribution plateau.
+#. Do not extend the local synthetic/
+   instrumented profiling sequence
+   without a new falsifiable target;
+   Coordinator may choose an alternative
+   bounded investigation or Scout.
+#. Any new runtime candidate must first
+   demonstrate a plausible semantic
+   invariant and local measured benefit,
+   then pass qt-thread smoke and unchanged
+   paired v3 (CPU/query, cancellation,
+   Qt p95/p99, bulk, connect, resources).

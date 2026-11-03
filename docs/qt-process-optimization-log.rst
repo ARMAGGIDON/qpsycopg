@@ -188,8 +188,73 @@ lower connected-state thread/handle/resource counts before the first query. Shor
 query latency is not the primary target of this change because cancellation
 support is intentionally established before the first query and then reused.
 
-The next required checkpoint is ``optimized01`` using the unchanged v3 benchmark
-hash. Retain or revert this change only after comparing it with ``baseline-v3``.
+Measured optimized01 result -- RETAIN
+--------------------------------------
+
+Checkpoint ``optimized01`` was measured at commit
+``7c781a97a58572ffb98155961e5d4f279ee683ba`` (the runtime implementation
+was already present; intervening commits updated documentation/coordination).
+The archive is ``qpsycopg-benchmark-20261103-182119-072-optimized01.zip``.
+It contains all six SQL rounds and five Qt rounds for each mode. The
+``smoke-thread.log`` finishes with ``qpsycopg qt-thread smoke test: OK``.
+
+The upstream comparison revision, benchmark hash
+``ee425499c962b48a6c1851732cc3db642aba03dd6bcb4388f9d25cf5b2f67ead``,
+reference key ``99356800e90a-1f8854bb9581``, Python/libpq versions and
+v3 workload match the ``baseline-v3`` before-state.
+
+Primary qt-thread connection results (median paired fork/upstream ratio)::
+
+    metric                      baseline-v3   optimized01
+    cold connect                  1.366x        1.053x
+    warm connect median           1.409x        1.319x
+    warm connect p95              1.930x        1.291x
+    SELECT 1 median               1.273x        1.262x
+    CPU/short query               2.000x        2.429x
+    100k total                    1.027x        1.063x
+    RSS                           1.320x        1.330x
+    private memory                1.377x        1.400x
+    Qt timer p95                  0.982x        1.035x
+    Qt timer p99                  1.008x        1.058x
+
+Connected-state architecture resource deltas versus current upstream::
+
+    metric                      baseline-v3   optimized01
+    extra processes                    +0            +0
+    extra threads                      +2            +1
+    extra handles                     +14            +8
+
+Decision: **RETAIN optimized01**. The targeted signal is credible: warm
+connection median improves from ``1.409x`` to ``1.319x`` (about 6.4%
+lower ratio), warm p95 from ``1.930x`` to ``1.291x``, and the exact
+expected lifecycle resource reductions are observed (-1 thread and -6 handles).
+Warm-connection paired-ratio MAD is approximately 0.87% in optimized01 versus
+4.31% in baseline-v3. The first cold connect is noisy and is not used alone
+for acceptance. Process implementation and fork direct remain controls.
+
+There is no demonstrated short-query latency win, and no demonstrated RSS/private
+memory win. Unrelated watch items must remain visible:
+
+* CPU per short query moves from ``2.000x`` to ``2.429x``. The two runs'
+  per-round ranges overlap substantially (baseline ``1.556-2.649x``,
+  optimized01 ``1.955-3.000x``), and the change does not establish a
+  causal regression; nevertheless it is a guardrail for the next targeted
+  investigation, not something to claim away.
+* Cancellation-call median moves from ``1.048x`` to ``1.553x``, with
+  optimized01 paired MAD about 19% and range ``0.979-3.201x``. Cancellation
+  succeeds in the semantic smoke; no reliable cancellation-latency conclusion
+  follows from these noisy medians.
+* Qt p95/p99 and bulk totals move modestly across the two checkpoints. Their
+  jitter/ranges do not support a claim of benefit or a proven regression.
+* The connected-state memory level remains about 51 MiB RSS and 37 MiB private
+  for qt-thread. Removing a control thread/socket does not necessarily reduce
+  the allocator's resident footprint.
+
+No runtime changes were stacked onto the measured implementation. The next
+bounded step is to isolate remaining qt-thread *short-query CPU/latency* cost
+with path-level evidence and one local hypothesis, while preserving the
+optimized01 lifecycle and monitoring its CPU/cancellation guardrails.
+
 
 Optimisation order after optimized01
 ------------------------------------

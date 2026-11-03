@@ -12,6 +12,11 @@ Run in a subprocess: native extension failures can terminate the interpreter.
 from __future__ import annotations
 
 import argparse
+import faulthandler
+
+# Enable native crash traceback even if import of a C extension faults.
+faulthandler.enable(all_threads=True)
+
 import gc
 import json
 import os
@@ -34,6 +39,11 @@ try:
     from psycopg_c import _psycopg as native_fast
 except ImportError as ex:
     raise RuntimeError("native C Transformer is not importable") from ex
+
+
+def trace(stage: str) -> None:
+    # This is a forensic preflight, not a timing benchmark. Never log the DSN.
+    print(f"NATIVE_PREFLIGHT_STAGE {stage}", file=sys.stderr, flush=True)
 
 
 def describe_result(res: Any) -> dict[str, Any]:
@@ -70,7 +80,9 @@ def dispatch_worker(dsn: str, requests: queue.SimpleQueue,
     """The only thread allowed to use PGconn, including finish()."""
     conn: Any = None
     try:
+        trace("worker: before native PGconn.connect")
         conn = native_pq.PGconn.connect(dsn.encode("utf-8"))
+        trace("worker: after native PGconn.connect")
         if int(conn.status) != int(psycopg.pq.ConnStatus.OK):
             raise RuntimeError(f"native PGconn not OK: {conn.get_error_message()}")
 
@@ -81,8 +93,10 @@ def dispatch_worker(dsn: str, requests: queue.SimpleQueue,
             # libpq provides a borrowed callback PGresult; COPY it here.
             # Never enqueue this native wrapper: the native callback clears
             # its pointer immediately after returning.
+            trace("worker: borrowed notice callback entered")
             borrowed.append(res)
             notices.append(pool._snapshotResult(res))
+            trace("worker: borrowed notice snapshot complete")
 
         conn.notice_handler = on_notice
         while True:
@@ -95,34 +109,48 @@ def dispatch_worker(dsn: str, requests: queue.SimpleQueue,
 
             notices.clear()
             borrowed.clear()
+            trace(f"worker: before exec {kind} ({len(sql)} bytes)")
             result = conn.exec_(sql)
+            trace("worker: after exec")
             snapshot = pool._snapshotResult(result)
+            trace("worker: after snapshot")
             borrowed_invalid = all(x.pgresult_ptr is None for x in borrowed)
             if kind == "query_finish":
                 # Confirm result ownership does not depend on live PGconn.
+                trace("worker: before PGconn.finish with result alive")
                 conn.finish()
                 conn = None
+                trace("worker: after PGconn.finish with result alive")
+            trace("worker: before queue response put")
             responses.put({
                 "ok": True, "native": result, "snapshot": snapshot,
                 "notices": tuple(notices),
                 "notice_borrowed_invalidated": borrowed_invalid,
                 "worker_finished_connection": kind == "query_finish",
             })
+            trace("worker: after queue response put")
             if kind == "query_finish":
                 return
     except BaseException as ex:
+        trace(f"worker: Python exception {type(ex).__name__}")
         responses.put({
             "ok": False, "exception": f"{type(ex).__name__}: {ex}",
         })
     finally:
         if conn is not None:
+            trace("worker: final PGconn.finish")
             conn.finish()
+        trace("worker: exiting")
 
 
 def decode_same_context(native: Any, snap: ResultSnapshot, cursor: Any) -> dict:
+    trace("caller: before synthetic PGresult construction")
     synthetic = process_pq.PGresult(snap)
+    trace("caller: before native metadata read")
     native_values = describe_result(native)
+    trace("caller: before synthetic metadata read")
     snapshot_values = describe_result(synthetic)
+    trace("caller: after metadata read")
     if native_values != snapshot_values:
         fields = {
             key: {"native": str(native_values[key]), "snapshot": str(snapshot_values[key])}
@@ -140,13 +168,20 @@ def decode_same_context(native: Any, snap: ResultSnapshot, cursor: Any) -> dict:
         ):
             raise AssertionError("native/snapshot SQLSTATE exception parity failed")
 
+    trace("caller: before native C Transformer construction")
     c_tx = native_fast.Transformer(cursor)
+    trace("caller: before native C Transformer.set_pgresult")
     c_tx.set_pgresult(native)
+    trace("caller: before hybrid Transformer construction")
     hybrid_tx = adapt.Transformer(cursor)
+    trace("caller: before hybrid Transformer.set_pgresult")
     hybrid_tx.set_pgresult(synthetic)
     nrows = int(native.ntuples)
+    trace("caller: before native C Transformer.load_rows")
     c_rows = c_tx.load_rows(0, nrows, tuple)
+    trace("caller: before hybrid Transformer.load_rows")
     hybrid_rows = hybrid_tx.load_rows(0, nrows, tuple)
+    trace("caller: after row loads")
     if c_rows != hybrid_rows:
         raise AssertionError(f"native/hybrid decoded rows differ: {c_rows!r} != {hybrid_rows!r}")
     if nrows and c_tx.load_row(0, tuple) != hybrid_tx.load_row(0, tuple):
@@ -154,10 +189,14 @@ def decode_same_context(native: Any, snap: ResultSnapshot, cursor: Any) -> dict:
 
     # Drop Transformer references before explicit clear: no consumer may
     # dereference a cleared PGresult (the same contract as upstream C).
+    trace("caller: before Transformer deletion and GC")
     del c_tx, hybrid_tx
     gc.collect()
+    trace("caller: before first native PGresult.clear")
     native.clear()
+    trace("caller: before second native PGresult.clear")
     native.clear()
+    trace("caller: after second native PGresult.clear")
     if native.pgresult_ptr is not None:
         raise AssertionError("native PGresult.clear() did not release its pointer")
     del native
@@ -174,6 +213,7 @@ def decode_same_context(native: Any, snap: ResultSnapshot, cursor: Any) -> dict:
 
 
 def run_child(dsn: str) -> dict:
+    trace("child: entered after imports")
     if psycopg.pq.__impl__ != "qt-thread":
         raise RuntimeError(f"expected qt-thread, got {psycopg.pq.__impl__!r}")
     if thread_pq._workerPq.PGresult is not native_pq.PGresult:
@@ -187,7 +227,9 @@ def run_child(dsn: str) -> dict:
         target=dispatch_worker, args=(dsn, requests, responses),
         daemon=True, name="native-pgresult-preflight-worker",
     )
+    trace("child: before worker.start")
     worker.start()
+    trace("child: after worker.start")
     results: dict[str, Any] = {}
     tests = (
         ("select", "query", b"SELECT 1::int4 AS one, NULL::text AS missing, "
@@ -196,14 +238,19 @@ def run_child(dsn: str) -> dict:
         ("notice", "query", b"DO $$BEGIN RAISE NOTICE 'qpsycopg preflight'; END$$"),
         ("connection_finished", "query_finish", b"SELECT 17::int4 AS retained"),
     )
+    trace("child: before context psycopg.connect")
     with psycopg.connect(dsn) as context_conn:
+        trace("child: before context cursor creation")
         with context_conn.cursor() as cursor:
+            trace("child: after context cursor creation")
             for name, kind, sql in tests:
+                trace(f"child: starting case {name}")
                 requests.put((kind, sql))
                 try:
                     answer = responses.get(timeout=12)
                 except queue.Empty as ex:
                     raise RuntimeError(f"worker did not answer {name}") from ex
+                trace(f"child: received response for {name}")
                 if not answer.get("ok"):
                     raise RuntimeError(f"worker failed {name}: {answer}")
                 native = answer["native"]
@@ -223,12 +270,16 @@ def run_child(dsn: str) -> dict:
                         if not isinstance(notice, ResultSnapshot):
                             raise AssertionError("notice must be snapshotted before callback returns")
 
+                trace(f"child: before decode parity {name}")
                 detail = decode_same_context(native, snap, cursor)
+                trace(f"child: passed decode parity {name}")
                 detail["notice_snapshots"] = len(notices)
                 detail["worker_finished_connection"] = answer["worker_finished_connection"]
                 results[name] = detail
 
+    trace("child: before worker.join")
     worker.join(timeout=12)
+    trace("child: after worker.join")
     if worker.is_alive():
         raise RuntimeError("native worker did not terminate")
     if results["select"]["decoded_rows"] != "[(1, None, 'qpsycopg', True)]":

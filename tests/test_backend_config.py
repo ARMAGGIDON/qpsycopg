@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import os
 import sys
+import importlib
 import subprocess
 from pathlib import Path
+
+import pytest
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "psycopg"
 
@@ -111,5 +114,63 @@ def test_backend_remains_fixed_after_environment_changes(tmp_path):
         "import psycopg as again; "
         "assert again is psycopg; "
         "assert (pq.__impl__, psycopg.Connection, psycopg.connect) == before",
+    )
+    assert result.returncode == 0, result.stderr
+
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="Windows DLL bootstrap only"
+)
+def test_windows_dll_directory_registered_before_pq(tmp_path):
+    bin_dir = tmp_path / "pgsql" / "bin"
+    bin_dir.mkdir(parents=True)
+    result = _run(
+        tmp_path,
+        "import os, psycopg; from psycopg import _qt_backend_config; "
+        "assert len(_qt_backend_config._DLL_DIR_HANDLES) == 1; "
+        "assert os.environ['PATH'].split(os.pathsep)[0] == os.path.realpath("
+        "os.environ['PSYCOPG_PG_ROOT'] + os.sep + 'bin')",
+        settings={"PSYCOPG_IMPL": "python", "PSYCOPG_PG_ROOT": str(bin_dir.parent)},
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="Windows DLL bootstrap only"
+)
+def test_windows_invalid_pg_root_fails_early(tmp_path):
+    result = _run(
+        tmp_path,
+        "import psycopg",
+        settings={
+            "PSYCOPG_IMPL": "python",
+            "PSYCOPG_PG_ROOT": str(tmp_path / "missing"),
+        },
+    )
+    assert result.returncode != 0
+    assert "PSYCOPG_PG_ROOT/bin not found" in result.stderr
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("PySide6") is None,
+    reason="Qt backend tests require PySide6",
+)
+@pytest.mark.parametrize("impl", ["qt-process", "qt-thread"])
+def test_dotenv_selects_qt_backends(tmp_path, impl):
+    (tmp_path / ".env").write_text(
+        f"PSYCOPG_IMPL={impl}\\nQPSYCOPG_WORKER_IMPL=python\\n",
+        encoding="utf-8",
+    )
+    result = _run(
+        tmp_path,
+        f"import psycopg; assert psycopg.pq.__impl__ == {impl!r}; "
+        "assert psycopg.Connection.__module__ == 'psycopg.connection_qt_process'",
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_no_env_file_uses_upstream_default(tmp_path):
+    result = _run(
+        tmp_path,
+        "import psycopg; assert psycopg.pq.__impl__ in ('c', 'binary', 'python')",
     )
     assert result.returncode == 0, result.stderr

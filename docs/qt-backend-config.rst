@@ -9,7 +9,7 @@ separate from ``feature/qt-process-pq`` performance experiments. It is
 proposed for Coordinator review before integration.
 
 Application ``.env``
-----------------------
+--------------------
 
 At a normal ``import psycopg``, qpsycopg reads an optional ``.env`` from the
 **current working directory**. ``QPSYCOPG_ENV_FILE`` can select another file;
@@ -55,10 +55,13 @@ can therefore use ordinary Python before importing psycopg::
 
     import psycopg
 
-The ``pq`` implementation and dependent generator/transformer/connection
+The selected top-level ``pq`` implementation and its dependent
 classes are **fixed during import**, before any connection is created.
-Subsequent edits to ``os.environ`` or ``.env`` do not change that selected
-backend. Repeated imports reuse the existing module; a changed ``.env``
+Subsequent edits to ``PSYCOPG_IMPL`` or the application ``.env`` do not
+change that selected backend. The worker backend for ``qt-thread`` is
+loaded at import; ``qt-process`` currently reads its worker setting when
+starting a subprocess, so modifying ``QPSYCOPG_WORKER_IMPL`` later is not
+a supported reconfiguration mechanism. Repeated imports reuse the existing module; a changed ``.env``
 takes effect in a fresh interpreter. Use one backend per interpreter, not
 per-connection switching.
 

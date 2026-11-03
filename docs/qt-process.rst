@@ -118,8 +118,9 @@ fallback opens it on demand.
 ``psycopg.pq._qt_thread_lazy``: connection creation does not eagerly construct the
 cancel-control infrastructure; the first normal send opens it immediately before
 the query is handed to the worker thread, and ``cancel_safe()`` retains an
-on-demand fallback. This is the current ``optimized01`` change and is awaiting
-measurement against ``baseline-v3``.
+on-demand fallback. This ``optimized01`` change was retained after paired v3 measurement:
+warm connection latency and connected-state thread/handle counts improved,
+and the qt-thread semantic smoke remained clean.
 
 qt-thread architecture and status
 ---------------------------------
@@ -230,6 +231,10 @@ optimises ``qt-thread``. The thread backend is smoke-clean and its bulk path is
 near upstream. The current accepted optimisation sequence is recorded in
 :doc:`qt-process-optimization-log`.
 
-At current HEAD ``optimized01`` (lazy qt-thread cancellation setup) is implemented
-but not yet accepted: it must be measured with the unchanged v3 benchmark against
-``baseline-v3`` before another runtime optimisation is stacked on top of it.
+The ``optimized01`` lazy cancellation lifecycle is retained: warm-connect
+median improved from 1.409x to 1.319x upstream and the connected-state
+qt-thread overhead fell by one thread and six handles, with a passing semantic
+smoke. The next bounded stage investigates remaining qt-thread short-query
+CPU/latency cost. CPU and cancellation latency remain guardrails because their
+observed ratios were noisy; see :doc:`qt-process-optimization-log` for the
+measured decision.

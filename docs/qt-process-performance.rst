@@ -382,37 +382,41 @@ and preserved semantic smoke. Do not stack another unrelated runtime change
 before a bounded short-query profiling hypothesis is chosen. Full numbers,
 method and historical drift are in :doc:`qt-process-optimization-log`.
 
-Current CPU profiling stage -- diagnostic instrumentation, no runtime change
--------------------------------------------------------------------------
+Current CPU profiling stage -- evidence and revised diagnostic
+-----------------------------------------------------------
 
-The accepted ``optimized01`` SQL archive exposes an end-to-end CPU gap, not
-yet a dominant internal CPU phase. Median absolute CPU per short query across
-its archived runs was roughly ``119 us`` upstream, ``122 us`` fork direct and
-``266 us`` qt-thread; corresponding SELECT medians were ``534/534/677 us``,
-and context switches were about ``1/1/3`` per call. These raw medians are
-orienting values; paired ratios and noise remain in
-:doc:`qt-process-optimization-log`.
+The canonical ``optimized01`` v3 benchmark first established a
+short-query CPU/latency gap. The subsequent Windows CPU archive
+``qt-thread-cpu-profile-20261103-191710-778.zip`` (two rounds per
+upstream C, fork direct C and qt-thread) has clean, pre-instrumentation
+controls with process CPU/query ranges of ``93.8-114.6 us``,
+``88.5-109.4 us``, and ``229.2-234.4 us`` respectively.
+Qt-thread caller CPU is about ``114.6 us/query``; subtracting it
+from process CPU yields approximately ``115-120 us/query`` in
+other threads. Context switches/query are about ``1/1/3``.
 
-A source comparison identifies the thread-only chain: deferred send,
-``Request`` construction, ``SimpleQueue`` handoff, worker
-``_handle/_executePending/_wait``, ``Response`` construction and parent
-``_responseValue``. This code path is an extra cost candidate, **not**
-proof that protocol object allocation rather than libpq wait dominates.
+This shows that the added worker execution is a substantial *CPU ownership*
+difference. It does not isolate a dominant worker function or prove that
+request/response allocations cause the extra cost.
 
-To avoid speculative edits, the branch now contains a standalone diagnostic
-probe: ``tools/profile_qt_thread_short_query.py`` plus
-``tools/profile_qt_thread_short_query.ps1``. They compare existing isolated
-upstream, fork direct and qt-thread installations, with a warm uninstrumented
-control and a separately profiled caller/worker pass using CPU-clock cProfile
-and explicit dispatch/worker/wait phase counters. The profiling hooks change
-the cost of the instrumented pass and must not be used for benchmark acceptance.
-The unchanged adjacent-paired v3 workload remains the performance gate.
+The original detailed ``cProfile`` report is invalid: the sequential
+Python 3.13 worker profile includes caller frames and impossible negative
+self-CPU values. These function rankings must **not** drive optimisation
+decisions. The failure is recorded in :doc:`qt-process-optimization-log`.
 
-Profiling has **not** yet run on the target Windows host. Until its results
-identify a dominant cost and falsifiable hypothesis, no ``optimized02`` runtime
-modification is authorised by measurement. Retain the accepted ``optimized01``
-lifecycle and continue guarding CPU/query, cancellation, Qt p95/p99, bulk and
-connection/resource metrics.
+The standalone tool ``tools/profile_qt_thread_short_query.py`` was revised
+in commit ``a4d11e37`` to replace cross-thread ``cProfile`` with
+thread-local inclusive phase wall/CPU counters and clean controls. It now
+also measures synthetic worker PGconn-status ``Operation.GET``
+request/response cost **without libpq socket wait**, against direct
+status access, to distinguish fixed handoff cost from SQL execution.
+Instrumented inclusive timings overlap and cannot be treated as additive
+CPU costs. The unchanged v3 benchmark remains the acceptance gate.
+
+The revised diagnostic has not yet run on the target Windows system.
+No specific function is confirmed dominant and no ``optimized02``
+runtime change is justified yet. Maintain CPU/query, cancellation,
+Qt p95/p99, bulk, connection and resource metrics as guardrails.
 
 Performance rules for future work
 ---------------------------------

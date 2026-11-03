@@ -382,6 +382,38 @@ and preserved semantic smoke. Do not stack another unrelated runtime change
 before a bounded short-query profiling hypothesis is chosen. Full numbers,
 method and historical drift are in :doc:`qt-process-optimization-log`.
 
+Current CPU profiling stage -- diagnostic instrumentation, no runtime change
+-------------------------------------------------------------------------
+
+The accepted ``optimized01`` SQL archive exposes an end-to-end CPU gap, not
+yet a dominant internal CPU phase. Median absolute CPU per short query across
+its archived runs was roughly ``119 us`` upstream, ``122 us`` fork direct and
+``266 us`` qt-thread; corresponding SELECT medians were ``534/534/677 us``,
+and context switches were about ``1/1/3`` per call. These raw medians are
+orienting values; paired ratios and noise remain in
+:doc:`qt-process-optimization-log`.
+
+A source comparison identifies the thread-only chain: deferred send,
+``Request`` construction, ``SimpleQueue`` handoff, worker
+``_handle/_executePending/_wait``, ``Response`` construction and parent
+``_responseValue``. This code path is an extra cost candidate, **not**
+proof that protocol object allocation rather than libpq wait dominates.
+
+To avoid speculative edits, the branch now contains a standalone diagnostic
+probe: ``tools/profile_qt_thread_short_query.py`` plus
+``tools/profile_qt_thread_short_query.ps1``. They compare existing isolated
+upstream, fork direct and qt-thread installations, with a warm uninstrumented
+control and a separately profiled caller/worker pass using CPU-clock cProfile
+and explicit dispatch/worker/wait phase counters. The profiling hooks change
+the cost of the instrumented pass and must not be used for benchmark acceptance.
+The unchanged adjacent-paired v3 workload remains the performance gate.
+
+Profiling has **not** yet run on the target Windows host. Until its results
+identify a dominant cost and falsifiable hypothesis, no ``optimized02`` runtime
+modification is authorised by measurement. Retain the accepted ``optimized01``
+lifecycle and continue guarding CPU/query, cancellation, Qt p95/p99, bulk and
+connection/resource metrics.
+
 Performance rules for future work
 ---------------------------------
 
@@ -400,12 +432,14 @@ Performance rules for future work
 Next work
 ---------
 
-#. ``optimized01`` is retained. Its connection/resource target was measured
-   against ``baseline-v3``; no further benchmark-methodology revision is
-   justified by this checkpoint.
-#. Profile and isolate remaining qt-thread short-query CPU/latency cost using
-   a local, upstream-equivalent hypothesis, not speculative process IPC tuning.
-#. Keep CPU/query, cancellation, Qt p95/p99, bulk and resource counts as
-   guardrails. Do not claim CPU neutrality from the optimized01 checkpoint alone.
-#. Make the smallest safe candidate and run qt-thread smoke plus the unchanged
-   paired v3 benchmark before retain/revert and documentation update.
+#. On the target Windows benchmark machine run
+   ``.\tools\profile_qt_thread_short_query.ps1`` and examine its separate
+   upstream/direct/thread CPU-phase result ZIP.
+#. Identify one measured dominant stage and one falsifiable local hypothesis,
+   distinguishing Python CPU from wall-time libpq/scheduler waiting. Do not
+   draw acceptance conclusions from instrumented profile timings.
+#. Only then implement the smallest semantically safe candidate, run qt-thread
+   smoke and the unchanged v3 paired acceptance benchmark, inspect CPU/query,
+   cancellation, Qt p95/p99, bulk, connection/resources, and retain/revert.
+#. Update the optimisation log and this document. After a significant
+   completed checkpoint, request independent ``00 Coordinator`` review.

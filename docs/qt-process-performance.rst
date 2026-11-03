@@ -334,7 +334,7 @@ Current qt-thread/process bulk decode is near upstream. Do not spend another
 iteration here while short-query CPU/latency remains materially higher.
 
 Current numbered optimisation -- optimized01 (retained)
-------------------------------------------------------
+-------------------------------------------------------
 
 The first ``qt-thread`` change is a narrowly scoped cancellation-lifecycle
 optimisation. Instead of creating the cancellation-control server during
@@ -383,7 +383,7 @@ before a bounded short-query profiling hypothesis is chosen. Full numbers,
 method and historical drift are in :doc:`qt-process-optimization-log`.
 
 Qt-thread short-query CPU profiling checkpoint
--------------------------------------------
+----------------------------------------------
 
 The corrected diagnostic archive ``qt-thread-cpu-profile-20261103-192809-646.zip``
 was captured at ``9b0f7108`` with two rounds each of pristine upstream,

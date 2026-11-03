@@ -295,51 +295,62 @@ Established decisions / do not repeat blindly
 Immediate next work
 -------------------
 
-#. The bounded qt-thread short-query CPU profiling investigation is **complete**.
-   The corrected diagnostic archive
-   ``qt-thread-cpu-profile-20261103-192809-646.zip`` contains two valid
-   upstream/direct/qt-thread rounds at ``9b0f7108``. Production runtime
-   remains unchanged, and ``optimized01`` remains RETAIN.
-#. Clean qt-thread CPU is 250-255 us/SELECT, compared with fork direct
-   125-146 us. The no-SQL worker status GET costs 40-45 us wall and 36-47 us
-   process CPU per request, with about two extra context switches; its
-   ``_dispatch`` wait occupies approximately 35-39 us inclusive wall.
-   This is a measured **fixed thread handoff** cost, not a complete
-   decomposition of the 104-130 us SELECT CPU gap.
-#. ``_wait`` includes actual PostgreSQL socket waiting and nested timings
-   overlap. Upstream Windows itself uses Python ``select.select()``
-   rather than native ``wait_c``. Do not restart the rejected native
-   wait, speculative result prefetch, snapshot or serialization work.
-#. Next action belongs to the existing ``00 Coordinator`` chat:
-   independently review the completed diagnostic and decide whether the
-   following *single local hypothesis* merits a diagnostic-only A/B:
-   ``_ThreadTransport._dispatch`` uses
-   ``SimpleQueue.get(timeout=0.1)``, and its timed-response wait might
-   contribute >=10 us to the observed 35-39 us fixed handoff wall.
-   Compare timed vs untimed waits in a controlled **non-production**
-   no-SQL worker request, preserving a clear liveness/error criterion.
-#. If the hypothesis is not measurably supported, reject it without
-   creating ``optimized02``. A production untimed wait must never
-   silently lose fatal worker/close detection. If the Coordinator approves
-   a safe variant after local evidence, the implementation owner shall
-   run semantic smoke and unchanged paired benchmark v3 with CPU/query,
-   cancellation, Qt p95/p99, bulk, connect and resources as guardrails.
-#. A new Critic/Scout is **not required** by current evidence. Only one
-   implementation chat owns any subsequent runtime experiment.
+#. ``optimized01`` remains **RETAIN**. The short-query CPU attribution
+   investigation was completed and reviewed by the existing
+   ``00 Coordinator`` at checkpoint ``ae01f74f``.
+#. Coordinator decision: **CONTINUE**, authorising a *diagnostic-only*
+   timed-vs-untimed ``SimpleQueue.get()`` A/B for the fixed qt-thread
+   request/response handoff. No production runtime or canonical benchmark
+   v3 change is authorised by this decision.
+#. The implementation owner added
+   ``tools/bench_qt_thread_queue_wait.py`` and
+   ``tools/bench_qt_thread_queue_wait.ps1``. They compare the original
+   timed ``_dispatch`` response wait with a diagnostic untimed replica on
+   the **same warmed no-SQL PGconn status request path**. Eight pairs,
+   alternating order, 4000 calls/mode/pair by default. Clean wall,
+   process CPU, caller CPU and context-switch metrics plus per-pair
+   differences, median, MAD, range and positive-pair count are recorded.
+#. The main A/B runs in a watchdog-protected subprocess. Additional
+   subprocess/watchdog cases cover remote error propagation, normal
+   connection close/post-close requests and worker exit without response.
+   The raw untimed wait is expected to hang on worker exit; this is
+   explicit evidence of **unsafe production liveness**, not a passing
+   production safety design.
+#. Run ``.\tools\bench_qt_thread_queue_wait.ps1`` in the current Windows
+   checkout and upload the resulting ``qt-thread-queue-wait-ab-*.zip``
+   to the **current implementation chat**, not to Coordinator.
+#. Implementation owner must analyse the paired improvement against the
+   **predeclared >=10 us**, median >3*MAD and >=N-1 positive-pair
+   screen, plus CPU/context-switch and all liveness tests. If evidence
+   does not support the hypothesis, **REJECT**, document the result
+   and do not create ``optimized02``.
+#. If evidence is positive, first specify a *safe* runtime design
+   preserving worker exit/close/error detection. Do not install raw
+   blocking ``get()`` in production. Only a bounded candidate with
+   a credible safety argument may proceed through semantic smoke and
+   unchanged paired v3 benchmark, retaining/reverting by CPU/query,
+   SELECT latency, cancellation, Qt p95/p99, bulk, connect and resource
+   guardrails.
+#. After the significant bounded decision has been completed and
+   committed, route the results to the existing ``00 Coordinator``
+   for mandatory independent review. No Scout/second implementation
+   owner is needed.
 
 When resuming in a new chat/session
 -----------------------------------
 
-#. Read :doc:`qt-process`, this project map, :doc:`qt-process-performance`
-   and :doc:`qt-process-coordination`; inspect current HEAD and
-   :doc:`qt-process-optimization-log`.
-#. ``optimized01`` is retained, not pending measurement; semantic smoke
-   passed at that checkpoint. Do not repeat rejected experiments.
-#. The corrected CPU profiling archive was analysed, with the result
-   recorded in the optimisation log and performance notes. The invalid
-   Python 3.13 cProfile function rankings are rejected.
-#. This is a completed investigation checkpoint requiring independent
-   review by the **existing 00 Coordinator** before new optimisation
-   direction. The next action is coordinator review of the bounded
-   timed-vs-untimed thread-handoff diagnostic hypothesis, not an
-   implementation change and not another Windows profile rerun.
+#. Read :doc:`qt-process`, this project map,
+   :doc:`qt-process-performance` and :doc:`qt-process-coordination`;
+   inspect current branch HEAD and :doc:`qt-process-optimization-log`.
+#. Treat ``optimized01`` as retained. Do not repeat the invalid
+   cross-thread Python 3.13 cProfile or the rejected native-wait,
+   speculative WAIT-prefetch, snapshot/serialization experiments.
+#. The measured fixed no-SQL thread boundary is 40-45 us wall and
+   36-47 us CPU; it does not explain all SELECT CPU overhead.
+#. Coordinator has approved only the diagnostic queue-wait A/B; the
+   code is staged but **Windows results are pending**. The next
+   artifact is the A/B ZIP. Implementation owner keeps responsibility
+   until result analysis and documentation commit.
+#. Do not stack ``optimized02``, contact another implementation chat,
+   or request another Coordinator review merely because measurements
+   are pending.

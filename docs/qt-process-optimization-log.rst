@@ -256,6 +256,68 @@ with path-level evidence and one local hypothesis, while preserving the
 optimized01 lifecycle and monitoring its CPU/cancellation guardrails.
 
 
+CPU/short-query profiling checkpoint -- diagnostic probe pending
+--------------------------------------------------------------
+
+Coordinator decision at ``0ecd0377``: CONTINUE, but **do not start speculative
+optimized02**. The next bounded stage is attribution of the remaining
+``qt-thread`` warm short-query CPU/latency overhead versus pristine upstream
+and fork direct, using path-level evidence before choosing one local hypothesis.
+
+The existing ``optimized01`` v3 archive already isolates the broad
+architecture difference. Raw medians across its runs, not per-pair ratios, are
+approximately::
+
+    metric                     upstream    fork direct    qt-thread
+    CPU / SELECT 1              119 us        122 us       266 us
+    SELECT 1 median             534 us        534 us       677 us
+    context switches / query     1.00          1.00         3.04
+
+These are *end-to-end* observations, not a CPU phase decomposition. The
+upstream runs are repeated beside each fork mode; their raw median is included
+only for orientation. No Python allocator, worker dispatch or scheduling stage
+has yet been demonstrated to dominate.
+
+Code inspection identifies the warm thread-specific chain::
+
+    deferred send -> _ThreadTransport._fastExecute
+      -> Request -> _dispatch (SimpleQueue handoff)
+      -> Worker._handle -> _executePending (libpq + socket wait)
+      -> Response -> _responseValue (restore/cache)
+      -> normal cursor adaptation
+
+Direct upstream/fork C execution has no qpsycopg request/response worker
+boundary. A source-level difference is not a measured bottleneck.
+
+Diagnostic-only tools introduced for this bounded stage:
+
+* ``tools/profile_qt_thread_short_query.py`` profiles caller and worker
+  separately using ``cProfile(timer=time.thread_time)``, and collects
+  inclusive/exclusive CPU, call counts and bounded phase wall/CPU totals for
+  ``_fastExecute``, ``_dispatch``, ``_responseValue``,
+  ``Worker._handle``, ``_executePending`` and ``_wait``.
+* ``tools/profile_qt_thread_short_query.ps1`` runs upstream, fork direct and
+  qt-thread in alternating order using the **existing** isolated v3 benchmark
+  venvs and local libpq; a warm uninstrumented control precedes each
+  instrumented run. Output is a separate JSON ZIP under ``test-results``.
+* Profiling hooks and Python-level timing instrumentation deliberately perturb
+  the instrumented pass. Use that pass to identify dominant functions and
+  call counts, **not** for a new speed ratio or an optimisation acceptance
+  claim. The unchanged paired v3 benchmark remains the acceptance gate.
+* No production runtime code or v3 benchmark workload/hash was changed.
+
+Run from the local Windows checkout after fetching the latest branch::
+
+    .\tools\profile_qt_thread_short_query.ps1
+
+This checkpoint is **not yet measured** on the target Windows environment.
+After the profile ZIP is inspected, choose **one falsifiable local hypothesis**.
+Only then perform a small runtime A/B experiment, semantic smoke, unchanged
+paired v3 checkpoint, retain/revert and documentation update. CPU/query,
+cancellation latency, Qt p95/p99, bulk and connection/resource metrics are
+guardrails. Rejected process native-wait, worker receive, speculative WAIT
+result prefetch, AF_UNIX and snapshot/serialization tuning remain out of scope.
+
 Optimisation order after optimized01
 ------------------------------------
 

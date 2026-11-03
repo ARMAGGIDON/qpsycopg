@@ -158,7 +158,9 @@ def decode_same_context(native: Any, snap: ResultSnapshot, cursor: Any) -> dict:
         }
         raise AssertionError(f"native/snapshot metadata mismatch: {fields}")
 
-    if native_values["status"] == int(psycopg.pq.ExecStatus.FATAL_ERROR):
+    is_sql_error = native_values["status"] == int(psycopg.pq.ExecStatus.FATAL_ERROR)
+    if is_sql_error:
+        trace("caller: verifying SQL error parity (no row decoding)")
         native_error = psycopg.errors.error_from_result(native)
         snapshot_error = psycopg.errors.error_from_result(synthetic)
         if (
@@ -168,30 +170,46 @@ def decode_same_context(native: Any, snap: ResultSnapshot, cursor: Any) -> dict:
         ):
             raise AssertionError("native/snapshot SQLSTATE exception parity failed")
 
-    trace("caller: before native C Transformer construction")
-    c_tx = native_fast.Transformer(cursor)
-    trace("caller: before native C Transformer.set_pgresult")
-    c_tx.set_pgresult(native)
-    trace("caller: before hybrid Transformer construction")
-    hybrid_tx = adapt.Transformer(cursor)
-    trace("caller: before hybrid Transformer.set_pgresult")
-    hybrid_tx.set_pgresult(synthetic)
-    nrows = int(native.ntuples)
-    trace("caller: before native C Transformer.load_rows")
-    c_rows = c_tx.load_rows(0, nrows, tuple)
-    trace("caller: before hybrid Transformer.load_rows")
-    hybrid_rows = hybrid_tx.load_rows(0, nrows, tuple)
-    trace("caller: after row loads")
-    if c_rows != hybrid_rows:
-        raise AssertionError(f"native/hybrid decoded rows differ: {c_rows!r} != {hybrid_rows!r}")
-    if nrows and c_tx.load_row(0, tuple) != hybrid_tx.load_row(0, tuple):
-        raise AssertionError("native/hybrid load_row() differs")
-
+    # Psycopg BaseCursor._check_results() raises for FATAL_ERROR *before*
+    # set_pgresult/load_rows. Non-row-producing COMMAND_OK/DO results also
+    # have no rows to decode. The old probe incorrectly called the hybrid
+    # native bulk row decoder even for FATAL_ERROR/zero-column results:
+    # its load_rows(0, 0) crashed Windows with 0xC0000005. This is a
+    # diagnostic misuse, not evidence that cross-thread PGresult is invalid.
+    row_result = (
+        native_values["status"] == int(psycopg.pq.ExecStatus.TUPLES_OK)
+        and native_values["nfields"] > 0
+        and native_values["ntuples"] > 0
+    )
+    if row_result:
+        trace("caller: before native C Transformer construction")
+        c_tx = native_fast.Transformer(cursor)
+        trace("caller: before native C Transformer.set_pgresult")
+        c_tx.set_pgresult(native)
+        trace("caller: before hybrid Transformer construction")
+        hybrid_tx = adapt.Transformer(cursor)
+        trace("caller: before hybrid Transformer.set_pgresult")
+        hybrid_tx.set_pgresult(synthetic)
+        nrows = int(native.ntuples)
+        trace("caller: before native C Transformer.load_rows")
+        c_rows = c_tx.load_rows(0, nrows, tuple)
+        trace("caller: before hybrid Transformer.load_rows")
+        hybrid_rows = hybrid_tx.load_rows(0, nrows, tuple)
+        trace("caller: after row loads")
+        if c_rows != hybrid_rows:
+            raise AssertionError(
+                f"native/hybrid decoded rows differ: {c_rows!r} != {hybrid_rows!r}"
+            )
+        if c_tx.load_row(0, tuple) != hybrid_tx.load_row(0, tuple):
+            raise AssertionError("native/hybrid load_row() differs")
+        trace("caller: before Transformer deletion and GC")
+        del c_tx, hybrid_tx
+        gc.collect()
+    else:
+        trace("caller: skipping row decoding for non-row PGresult")
+        c_rows = []
     # Drop Transformer references before explicit clear: no consumer may
     # dereference a cleared PGresult (the same contract as upstream C).
-    trace("caller: before Transformer deletion and GC")
-    del c_tx, hybrid_tx
-    gc.collect()
     trace("caller: before first native PGresult.clear")
     native.clear()
     trace("caller: before second native PGresult.clear")
@@ -207,7 +225,9 @@ def decode_same_context(native: Any, snap: ResultSnapshot, cursor: Any) -> dict:
         "nfields": native_values["nfields"],
         "decoded_rows": repr(c_rows),
         "metadata_parity": True,
-        "native_hybrid_transformer_parity": True,
+        "row_decoder_checked": row_result,
+        "native_hybrid_transformer_parity": True if row_result else None,
+        "error_parity_checked": is_sql_error,
         "clear_idempotent": True,
     }
 
@@ -282,12 +302,24 @@ def run_child(dsn: str) -> dict:
     trace("child: after worker.join")
     if worker.is_alive():
         raise RuntimeError("native worker did not terminate")
-    if results["select"]["decoded_rows"] != "[(1, None, 'qpsycopg', True)]":
-        raise AssertionError("unexpected adapted SELECT output")
-    if results["sql_error"]["status"] != int(psycopg.pq.ExecStatus.FATAL_ERROR):
-        raise AssertionError("fatal SQL error status was not preserved")
-    if results["connection_finished"]["decoded_rows"] != "[(17,)]":
-        raise AssertionError("result failed to survive owner PGconn.finish()")
+    if (
+        results["select"]["decoded_rows"] != "[(1, None, 'qpsycopg', True)]"
+        or not results["select"]["row_decoder_checked"]
+    ):
+        raise AssertionError("SELECT native/hybrid row parity not demonstrated")
+    if (
+        results["sql_error"]["status"] != int(psycopg.pq.ExecStatus.FATAL_ERROR)
+        or not results["sql_error"]["error_parity_checked"]
+        or results["sql_error"]["row_decoder_checked"]
+    ):
+        raise AssertionError("fatal SQL result was not handled as an error")
+    if results["notice"]["row_decoder_checked"]:
+        raise AssertionError("DO notice command unexpectedly ran row decoding")
+    if (
+        results["connection_finished"]["decoded_rows"] != "[(17,)]"
+        or not results["connection_finished"]["row_decoder_checked"]
+    ):
+        raise AssertionError("native result did not survive PGconn.finish()")
 
     return {
         "preflight_passed": True,

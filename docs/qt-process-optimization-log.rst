@@ -841,38 +841,120 @@ another heavier instrumentation layer
 without a falsifiable reason to expect
 better production attribution.
 
+Native PGresult two-queue handoff -- feasibility preflight pending
+------------------------------------------------------------------
+
+Independent Scouts A and B were reviewed by the existing
+``00 Coordinator``; the selected **INVESTIGATE** direction
+is one diagnostic-only native-result boundary screen at
+base HEAD ``98a6ad178d03ff0ad94f1b28c6d3ddac6cd164a1``.
+This does not authorise runtime changes or ``optimized02``.
+
+Source-based findings at the reviewed HEAD:
+
+* PostgreSQL 18 libpq explicitly permits completed, normally
+  read-only ``PGresult`` objects to move between threads, while
+  forbidding concurrent manipulation of the same ``PGconn``
+  (or simultaneous mutation of a single ``PGresult``):
+  https://www.postgresql.org/docs/18/libpq-threading.html.
+* ``psycopg_c/psycopg_c/pq/pgresult.pyx`` owns a
+  ``libpq.PGresult*`` and invokes ``PQclear`` in
+  ``clear()``/``__dealloc__``. Native C
+  ``_psycopg.Transformer.set_pgresult`` accepts exactly
+  native C ``psycopg_c.pq.PGresult``.
+  The current qt-thread client chooses the Python/native
+  hybrid Transformer because its PGconn is synthetic;
+  that does **not** by itself establish native
+  Transformer compatibility with a qt-thread cursor's
+  adaptation context.
+* The native C connection's notice receiver constructs a
+  **borrowed** result wrapper whose pointer is set to NULL
+  after its callback. It must never be enqueued as an owned
+  cross-thread native result. Existing worker notice
+  snapshots remain necessary.
+* Worker ``_executePending`` creates ``ResultSnapshot``
+  and ``PackedValues``. The worker's
+  ``_completedHealthy`` and ``_refreshesParameters``
+  inspect ``ResultSnapshot`` specifically, while
+  caller ``_responseValue``/``_restore`` and the
+  hybrid cursor adaptation expect reconstructed
+  results. Therefore a plain identity replacement
+  of ``_snapshotResult`` is **not** a semantics-safe
+  production design. FATAL_ERROR, SET/RESET/DISCARD,
+  pipeline, COPY, notices, error/cache state and
+  cancellation/close must continue to work.
+
+The newly committed ``tools/preflight_qt_thread_native_pgresult.py``
+and ``tools/preflight_qt_thread_native_pgresult.ps1``
+perform a **separate safety/compatibility preflight**
+inside a watchdog-protected subprocess.
+A native C PGconn is created, used and finished **only in
+the worker thread**. Completed native PGresults are sent
+through two SimpleQueues to the caller. The caller compares
+native and current snapshot metadata, NULLs, values,
+SQLSTATE exception classification and decoded rows with
+the **same qt-thread cursor adaptation context**, using
+native C versus current hybrid Transformer. It additionally
+tests a result surviving worker PGconn.finish(), explicit
+double clear/destructor, and preserves notice diagnostics
+by snapshotting the borrowed callback result before return.
+The production qt-thread worker, Transformer selection,
+benchmark v3 and SQL execution implementation are untouched.
+
+**Preflight status: NOT YET VERIFIED ON WINDOWS.**
+A static source audit suggests a plausible path for
+completed, owned results only, but does **not** prove
+binary compatibility, correct adaptation or lifetime
+on the target machine. If any preflight check fails,
+**STOP** native-handoff investigation and document
+the failure. The preflight is not a throughput benchmark.
+
+Run after syncing branch on the Windows machine::
+
+    .\tools\preflight_qt_thread_native_pgresult.ps1
+
+Upload the emitted ``test-results\qt-thread-native-result-preflight-*.zip``
+in this **current Implementation chat**. The ZIP is
+local-only until explicitly committed. A full-current-vs-native
+warmed ``SELECT 1`` A/B with the same SQL, adaptation context,
+two queue handoffs, output parity, short paired blocks,
+independent repeats and >=15 us process CPU/query material
+screen is **strictly deferred** until the preflight has
+passed and its evidence has been inspected. Even a
+positive preflight does not authorise production code.
+
 Post-optimized01 priorities
 ---------------------------
 
-``optimized01`` remains RETAIN. The timed-vs-untimed
-queue wait remains REJECT. The bounded real-path
-GET profiling is complete with valid phase counts
-and repeated clean controls, but strong
-instrumentation overhead, temporal drift and
-Windows CPU quantization prevent exclusive
-attribution of a safe removable operation.
+``optimized01`` remains **RETAIN**; the timed-vs-untimed
+queue wait, worker-native socket wait, speculative WAIT
+prefetch, and generic serialization/snapshot microtuning
+remain rejected. The current, distinct architectural
+hypothesis is **native owned PGresult transfer through
+two SimpleQueues**, replacing the complete snapshot/
+reconstruction/native decode boundary only if safe.
 
-#. Submit the measured real-GET profile,
-   explicit **NO ACTIONABLE TARGET** conclusion
-   and recorded evidence to the **existing
-   00 Coordinator** for independent review.
-#. Do not repeat rejected native worker wait,
-   response-get timeout removal, speculative
-   WAIT prefetch, generic serialization/snapshot
-   or bulk decoder experiments absent new
-   independent evidence.
-#. Do not start speculative ``optimized02``
-   or interpret inclusive profiled timing as
-   a production performance savings estimate.
-#. Any Coordinator-approved new direction
-   must specify a falsifiable real-code target,
-   preserve worker-exit/error/close and public
-   Psycopg semantics, and require semantic
-   smoke plus unchanged adjacent-paired v3
-   if an actual runtime candidate is created.
-   CPU/query, cancellation latency, Qt
-   p95/p99, bulk, connect and resources
-   remain the guardrails.
+#. First run and inspect the committed, diagnostic-only
+   native PGresult ownership/Transformer preflight.
+   If the target Windows checks fail, **STOP** and
+   record the negative result.
+#. If feasibility passes, design and run **one**
+   diagnostic-only same-SQL warmed SELECT 1 whole-boundary
+   comparison with equal adaptation context, queue
+   topology, outputs, independent interleaved repeats,
+   process CPU/query, wall, switches and drift.
+   Predeclared material-benefit screen: >=15 us
+   repeatable paired CPU/query improvement beyond noise.
+#. On absent material gain or semantic uncertainty,
+   REJECT without a production runtime candidate
+   or ``optimized02``.
+#. After a measured completed checkpoint, update
+   performance notes, this log and project map;
+   return to the **existing 00 Coordinator**
+   for independent review before any runtime candidate.
+   Retain all Psycopg semantics and cancellation,
+   worker lifetime/error/close, Qt p95/p99,
+   bulk/connection/resource acceptance guardrails.
 
 Checkpoint rule
 ---------------

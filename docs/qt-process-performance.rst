@@ -382,41 +382,68 @@ and preserved semantic smoke. Do not stack another unrelated runtime change
 before a bounded short-query profiling hypothesis is chosen. Full numbers,
 method and historical drift are in :doc:`qt-process-optimization-log`.
 
-Current CPU profiling stage -- evidence and revised diagnostic
------------------------------------------------------------
+Qt-thread short-query CPU profiling checkpoint
+-------------------------------------------
 
-The canonical ``optimized01`` v3 benchmark first established a
-short-query CPU/latency gap. The subsequent Windows CPU archive
-``qt-thread-cpu-profile-20261103-191710-778.zip`` (two rounds per
-upstream C, fork direct C and qt-thread) has clean, pre-instrumentation
-controls with process CPU/query ranges of ``93.8-114.6 us``,
-``88.5-109.4 us``, and ``229.2-234.4 us`` respectively.
-Qt-thread caller CPU is about ``114.6 us/query``; subtracting it
-from process CPU yields approximately ``115-120 us/query`` in
-other threads. Context switches/query are about ``1/1/3``.
+The corrected diagnostic archive ``qt-thread-cpu-profile-20261103-192809-646.zip``
+was captured at ``9b0f7108`` with two rounds each of pristine upstream,
+fork direct C and qt-thread. There is no production runtime change and
+no new numbered optimisation benchmark. Clean (pre-instrumentation)
+process CPU/query in the two runs was::
 
-This shows that the added worker execution is a substantial *CPU ownership*
-difference. It does not isolate a dominant worker function or prove that
-request/response allocations cause the extra cost.
+    upstream C             88.5 / 130.2 us
+    fork direct C          125.0 / 145.8 us
+    qt-thread              255.2 / 250.0 us
 
-The original detailed ``cProfile`` report is invalid: the sequential
-Python 3.13 worker profile includes caller frames and impossible negative
-self-CPU values. These function rankings must **not** drive optimisation
-decisions. The failure is recorded in :doc:`qt-process-optimization-log`.
+The qt-thread CPU excess versus fork direct is ~104-130 us/query.
+Its clean caller CPU is ~115-135 us/query and other-thread CPU
+~115-141 us/query. Context switches are ~3.0-3.1/query in qt-thread
+versus ~1.0/query in direct. Windows CPU timers are quantised and
+cannot support a claim about isolated sub-microsecond function costs.
 
-The standalone tool ``tools/profile_qt_thread_short_query.py`` was revised
-in commit ``a4d11e37`` to replace cross-thread ``cProfile`` with
-thread-local inclusive phase wall/CPU counters and clean controls. It now
-also measures synthetic worker PGconn-status ``Operation.GET``
-request/response cost **without libpq socket wait**, against direct
-status access, to distinguish fixed handoff cost from SQL execution.
-Instrumented inclusive timings overlap and cannot be treated as additive
-CPU costs. The unchanged v3 benchmark remains the acceptance gate.
+A no-SQL forced status GET exercises one full qt-thread request/response
+round trip without a libpq wait: it costs 40.02-45.13 us wall,
+36.46-46.88 us process CPU and 2.01-2.04 context switches.
+The corresponding direct status read is only ~0.17 us wall.
+In the instrumented status control, ``_dispatch`` occupies
+~35.2-39.2 us inclusive wall and the worker GET handler ~5.8-6.4 us.
+Thus the **synchronous queue/wakeup round trip** is the largest
+measured fixed non-SQL overhead. Its cost is roughly one third of
+the SELECT CPU gap in magnitude, but it is *not* an exact additive
+component of fast-execute query CPU.
 
-The revised diagnostic has not yet run on the target Windows system.
-No specific function is confirmed dominant and no ``optimized02``
-runtime change is justified yet. Maintain CPU/query, cancellation,
-Qt p95/p99, bulk, connection and resource metrics as guardrails.
+The query's worker ``_wait`` call uses ~539-581 us inclusive wall and
+~73-83 us inclusive thread CPU. Its wall time predominantly reflects
+PostgreSQL socket readiness. Nested worker phase timings overlap;
+they cannot be summed or used as avoidable CPU savings.
+Importantly upstream on Windows also uses Python ``select.select()``:
+``waiting.py`` intentionally avoids native ``wait_c`` owing to
+reported CPU issues. The old worker-native wait, native receive,
+speculative WAIT result prefetch and snapshot micro-tuning
+experiments remain rejected.
+
+The earlier ``cProfile`` attribution was invalid on Python 3.13
+because it captured cross-thread frames and reported negative self CPU.
+The corrected profiler uses thread-local function clocks and exposes
+only inclusive phase measurements; it is diagnostic rather than an
+acceptance benchmark. Full raw rationale is recorded in
+:doc:`qt-process-optimization-log`.
+
+**Bounded conclusion:** cpu profiling is completed and identifies the
+thread request/response handoff as the clearest *fixed, non-libpq*
+target for a falsifiable diagnostic A/B. There is not yet evidence for
+a safe runtime performance change.
+
+The proposed single local hypothesis is that the timed
+``SimpleQueue.get(timeout=0.1)`` path in ``_ThreadTransport._dispatch``
+adds >=10 us to the ~35-39 us fixed handoff wall. Compare timed
+and untimed waits in a **diagnostic-only** paired no-SQL control first.
+Reject if not repeatable or if worker liveness/error handling cannot
+be preserved. Never replace the production timed wait with a
+potentially indefinite block without satisfying fatal worker,
+close and cancellation semantics. Request independent
+``00 Coordinator`` review before beginning a new optimisation
+direction; retain ``optimized01`` in the meantime.
 
 Performance rules for future work
 ---------------------------------
@@ -436,14 +463,14 @@ Performance rules for future work
 Next work
 ---------
 
-#. On the target Windows benchmark machine run
-   ``.\tools\profile_qt_thread_short_query.ps1`` and examine its separate
-   upstream/direct/thread CPU-phase result ZIP.
-#. Identify one measured dominant stage and one falsifiable local hypothesis,
-   distinguishing Python CPU from wall-time libpq/scheduler waiting. Do not
-   draw acceptance conclusions from instrumented profile timings.
-#. Only then implement the smallest semantically safe candidate, run qt-thread
-   smoke and the unchanged v3 paired acceptance benchmark, inspect CPU/query,
-   cancellation, Qt p95/p99, bulk, connection/resources, and retain/revert.
-#. Update the optimisation log and this document. After a significant
-   completed checkpoint, request independent ``00 Coordinator`` review.
+#. Submit the completed CPU profiling checkpoint at
+   ``9b0f7108`` and the measured queue-handoff hypothesis
+   to ``00 Coordinator`` for the mandatory independent review.
+#. If the coordinator approves, run a diagnostic-only same-machine
+   timed-vs-untimed SimpleQueue handoff A/B with no SQL and repeated
+   clean controls. Preserve worker termination/liveness semantics.
+#. Do **not** start ``optimized02`` without a robust local improvement
+   signal and a safe implementation plan.
+#. For any subsequent runtime candidate, run full qt-thread semantic
+   smoke and unchanged paired benchmark v3, guarding CPU/query,
+   cancellation, Qt p95/p99, bulk, connect and resources.

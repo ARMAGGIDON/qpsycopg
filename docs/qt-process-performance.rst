@@ -546,7 +546,7 @@ and validation costs against the minimal echo, without
 modifying production, before attempting any local tuning.
 
 Enriched echo protocol/bookkeeping isolation -- pending diagnostic
----------------------------------------------------------------
+------------------------------------------------------------------
 
 At the minimal-echo checkpoint (fork HEAD ``492ab431``), real
 no-SQL qt-thread GET status exceeded a bare two-SimpleQueue echo

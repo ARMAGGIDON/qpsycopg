@@ -172,8 +172,12 @@ def test_dotenv_selects_qt_backends(tmp_path, impl):
     )
     result = _run(
         tmp_path,
-        f"import psycopg; assert psycopg.pq.__impl__ == {impl!r}; "
-        "assert psycopg.Connection.__module__ == 'psycopg.connection_qt_process'",
+        "import psycopg; "
+        "from psycopg.connection_qt_process import Connection as QtConnection; "
+        "from psycopg.connection_qt_process import AsyncConnection as QtAsyncConnection; "
+        f"assert psycopg.pq.__impl__ == {impl!r}; "
+        "assert psycopg.Connection is QtConnection; "
+        "assert psycopg.AsyncConnection is QtAsyncConnection",
     )
     assert result.returncode == 0, result.stderr
 

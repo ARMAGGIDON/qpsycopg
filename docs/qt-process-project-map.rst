@@ -257,6 +257,14 @@ Validation and benchmark map
     Produces paired ratios, MAD/range, host drift, architecture deltas and process
     inventory.
 
+``tools/profile_qt_thread_short_query.py`` and
+``tools/profile_qt_thread_short_query.ps1``
+    Diagnostic CPU attribution only: current ``qt-thread`` caller and worker
+    thread, upstream and fork direct controls, explicit worker dispatch/wait
+    phase accounting. The runner uses existing isolated benchmark venvs and
+    does not change the canonical v3 workload or any production runtime code.
+    Results are pending from the target Windows machine.
+
 The canonical current baseline is ``baseline-v3``. Older ``initial`` and
 ``baseline-v2`` checkpoints used different benchmark definitions and must not be
 used as the direct before-state for numbered optimisations.
@@ -284,27 +292,30 @@ Established decisions / do not repeat blindly
 Immediate next work
 -------------------
 
-#. ``optimized01`` is retained after the matching paired v3 checkpoint;
-   the ``qt-thread`` semantic smoke passed. Its expected connected-state
-   resource reduction is confirmed (-1 thread, -6 handles compared with
-   ``baseline-v3``), and warm-connect ratios improved.
-#. Keep the accepted lazy cancellation lifecycle intact. Do not rerun
-   ``optimized01`` or modify the benchmark workload without new evidence.
-#. Next bounded optimisation stage: inspect and profile the current
-   ``qt-thread`` short-query CPU/latency path. Identify one extra
-   allocation, conversion, cache, request/response or scheduling cost
-   relative to direct upstream, and form a falsifiable local hypothesis.
-#. Before committing a new runtime variant, make sure the hypothesis is
-   distinct from rejected process IPC/native wait/packing experiments.
-   Preserve Psycopg public semantics and the complete qt-thread smoke gate.
-#. Change only one local mechanism, benchmark against the retained
-   ``baseline-v3`` and ``optimized01`` checkpoints using unchanged v3
-   workload, and check CPU/query, SELECT median, connect, cancellation,
-   resource counts, Qt p95/p99 and bulk for regressions.
-#. Retain/revert and update :doc:`qt-process-optimization-log` and
-   :doc:`qt-process-performance` before stacking further changes.
-   The optimized01 CPU/query ratio (2.429x versus 2.000x at baseline) is
-   a watch item, not yet a proven causal regression.
+#. ``optimized01`` is retained. Its warm connection and connected-state
+   thread/handle improvement is measured against ``baseline-v3`` and its
+   qt-thread semantic smoke passed. Keep this lifecycle unchanged.
+#. The Coordinator decision at ``0ecd0377`` is CONTINUE with a bounded
+   qt-thread CPU/short-query profiling stage, **not** speculative
+   ``optimized02``.
+#. Run ``.\tools\profile_qt_thread_short_query.ps1`` on the existing Windows
+   benchmark installation. The probe profiles upstream, fork direct and qt-thread
+   with a clean warm control and separate caller/worker phase attribution.
+   It does not alter the v3 acceptance benchmark.
+#. Interpret the profile ZIP: distinguish Python caller CPU, protocol
+   allocations/conversions, worker handling, and libpq wait/scheduling time.
+   Choose **one measured dominant cost** and falsifiable local hypothesis.
+   Do not treat instrumented timings as an optimisation speedup measurement.
+#. Only after profiling evidence, make the smallest targeted implementation
+   change. Preserve public Psycopg semantics and run semantic smoke followed
+   by the unchanged paired v3 benchmark.
+#. Check CPU/query, short-query latency, cancellation latency, Qt p95/p99,
+   bulk, connect and connected-state resources as guardrails. Retain or revert
+   based on evidence and update the performance and optimisation log.
+#. After a significant completed checkpoint, route the result to the existing
+   ``00 Coordinator`` chat for independent review, as required by the
+   coordination protocol. Do not create a Scout unless profiling reveals a
+   genuine architectural dispute or plateau.
 
 When resuming in a new chat/session
 -----------------------------------
@@ -315,5 +326,8 @@ When resuming in a new chat/session
 #. Treat ``optimized01`` as **retained**, not pending measurement.
 #. Do not restart the old qt-thread smoke blocker or previously rejected
    process-IPC/native-wait experiments.
-#. Continue with the short-query CPU/latency investigation; do not silently
-   create a competing implementation path in another chat.
+#. The standalone CPU attribution runner is staged but has not yet been run
+   on the target Windows machine. The next input is its profile ZIP.
+#. Continue in the current implementation chat until the bounded profiling
+   decision is complete. Do not stack optimized02 or create a competing
+   implementation path in another chat.

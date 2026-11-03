@@ -463,14 +463,26 @@ Performance rules for future work
 Next work
 ---------
 
-#. Submit the completed CPU profiling checkpoint at
-   ``9b0f7108`` and the measured queue-handoff hypothesis
-   to ``00 Coordinator`` for the mandatory independent review.
-#. If the coordinator approves, run a diagnostic-only same-machine
-   timed-vs-untimed SimpleQueue handoff A/B with no SQL and repeated
-   clean controls. Preserve worker termination/liveness semantics.
-#. Do **not** start ``optimized02`` without a robust local improvement
-   signal and a safe implementation plan.
-#. For any subsequent runtime candidate, run full qt-thread semantic
-   smoke and unchanged paired benchmark v3, guarding CPU/query,
-   cancellation, Qt p95/p99, bulk, connect and resources.
+#. The existing ``00 Coordinator`` reviewed the completed CPU profiling
+   checkpoint ``ae01f74f`` and approved only a **diagnostic-only**
+   timed/untimed response-wait A/B. Production qt-thread runtime and
+   benchmark v3 remain unchanged.
+#. Run ``.\tools\bench_qt_thread_queue_wait.ps1`` in the current Windows
+   checkout and examine eight repeated interleaved pairs of the same
+   warmed no-SQL PGconn status request. The screen is >=10 us median
+   timed-minus-untimed wall reduction, above 3x paired MAD, with
+   at least N-1 positive pairs. Confirm CPU/context-switch measures.
+#. Inspect subprocess watchdog checks for worker exit without response,
+   remote error propagation and normal close. A raw untimed wait is
+   known to lose periodic dead-worker detection. Its expected watchdog
+   hang is a **production safety failure**, not evidence of correctness.
+#. If the measured hypothesis fails or no safe design is possible,
+   document **REJECT** and do not begin ``optimized02``.
+   If positive, design a liveness-preserving candidate before any
+   runtime change, then require semantic smoke, unchanged paired v3,
+   and CPU/query, cancellation, Qt p95/p99, bulk, connection/resource
+   regression checks.
+#. Once this bounded investigation reaches a committed decision,
+   send the result to ``00 Coordinator`` for mandatory independent review.
+   Until then, stay in the current implementation chat; no Scout is
+   needed.

@@ -5,6 +5,7 @@ on:
     paths:
       - "psycopg/**"
       - "tools/smoke_qt_process.py"
+      - "tools/validate_qt_backend_config_windows.py"
       - ".github/workflows/qt-process.yml"
   workflow_dispatch:
 
@@ -62,3 +63,14 @@ jobs:
         run: >-
           python tools/smoke_qt_process.py
           'postgresql://postgres:postgres@127.0.0.1:5432/postgres'
+
+  windows-dll-bootstrap:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Verify Windows DLL bootstrap
+        run: python tools/validate_qt_backend_config_windows.py

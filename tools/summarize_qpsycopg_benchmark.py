@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate paired upstream/qpsycopg benchmarks and quantify run-to-run drift."""
+"""Aggregate adjacent-paired upstream/qpsycopg benchmarks and quantify drift."""
 
 from __future__ import annotations
 
@@ -27,8 +27,8 @@ def nested(data: Json, *path: str) -> Any:
     return value
 
 
-def med(values: list[float]) -> float:
-    return float(statistics.median(values))
+def med(items: list[float]) -> float:
+    return float(statistics.median(items))
 
 
 def values(runs: list[Json], get: Callable[[Json], float]) -> list[float]:
@@ -70,11 +70,12 @@ METRICS: list[tuple[str, str, str, Callable[[Json], float], str]] = [
     ("Bulk", "Fetch/decode 100k rows", "ms/100k rows", lambda r: nested(r, "fetch", "fetchall_seconds") * 1000, "lower"),
     ("Bulk", "Total 100k rows", "ms/100k rows", lambda r: nested(r, "fetch", "seconds") * 1000, "lower"),
     ("Bulk", "Throughput", "krows/s", lambda r: nested(r, "fetch", "rows_per_second") / 1000, "higher"),
-    ("Concurrency", "N-thread workload", "ms/batch", lambda r: nested(r, "threads", "seconds") * 1000, "lower"),
-    ("Concurrency", "Concurrent throughput", "queries/s", lambda r: len(r["threads"]["values"]) / nested(r, "threads", "seconds"), "higher"),
+    ("Concurrency", "8-thread batch median", "ms/batch", lambda r: nested(r, "threads", "batch", "median_ms"), "lower"),
+    ("Concurrency", "8-thread batch p95", "ms/batch", lambda r: nested(r, "threads", "batch", "p95_ms"), "lower"),
+    ("Concurrency", "Concurrent throughput", "queries/s", lambda r: nested(r, "threads", "queries_per_second"), "higher"),
     ("Cancellation", "Cancel call median", "ms/cancel", lambda r: nested(r, "cancel", "call", "median_ms"), "lower"),
     ("Cancellation", "Cancel call p95", "ms/cancel", lambda r: nested(r, "cancel", "call", "p95_ms"), "lower"),
-    ("Cancellation", "Query finish after cancel median", "ms/cancel", lambda r: nested(r, "cancel", "query_finish", "median_ms"), "lower"),
+    ("Cancellation", "Cancel end-to-end median", "ms/cancel", lambda r: nested(r, "cancel", "total", "median_ms"), "lower"),
     ("Memory", "Process-tree RSS", "MiB", lambda r: resource(r, "rss_bytes") / MiB, "lower"),
     ("Memory", "Process-tree private memory", "MiB", lambda r: resource(r, "private_bytes") / MiB, "lower"),
 ]
@@ -82,7 +83,7 @@ METRICS: list[tuple[str, str, str, Callable[[Json], float], str]] = [
 QT_METRICS: list[tuple[str, str, str, Callable[[Json], float], str]] = [
     ("Qt responsiveness", "Event-loop/timer p95", "ms", lambda r: nested(r, "timer", "p95_ms"), "lower"),
     ("Qt responsiveness", "Event-loop/timer p99", "ms", lambda r: nested(r, "timer", "p99_ms"), "lower"),
-    ("Qt responsiveness", "Maximum stall", "ms", lambda r: nested(r, "timer", "max_stall_ms"), "lower"),
+    ("Qt responsiveness", "Maximum stall (diagnostic)", "ms", lambda r: nested(r, "timer", "max_stall_ms"), "lower"),
 ]
 
 ARCHITECTURE: list[tuple[str, str, Callable[[Json], float]]] = [
@@ -125,13 +126,14 @@ def ratioStats(upstreamRuns: list[Json], modeRuns: list[Json], getter: Callable[
 def buildRows(
     metrics: list[tuple[str, str, str, Callable[[Json], float], str]],
     reference: list[Json],
-    upstream: list[Json],
+    upstreamAll: list[Json],
+    upstreamByMode: dict[str, list[Json]],
     runs: dict[str, list[Json]],
 ) -> list[Json]:
     rows: list[Json] = []
     for category, metric, unit, getter, better in metrics:
         referenceValues = values(reference, getter)
-        upstreamValues = values(upstream, getter)
+        upstreamValues = values(upstreamAll, getter)
         referenceValue = med(referenceValues)
         upstreamValue = med(upstreamValues)
         row: Json = {
@@ -147,7 +149,7 @@ def buildRows(
         }
         for mode, modeRuns in runs.items():
             row[mode] = aggregate(modeRuns, getter)
-            paired = ratioStats(upstream, modeRuns, getter)
+            paired = ratioStats(upstreamByMode[mode], modeRuns, getter)
             row[f"{mode}_ratio"] = paired["median"]
             row[f"{mode}_ratio_stats"] = paired
         rows.append(row)
@@ -155,12 +157,19 @@ def buildRows(
 
 
 def hostRows(referenceDir: Path, checkpointDir: Path, modes: tuple[str, ...]) -> list[Json]:
-    reference = loadMany(referenceDir, "host-*-upstream-*.json")
-    current = {mode: loadMany(checkpointDir, f"host-*-{mode}-*.json") for mode in ("upstream", *modes)}
+    reference = loadMany(referenceDir, "host-*-*-upstream-*.json")
+    currentUpstream = loadMany(checkpointDir, "host-*-*-upstream-*.json")
+    current = {mode: loadMany(checkpointDir, f"host-*-{mode}-*.json") for mode in modes}
     rows: list[Json] = []
     for metric, unit, getter in HOST_METRICS:
         referenceItems = [float(value) for item in reference if (value := getter(item)) is not None]
-        row: Json = {"metric": metric, "unit": unit, "reference_upstream": med(referenceItems)}
+        upstreamItems = [float(value) for item in currentUpstream if (value := getter(item)) is not None]
+        row: Json = {
+            "metric": metric,
+            "unit": unit,
+            "reference_upstream": med(referenceItems),
+            "upstream": med(upstreamItems),
+        }
         for mode, modeRuns in current.items():
             items = [float(value) for item in modeRuns if (value := getter(item)) is not None]
             row[mode] = med(items)
@@ -194,15 +203,17 @@ def main() -> int:
     args = parser.parse_args()
 
     modes = ("direct", "thread", "process")
-    referenceRuns = loadMany(args.reference, "bench-*-upstream.json")
-    referenceQt = loadMany(args.reference, "qt-*-upstream.json")
-    upstreamRuns = loadMany(args.checkpoint, "bench-*-upstream.json")
-    upstreamQt = loadMany(args.checkpoint, "qt-*-upstream.json")
+    referenceRuns = loadMany(args.reference, "bench-*-*-upstream.json")
+    referenceQt = loadMany(args.reference, "qt-*-*-upstream.json")
+    upstreamRuns = loadMany(args.checkpoint, "bench-*-*-upstream.json")
+    upstreamQt = loadMany(args.checkpoint, "qt-*-*-upstream.json")
+    upstreamByMode = {mode: loadMany(args.checkpoint, f"bench-*-{mode}-upstream.json") for mode in modes}
+    upstreamQtByMode = {mode: loadMany(args.checkpoint, f"qt-*-{mode}-upstream.json") for mode in modes}
     runs = {mode: loadMany(args.checkpoint, f"bench-*-{mode}.json") for mode in modes}
     qtRuns = {mode: loadMany(args.checkpoint, f"qt-*-{mode}.json") for mode in modes}
 
-    rows = buildRows(METRICS, referenceRuns, upstreamRuns, runs)
-    rows += buildRows(QT_METRICS, referenceQt, upstreamQt, qtRuns)
+    rows = buildRows(METRICS, referenceRuns, upstreamRuns, upstreamByMode, runs)
+    rows += buildRows(QT_METRICS, referenceQt, upstreamQt, upstreamQtByMode, qtRuns)
 
     architecture: list[Json] = []
     for metric, unit, getter in ARCHITECTURE:
@@ -211,7 +222,7 @@ def main() -> int:
         for mode in modes:
             value = aggregate(runs[mode], getter)
             row[mode] = value
-            row[f"{mode}_delta"] = value - upstream
+            row[f"{mode}_delta"] = value - aggregate(upstreamByMode[mode], getter)
         architecture.append(row)
 
     referenceManifest = json.loads((args.reference / "manifest.json").read_text(encoding="utf-8-sig"))
@@ -221,12 +232,14 @@ def main() -> int:
     inventories.update({mode: processInventory(modeRuns) for mode, modeRuns in runs.items()})
     result = {
         "method": {
-            "primary_ratio": "median of per-round fork/upstream ratios",
-            "drift": "current upstream median / historical reference upstream median",
+            "primary_ratio": "median of adjacent per-mode fork/upstream pair ratios",
+            "drift": "current aggregate upstream median / historical reference upstream median",
             "mad_pct": "median absolute deviation / median * 100",
             "range_pct": "(max - min) / median * 100",
             "connect": "first connection is cold; following connections are reported separately as warm",
-            "cancellation": "multiple cancellation attempts per SQL run",
+            "short_query": "warm-up precedes a longer timed sample window",
+            "concurrency": "repeated batches on a warmed ThreadPoolExecutor; pool creation excluded",
+            "cancellation": "multiple cancellation attempts; call and end-to-end latency reported separately",
             "qt": "p95 and p99 are primary tail metrics; max stall is diagnostic only",
         },
         "reference": referenceManifest,
@@ -239,9 +252,9 @@ def main() -> int:
     (args.checkpoint / "comparison.json").write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
 
     lines = [
-        "Primary Ratio is the median of per-round Fork/Upstream ratios. Current Upstream is rerun in every checkpoint.",
+        "Primary Ratio is the median of adjacent per-mode Fork/Upstream pair ratios.",
         "Historical Reference is used only to show machine/environment drift. MAD and observed range describe measured noise; they are not confidence intervals.",
-        "Cold and warm connection startup are separate. Cancellation uses repeated attempts. Qt p95/p99 are primary; maximum stall is diagnostic.",
+        "Cold/warm connect are separate; short queries are warmed; concurrency excludes pool creation; cancellation is repeated; Qt p95/p99 are primary.",
         "",
         "| Category | Metric | Unit | Current Upstream | Fork direct | Ratio | qt-thread | Ratio | qt-process | Ratio |",
         "|---|---|---|---:|---:|---:|---:|---:|---:|---:|",
@@ -255,7 +268,7 @@ def main() -> int:
 
     lines += [
         "",
-        "| Measurement stability | Unit | Historical upstream | Current upstream | Drift | Upstream MAD | Upstream range | Direct ratio range | Thread ratio range | Process ratio range |",
+        "| Measurement stability | Unit | Historical U | Current U | Drift | U MAD | U range | Direct ratio MAD / range | Thread ratio MAD / range | Process ratio MAD / range |",
         "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
@@ -263,8 +276,9 @@ def main() -> int:
         lines.append(
             f"| {row['metric']} | {row['unit']} | {fmt(row['reference_upstream'])} | {fmt(row['upstream'])} | "
             f"{row['upstream_drift_ratio']:.3f}x | {row['upstream_mad_pct']:.2f}% | {row['upstream_range_pct']:.2f}% | "
-            f"{direct['min']:.3f}-{direct['max']:.3f}x | {thread['min']:.3f}-{thread['max']:.3f}x | "
-            f"{process['min']:.3f}-{process['max']:.3f}x |"
+            f"{direct['mad_pct']:.2f}% / {direct['min']:.3f}-{direct['max']:.3f}x | "
+            f"{thread['mad_pct']:.2f}% / {thread['min']:.3f}-{thread['max']:.3f}x | "
+            f"{process['mad_pct']:.2f}% / {process['min']:.3f}-{process['max']:.3f}x |"
         )
 
     lines += [
@@ -278,16 +292,12 @@ def main() -> int:
             f"{fmt(row['thread'])} | {row['thread_delta']:+.1f} | {fmt(row['process'])} | {row['process_delta']:+.1f} |"
         )
 
-    lines += [
-        "",
-        "| Process inventory | Role | Name | Executable | Median count |",
-        "|---|---|---|---|---:|",
-    ]
-    for mode, inventory in inventories.items():
-        for item in inventory:
-            lines.append(
-                f"| {mode} | {item['role']} | {item['name'] or '-'} | {item['exe'] or '-'} | {fmt(item['count'])} |"
-            )
+    lines += ["", "Process inventory (median count across SQL runs):"]
+    for mode in ("upstream", *modes):
+        inventory = ", ".join(
+            f"{item['role']}:{item['name']}[{item['exe']}] x{item['count']:.0f}" for item in inventories[mode]
+        )
+        lines.append(f"- {mode}: {inventory}")
 
     lines += [
         "",

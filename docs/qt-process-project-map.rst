@@ -343,8 +343,8 @@ Immediate next work
 #. The clean GET block wall medians were 29.878-30.999 us/call.
    Instrumented-minus-clean paired wall medians were
    +18.082..+18.740 us/call, positive in 96/96 profiled blocks.
-   This is predominantly **instrumentation/connection effect**,
-   not an available production saving.
+   This **instrumented-versus-clean difference** is confounded
+   by the probe and separate connections, not a production saving.
 #. Nested instrumented phase wall medians: caller
    ``request`` 50.906 us, ``_dispatch`` 38.412 us,
    active worker ``_run`` turn 14.137 us,

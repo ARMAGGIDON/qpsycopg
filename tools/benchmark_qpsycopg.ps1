@@ -35,6 +35,7 @@ $oldIpc = $env:QPSYCOPG_IPC
 $oldNative = $env:QPSYCOPG_NATIVE_IPC
 $oldRecv = $env:QPSYCOPG_NATIVE_RECV
 $oldWait = $env:QPSYCOPG_NATIVE_WAIT
+$oldPath = $env:PATH
 
 function Clear-QpsycopgMode {
     Remove-Item Env:QPSYCOPG_WORKER_IMPL, Env:QPSYCOPG_IPC, Env:QPSYCOPG_NATIVE_IPC,
@@ -89,8 +90,10 @@ try {
     $qtVersion = (& $python -c "import PySide6; print(PySide6.__version__)").Trim()
     $psutilVersion = (& $python -c "import psutil; print(psutil.__version__)").Trim()
     $platform = (& $python -c "import platform, psutil; print(platform.platform() + '|' + platform.machine() + '|' + str(psutil.cpu_count(logical=True)))").Trim()
-    $pgConfig = Join-Path $env:PSYCOPG_PG_ROOT "bin\pg_config.exe"
-    $libpqVersion = if (Test-Path $pgConfig) { (& $pgConfig --version).Trim() } else { "unknown" }
+    $pgBin = Join-Path $env:PSYCOPG_PG_ROOT "bin"
+    $pgConfig = Join-Path $pgBin "pg_config.exe"
+    if (-not (Test-Path $pgConfig)) { throw "pg_config.exe not found: $pgConfig" }
+    $libpqVersion = (& $pgConfig --version).Trim()
 
     $hashText = (@($bench, $qt, $resources, $runner, $hostState) | ForEach-Object {
         (Get-FileHash $_ -Algorithm SHA256).Hash
@@ -128,6 +131,9 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "failed to create fork benchmark venv" }
     }
 
+    # Old upstream psycopg-c revisions discover PostgreSQL only through pg_config on PATH.
+    # Expose the same local PostgreSQL toolchain to both builds, then restore PATH before measurements.
+    $env:PATH = "$pgBin;$oldPath"
     Write-Host "[upstream] rebuild pristine environment against local libpq"
     & $uv.Source pip install --python $upstreamPython --reinstall (Join-Path $upstreamRoot "psycopg") `
         (Join-Path $upstreamRoot "psycopg_c") "psutil==$psutilVersion" "PySide6-Essentials==$qtVersion"
@@ -137,6 +143,7 @@ try {
     & $uv.Source pip install --python $forkPython --reinstall (Join-Path $repoRoot "psycopg") `
         (Join-Path $repoRoot "psycopg_c") "psutil==$psutilVersion" "PySide6-Essentials==$qtVersion"
     if ($LASTEXITCODE -ne 0) { throw "failed to install fork benchmark environment" }
+    $env:PATH = $oldPath
 
     $timestamp = Get-Date -Format "yyyyMMdd-HHmmss-fff"
     $commit = (& git -C $repoRoot rev-parse HEAD).Trim()
@@ -235,6 +242,7 @@ try {
     Write-Host "benchmark archive: $archive"
     Write-Host "comparison table: $(Join-Path $outDir 'comparison.md')"
 } finally {
+    $env:PATH = $oldPath
     if ($null -eq $oldImpl) { Remove-Item Env:PSYCOPG_IMPL -ErrorAction Ignore } else { $env:PSYCOPG_IMPL = $oldImpl }
     if ($null -eq $oldWorker) { Remove-Item Env:QPSYCOPG_WORKER_IMPL -ErrorAction Ignore } else { $env:QPSYCOPG_WORKER_IMPL = $oldWorker }
     if ($null -eq $oldIpc) { Remove-Item Env:QPSYCOPG_IPC -ErrorAction Ignore } else { $env:QPSYCOPG_IPC = $oldIpc }

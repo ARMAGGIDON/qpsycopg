@@ -268,6 +268,14 @@ Validation and benchmark map
     thread request/response handoff as the largest fixed non-SQL phase.
     Production runtime and canonical paired v3 workload are unchanged.
 
+``tools/bench_qt_thread_echo_baseline.py`` and
+``tools/bench_qt_thread_echo_baseline.ps1``
+    Diagnostic-only paired comparison of a minimal two-SimpleQueue echo
+    against the existing no-SQL qt-thread PGconn status GET path. Uses timed
+    response waits in both cases, interleaved blocks, wall/CPU/context-switch
+    measurements, a child-process watchdog and a ZIP result archive.
+    Windows results are pending; runtime and benchmark v3 are unchanged.
+
 The canonical current baseline is ``baseline-v3``. Older ``initial`` and
 ``baseline-v2`` checkpoints used different benchmark definitions and must not be
 used as the direct before-state for numbered optimisations.
@@ -295,58 +303,59 @@ Established decisions / do not repeat blindly
 Immediate next work
 -------------------
 
-#. ``optimized01`` remains **RETAIN**. The CPU profiling checkpoint
-   identified a ~40-45 us wall fixed no-SQL request/response boundary,
-   but not a proven safe runtime optimisation.
-#. The subsequently Coordinator-approved diagnostic
-   timed-vs-untimed ``SimpleQueue.get()`` A/B is **REJECTED**,
-   after measurements in
-   ``qt-thread-queue-wait-ab-20261103-195939-054.zip``
-   at fork commit ``516ccc8c``. Eight interleaved paired comparisons
-   (4000 GET status calls per mode/pair) gave only +0.01546 us
-   median untimed advantage, paired MAD 1.08491 us, range
-   -4.403 to +2.119 us, and 4/8 favorable pairs. The predeclared
-   >=10 us improvement, >3*MAD and >=7/8 favorable screen failed.
-   Median process CPU difference was zero.
-#. The diagnostic proved a liveness regression: when a worker died
-   without responding, the original timed wait returned an
-   OperationalError; the raw untimed wait blocked until killed
-   by the 8-second subprocess watchdog. The harness's
-   ``failure_checks_pass=true`` marks expected *test outcomes*,
-   not production safety. Remote error handling and ordinary
-   close/post-close rejection behaved correctly in both modes.
-#. **Decision: REJECT** replacing timed response waiting with raw
-   blocking ``SimpleQueue.get()``. Do not repeat that experiment
-   without new evidence. It does not explain the measured
-   fixed worker handoff, and must not be called ``optimized02``.
-#. Production qt-thread runtime and benchmark v3 were not changed.
-   No new runtime variant needs smoke or v3 acceptance benchmarking
-   after this diagnostic-only negative result. Keep the original
-   ``optimized01`` semantic-smoke/benchmark evidence.
-#. The next action is mandatory independent review by the
-   **existing ``00 Coordinator``** of this completed negative
-   bounded stage, after which Coordinator selects the next
-   evidence-backed short-query target. Do **not** silently
-   start another runtime hypothesis, create a Scout, or ask
-   another implementation chat to edit this branch.
-#. For any future approved candidate preserve worker exit,
-   error and close semantics; measure CPU/query, cancellation
-   latency, Qt p95/p99, bulk, connection and resources using
-   semantic smoke plus unchanged paired benchmark v3.
+#. ``optimized01`` remains **RETAIN**. The timed-vs-untimed
+   ``SimpleQueue.get()`` diagnostic is **REJECT**; its median
+   improvement was +0.01546 us (paired MAD 1.08491 us), with
+   untimed liveness failure on a worker exit without response.
+   Do not repeat that A/B without genuinely new evidence.
+#. The existing ``00 Coordinator`` independently reviewed the
+   rejection at HEAD ``577d568`` and authorised the **next
+   diagnostic-only** comparison: minimal two-SimpleQueue worker echo
+   versus the qpsycopg warmed no-SQL PGconn ``GET status``
+   request/response path. Do not modify production or benchmark v3.
+#. ``tools/bench_qt_thread_echo_baseline.py`` and
+   ``tools/bench_qt_thread_echo_baseline.ps1`` are staged.
+   They collect eight interleaved pairs by default (4000
+   calls/mode/pair, 300 warmups/mode/block), comparing the
+   **same timed response wait** in both paths. Collect per-pair
+   wall latency, process/caller/other-thread CPU and context
+   switches with median, MAD, range and sign count.
+#. Next required user input: run
+   ``.\tools\bench_qt_thread_echo_baseline.ps1`` on the
+   Windows development checkout and upload the generated
+   ``qt-thread-echo-baseline-*.zip`` to the **current
+   Implementation chat**. The entire measurement is protected
+   by a subprocess watchdog; no runtime patch is installed.
+#. Implementation owner must inspect manifest, paired results,
+   noise and host drift. Separate the minimum unavoidable
+   scheduling/queue price from additional qpsycopg handling.
+   The residual includes required semantics and is **not
+   automatically removable overhead**.
+#. Once measured, document a bounded conclusion. Do not
+   start ``optimized02`` unless one concrete, falsifiable
+   and semantically safe runtime hypothesis is supported by
+   new evidence and approved by coordination. Any future
+   production candidate requires qt-thread smoke and
+   unchanged paired benchmark v3 with CPU/query, cancellation,
+   Qt p95/p99, bulk, connection and resource guardrails.
+#. After a significant completed diagnostic checkpoint and
+   committed documentation, route the conclusion to existing
+   ``00 Coordinator`` for independent review. No new Scout
+   or alternate Implementation owner is currently needed.
 
 When resuming in a new chat/session
 -----------------------------------
 
 #. Read :doc:`qt-process`, this project map,
-   :doc:`qt-process-performance` and :doc:`qt-process-coordination`,
-   then inspect the latest HEAD and :doc:`qt-process-optimization-log`.
-#. ``optimized01`` is retained. The latest completed diagnostic
-   A/B **rejected** a raw untimed queue get: no repeatable
-   speedup and unsafe dead-worker behavior.
-#. Do not rerun the rejected untimed response wait, worker-native
-   wait, speculative WAIT-prefetch or generic snapshot/serialization
-   experiments absent new evidence.
-#. The next owner is the existing ``00 Coordinator`` for review
-   of the completed negative A/B checkpoint; no Scout/new
-   implementation chat is currently required. The current
-   implementation chat retains runtime ownership after review.
+   :doc:`qt-process-performance` and
+   :doc:`qt-process-coordination`; check current HEAD and
+   :doc:`qt-process-optimization-log`.
+#. ``optimized01`` is retained; timed-vs-untimed SimpleQueue
+   waiting is a measured **REJECT** and cannot be reintroduced
+   without new evidence.
+#. The echo-vs-GET diagnostic is **staged but not yet measured**
+   on the Windows target. The next action is its ZIP in the
+   current Implementation chat, not another Coordinator
+   request yet.
+#. Production code and benchmark v3 remain unchanged.
+   No Scout/Reviewer or second Implementation chat is needed.

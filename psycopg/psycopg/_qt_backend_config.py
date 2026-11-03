@@ -33,7 +33,7 @@ def _read_env(path: Path) -> dict[str, str]:
 
         key, value = line.split("=", 1)
         key = key.strip()
-        if key not in _BACKEND_KEYS:
+        if key not in _BACKEND_KEYS or key in os.environ:
             continue
 
         value = value.strip()

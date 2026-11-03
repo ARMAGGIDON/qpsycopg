@@ -46,7 +46,8 @@ Precedence and freeze point
 ---------------------------
 
 For these settings the process environment takes precedence over ``.env``,
-which takes precedence over the existing backend defaults. Application code
+which takes precedence over the existing backend defaults. Values in ``.env``
+shadowed by process environment keys are not parsed. Application code
 can therefore use ordinary Python before importing psycopg::
 
     import os

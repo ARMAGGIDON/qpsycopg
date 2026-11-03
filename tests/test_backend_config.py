@@ -90,9 +90,20 @@ def test_explicit_relative_env_file(tmp_path):
 
 def test_malformed_backend_value_reports_source(tmp_path):
     (tmp_path / ".env").write_text('PSYCOPG_IMPL="qt-thread\n', encoding="utf-8")
-    result = _run(tmp_path, "import psycopg", settings={"PSYCOPG_IMPL": "python"})
+    result = _run(tmp_path, "import psycopg")
     assert result.returncode != 0
     assert "unterminated quoted value for PSYCOPG_IMPL" in result.stderr
+
+
+def test_overridden_malformed_dotenv_value_is_ignored(tmp_path):
+    (tmp_path / ".env").write_text('PSYCOPG_IMPL="bad value\\n', encoding="utf-8")
+    result = _run(
+        tmp_path,
+        "import psycopg; assert psycopg.pq.__impl__ == 'python'",
+        settings={"PSYCOPG_IMPL": "python"},
+    )
+    assert result.returncode == 0, result.stderr
+
 
 
 def test_no_env_file_does_not_change_upstream_selection(tmp_path):

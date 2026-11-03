@@ -66,6 +66,8 @@ def instrumentThread(phases: dict, state: dict) -> cProfile.Profile:
     def timed(name: str, method):
         @wraps(method)
         def call(*args, **kwargs):
+            if not state["enabled"]:
+                return method(*args, **kwargs)
             wallStart = time.perf_counter_ns()
             cpuStart = time.thread_time_ns()
             try:

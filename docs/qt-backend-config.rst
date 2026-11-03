@@ -26,8 +26,8 @@ Only four settings are consumed:
 
 Other keys, including credentials and ``QPSYCOPG_DSN``, are ignored by the
 **library** loader. Existing development tools can continue loading their
-own full ``.env`` as before. Parsing accepts ``NAME=value``, ``export
-NAME=value``, quoted values and unquoted trailing `` # comment``.
+own full ``.env`` as before. Parsing accepts ``NAME=value``, ``export NAME=value``, quoted values
+and unquoted trailing `` # comment``.
 No shell evaluation, variable interpolation or implicit credentials loading
 is performed.
 
@@ -62,7 +62,8 @@ Subsequent edits to ``PSYCOPG_IMPL`` or the application ``.env`` do not
 change that selected backend. The worker backend for ``qt-thread`` is
 loaded at import; ``qt-process`` currently reads its worker setting when
 starting a subprocess, so modifying ``QPSYCOPG_WORKER_IMPL`` later is not
-a supported reconfiguration mechanism. Repeated imports reuse the existing module; a changed ``.env``
+a supported reconfiguration mechanism. Repeated imports reuse the
+existing module; a changed ``.env``
 takes effect in a fresh interpreter. Use one backend per interpreter, not
 per-connection switching.
 

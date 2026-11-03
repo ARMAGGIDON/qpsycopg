@@ -532,6 +532,19 @@ Coordinator review -- real GET attribution plateau
   artifacts. No transfer of implementation
   ownership has occurred.
 
+Native preflight forensic addendum
+----------------------------------
+
+* First Windows preflight ZIP: ``qt-thread-native-result-preflight-20261103-223124-116.zip``,
+  captured at ``dc25abe6``. Its child crashed with ``0xC0000005`` and no stderr.
+  No feasibility case passed. This supersedes any older 'not yet measured'
+  or 'no ZIP uploaded' wording in the rolling snapshot below.
+* The current diagnostic probe now has faulthandler and flushed stage markers
+  (commits ``ad3fc11b``, ``e0189753``). **Next input:** one traced Windows
+  preflight ZIP; native SELECT A/B stays BLOCKED. No production/v3 changes.
+* Current Implementation chat remains sole runtime owner. Status CAUTION;
+  no HANDOFF NOW signs. Preserve this evidence if a same-role handoff is needed.
+
 Rolling recovery snapshot -- current Implementation owner
 ---------------------------------------------------------
 

@@ -25,6 +25,7 @@ $bench = Join-Path $PSScriptRoot "bench_qt_process.py"
 $qt = Join-Path $PSScriptRoot "bench_qt_responsiveness.py"
 $resources = Join-Path $PSScriptRoot "process_resources.py"
 $runner = Join-Path $PSScriptRoot "run_with_pg_root.py"
+$hostState = Join-Path $PSScriptRoot "benchmark_host_state.py"
 $summary = Join-Path $PSScriptRoot "summarize_qpsycopg_benchmark.py"
 $smoke = Join-Path $PSScriptRoot "smoke_qt_thread.py"
 
@@ -61,15 +62,22 @@ function Set-Mode([string] $mode) {
     }
 }
 
-function Run([string] $py, [string] $mode, [string] $label, [string[]] $scriptArgs, [string] $file, [string] $directory) {
+function Run([string] $mode, [string] $label, [string[]] $scriptArgs, [string] $file, [string] $directory) {
     Set-Mode $mode
+    $py = if ($mode -eq "upstream") { $upstreamPython } else { $python }
+    $stem = [IO.Path]::GetFileNameWithoutExtension($file)
     Write-Host "[$mode] $label"
+    & $py $hostState > (Join-Path $directory "host-$stem-before.json")
+    if ($LASTEXITCODE -ne 0) { throw "$mode host-state before $label failed with code $LASTEXITCODE" }
     & $py $runner @scriptArgs > (Join-Path $directory $file)
-    if ($LASTEXITCODE -ne 0) { throw "$mode $label failed with code $LASTEXITCODE" }
+    $runExit = $LASTEXITCODE
+    & $py $hostState > (Join-Path $directory "host-$stem-after.json")
+    if ($runExit -ne 0) { throw "$mode $label failed with code $runExit" }
+    if ($LASTEXITCODE -ne 0) { throw "$mode host-state after $label failed with code $LASTEXITCODE" }
 }
 
 try {
-    Write-Host "[upstream] resolve frozen baseline"
+    Write-Host "[upstream] resolve comparison revision"
     & git -C $repoRoot fetch --quiet https://github.com/psycopg/psycopg.git master
     if ($LASTEXITCODE -ne 0) { throw "failed to fetch psycopg/psycopg master" }
     $upstreamHead = (& git -C $repoRoot rev-parse FETCH_HEAD).Trim()
@@ -80,18 +88,22 @@ try {
     $basePython = (& $python -c "import sys; print(sys._base_executable)").Trim()
     $qtVersion = (& $python -c "import PySide6; print(PySide6.__version__)").Trim()
     $psutilVersion = (& $python -c "import psutil; print(psutil.__version__)").Trim()
+    $platform = (& $python -c "import platform, psutil; print(platform.platform() + '|' + platform.machine() + '|' + str(psutil.cpu_count(logical=True)))").Trim()
     $pgConfig = Join-Path $env:PSYCOPG_PG_ROOT "bin\pg_config.exe"
     $libpqVersion = if (Test-Path $pgConfig) { (& $pgConfig --version).Trim() } else { "unknown" }
 
-    $hashText = (@($bench, $qt, $resources, $runner) | ForEach-Object {
+    $hashText = (@($bench, $qt, $resources, $runner, $hostState) | ForEach-Object {
         (Get-FileHash $_ -Algorithm SHA256).Hash
     }) -join "|"
     $hashBytes = [Text.Encoding]::UTF8.GetBytes($hashText)
     $benchmarkHash = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($hashBytes))).ToLower()
-    $key = "{0}-py{1}-{2}" -f $upstreamBase.Substring(0, 12), $pythonVersion.Replace(".", ""), $benchmarkHash.Substring(0, 12)
+    $environmentText = "$upstreamBase|$pythonVersion|$libpqVersion|$qtVersion|$psutilVersion|$platform|$benchmarkHash"
+    $environmentBytes = [Text.Encoding]::UTF8.GetBytes($environmentText)
+    $environmentHash = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($environmentBytes))).ToLower()
+    $key = "{0}-{1}" -f $upstreamBase.Substring(0, 12), $environmentHash.Substring(0, 12)
 
     $root = Join-Path $repoRoot "test-results\qpsycopg-benchmark"
-    $baselineDir = Join-Path $root "baseline-$key"
+    $referenceDir = Join-Path $root "reference-$key"
     $upstreamRoot = Join-Path $root ("upstream-" + $upstreamBase.Substring(0, 12))
     $upstreamVenv = Join-Path $upstreamRoot ".venv-bench"
     $upstreamPython = Join-Path $upstreamVenv "Scripts\python.exe"
@@ -109,45 +121,10 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "failed to create upstream benchmark venv" }
     }
 
-    if (-not (Test-Path (Join-Path $baselineDir "manifest.json"))) {
-        Write-Host "[upstream] build pristine baseline environment"
-        & $uv.Source pip install --python $upstreamPython --reinstall -e (Join-Path $upstreamRoot "psycopg") `
-            -e (Join-Path $upstreamRoot "psycopg_c") "psutil==$psutilVersion" "PySide6-Essentials==$qtVersion"
-        if ($LASTEXITCODE -ne 0) { throw "failed to install upstream benchmark environment" }
-
-        New-Item -ItemType Directory -Path $baselineDir -Force | Out-Null
-        $benchArgs = @($bench, $dsn, "--iterations", "1000", "--rows", "100000", "--threads", "8")
-        $qtArgs = @($qt, $dsn, "--caller", "thread")
-        for ($i = 1; $i -le 6; $i++) {
-            $n = "{0:D2}" -f $i
-            Run $upstreamPython "upstream" "SQL $i/6" $benchArgs "bench-$n-upstream.json" $baselineDir
-        }
-        for ($i = 1; $i -le 3; $i++) {
-            $n = "{0:D2}" -f $i
-            Run $upstreamPython "upstream" "Qt $i/3" $qtArgs "qt-$n-upstream.json" $baselineDir
-        }
-
-        [ordered]@{
-            timestamp = (Get-Date).ToString("o")
-            repository = "psycopg/psycopg"
-            upstream_head = $upstreamHead
-            upstream_base = $upstreamBase
-            python = $pythonVersion
-            libpq = $libpqVersion
-            PySide6 = $qtVersion
-            psutil = $psutilVersion
-            benchmark_hash = $benchmarkHash
-            repeats = 6
-            qt_repeats = 3
-            iterations = 1000
-            rows = 100000
-            threads = 8
-            impl = "c"
-        } | ConvertTo-Json | Set-Content (Join-Path $baselineDir "manifest.json") -Encoding utf8
-        Write-Host "[upstream] baseline saved: $baselineDir"
-    } else {
-        Write-Host "[upstream] reuse baseline: $baselineDir"
-    }
+    Write-Host "[upstream] rebuild pristine environment against local libpq"
+    & $uv.Source pip install --python $upstreamPython --reinstall -e (Join-Path $upstreamRoot "psycopg") `
+        -e (Join-Path $upstreamRoot "psycopg_c") "psutil==$psutilVersion" "PySide6-Essentials==$qtVersion"
+    if ($LASTEXITCODE -ne 0) { throw "failed to install upstream benchmark environment" }
 
     Write-Host "[fork] rebuild psycopg-c against the same local libpq"
     & $uv.Source pip install --python $python --reinstall --no-deps -e (Join-Path $repoRoot "psycopg_c")
@@ -169,20 +146,23 @@ try {
     $benchArgs = @($bench, $dsn, "--iterations", "1000", "--rows", "100000", "--threads", "8")
     $qtArgs = @($qt, $dsn, "--caller", "thread")
     $orders = @(
-        @("direct", "thread", "process"),
-        @("thread", "process", "direct"),
-        @("process", "direct", "thread")
+        @("upstream", "direct", "thread", "process"),
+        @("direct", "thread", "process", "upstream"),
+        @("thread", "process", "upstream", "direct"),
+        @("process", "upstream", "direct", "thread")
     )
+
     for ($i = 1; $i -le 6; $i++) {
         $n = "{0:D2}" -f $i
-        foreach ($mode in $orders[($i - 1) % 3]) {
-            Run $python $mode "SQL $i/6" $benchArgs "bench-$n-$mode.json" $outDir
+        foreach ($mode in $orders[($i - 1) % 4]) {
+            Run $mode "SQL $i/6" $benchArgs "bench-$n-$mode.json" $outDir
         }
     }
+
     for ($i = 1; $i -le 3; $i++) {
         $n = "{0:D2}" -f $i
-        foreach ($mode in $orders[$i - 1]) {
-            Run $python $mode "Qt $i/3" $qtArgs "qt-$n-$mode.json" $outDir
+        foreach ($mode in $orders[($i - 1) % 4]) {
+            Run $mode "Qt $i/3" $qtArgs "qt-$n-$mode.json" $outDir
         }
     }
 
@@ -191,18 +171,22 @@ try {
         checkpoint = $Checkpoint
         branch = (& git -C $repoRoot branch --show-current).Trim()
         commit = $commit
-        baseline_key = $key
+        reference_key = $key
+        upstream_head = $upstreamHead
         upstream_base = $upstreamBase
         python = $pythonVersion
         libpq = $libpqVersion
         PySide6 = $qtVersion
         psutil = $psutilVersion
+        platform = $platform
         benchmark_hash = $benchmarkHash
+        methodology = "paired/interleaved upstream + direct + qt-thread + qt-process"
         repeats = 6
         qt_repeats = 3
         iterations = 1000
         rows = 100000
         threads = 8
+        upstream_impl = "c"
         direct_impl = "c"
         worker_impl = "c"
         thread_impl = "qt-thread"
@@ -211,8 +195,31 @@ try {
         process_parent_native = $true
     } | ConvertTo-Json | Set-Content (Join-Path $outDir "manifest.json") -Encoding utf8
 
-    Write-Host "[summary] upstream vs fork"
-    & $python $summary $baselineDir $outDir
+    if (-not (Test-Path (Join-Path $referenceDir "manifest.json"))) {
+        Write-Host "[reference] save first paired upstream run as historical drift reference"
+        New-Item -ItemType Directory -Path $referenceDir -Force | Out-Null
+        Copy-Item (Join-Path $outDir "bench-*-upstream.json") $referenceDir
+        Copy-Item (Join-Path $outDir "qt-*-upstream.json") $referenceDir
+        Copy-Item (Join-Path $outDir "host-*-upstream-*.json") $referenceDir
+        [ordered]@{
+            timestamp = (Get-Date).ToString("o")
+            reference_key = $key
+            upstream_base = $upstreamBase
+            source_checkpoint = $Checkpoint
+            source_commit = $commit
+            python = $pythonVersion
+            libpq = $libpqVersion
+            PySide6 = $qtVersion
+            psutil = $psutilVersion
+            platform = $platform
+            benchmark_hash = $benchmarkHash
+        } | ConvertTo-Json | Set-Content (Join-Path $referenceDir "manifest.json") -Encoding utf8
+    } else {
+        Write-Host "[reference] historical upstream reference: $referenceDir"
+    }
+
+    Write-Host "[summary] paired current upstream vs fork + historical drift"
+    & $python $summary $referenceDir $outDir
     if ($LASTEXITCODE -ne 0) { throw "benchmark summary failed with code $LASTEXITCODE" }
 
     Compress-Archive -Path (Join-Path $outDir "*") -DestinationPath $archive -CompressionLevel Optimal -Force

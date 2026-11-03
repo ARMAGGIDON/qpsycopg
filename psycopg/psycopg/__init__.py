@@ -7,6 +7,10 @@ psycopg -- PostgreSQL database adapter for Python
 import logging
 from typing import TYPE_CHECKING
 
+from ._qt_backend_config import bootstrap as _bootstrap_qt_config
+
+_bootstrap_qt_config()
+
 from . import pq  # noqa: F401 import early to stabilize side effects
 from . import dbapi20, postgres, types
 from ._tpc import Xid

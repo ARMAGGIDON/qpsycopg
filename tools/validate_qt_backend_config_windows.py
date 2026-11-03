@@ -17,7 +17,10 @@ def main() -> None:
         os.environ["QPSYCOPG_ENV_FILE"] = str(directory / "missing.env")
         os.environ.pop("PSYCOPG_PG_ROOT", None)
 
-        path = Path(__file__).resolve().parents[1] / "psycopg/psycopg/_qt_backend_config.py"
+        path = (
+            Path(__file__).resolve().parents[1]
+            / "psycopg/psycopg/_qt_backend_config.py"
+        )
         spec = importlib.util.spec_from_file_location("_qt_backend_config_check", path)
         assert spec is not None and spec.loader is not None
         config = importlib.util.module_from_spec(spec)

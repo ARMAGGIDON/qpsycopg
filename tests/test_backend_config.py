@@ -96,14 +96,13 @@ def test_malformed_backend_value_reports_source(tmp_path):
 
 
 def test_overridden_malformed_dotenv_value_is_ignored(tmp_path):
-    (tmp_path / ".env").write_text('PSYCOPG_IMPL="bad value\\n', encoding="utf-8")
+    (tmp_path / ".env").write_text('PSYCOPG_IMPL="bad value\n', encoding="utf-8")
     result = _run(
         tmp_path,
         "import psycopg; assert psycopg.pq.__impl__ == 'python'",
         settings={"PSYCOPG_IMPL": "python"},
     )
     assert result.returncode == 0, result.stderr
-
 
 
 def test_no_env_file_does_not_change_upstream_selection(tmp_path):
@@ -144,9 +143,7 @@ def test_windows_dll_directory_registered_before_pq(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.skipif(
-    sys.platform != "win32", reason="Windows DLL bootstrap only"
-)
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows DLL bootstrap only")
 def test_windows_invalid_pg_root_fails_early(tmp_path):
     result = _run(
         tmp_path,

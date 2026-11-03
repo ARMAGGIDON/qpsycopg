@@ -26,7 +26,8 @@ Only four settings are consumed:
 
 Other keys, including credentials and ``QPSYCOPG_DSN``, are ignored by the
 **library** loader. Existing development tools can continue loading their
-own full ``.env`` as before. Parsing accepts ``NAME=value``, ``export NAME=value``, quoted values
+own full ``.env`` as before. Parsing accepts ``NAME=value``,
+``export NAME=value``, quoted values
 and unquoted trailing `` # comment``.
 No shell evaluation, variable interpolation or implicit credentials loading
 is performed.
@@ -100,3 +101,27 @@ DLL setup at import, with **no code change in the SQL or queue/IPC hot path**.
 No quantitative performance improvement or unchanged end-to-end timing is
 claimed until measured. Production runtime optimisations remain owned by
 ``feature/qt-process-pq``.
+
+Validation checkpoint
+---------------------
+
+The dedicated Qt CI workflow validates the configuration independently from
+performance experiments. Its Linux-focused subprocess suite passed
+``10 passed, 2 skipped`` (Windows-only cases) on commit ``ffd01a2``,
+and both ``qt-thread`` and ``qt-process`` semantic smoke steps passed.
+On commit ``a08dec6`` the same focused tests and smokes passed, and a
+separate Windows runner passed the native DLL-directory registration and
+invalid-root checks. These checks do not establish a full Windows PostgreSQL
+connection through every native binding.
+
+The repository-wide lint workflow still reports many existing errors in
+other Qt/profiling files. Feature-owned formatting diagnostics were corrected
+separately. Record the final-head CI outcome in the PR review evidence before
+integration; do not treat a failed repository-wide lint run as feature-clean
+without checking its diagnostics. The full upstream test matrix is a separate
+CI gate, and no SQL performance ratios have been claimed.
+
+Coordinator review should decide whether to accept this minimal, import-time
+configuration alternative or require a separate deferred-bootstrap design for
+the proposed post-import ``psycopg.configure()`` API. No runtime owner should
+attempt per-connection backend switching as a substitute.

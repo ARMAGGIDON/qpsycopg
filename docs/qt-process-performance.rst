@@ -1,242 +1,168 @@
 Qt process performance notes
 ============================
 
-This document records the measured performance history of qpsycopg's
-``qt-process`` backend and the evidence which redirected the project toward the
-experimental ``qt-thread`` architecture.
+This document records measured qpsycopg performance history, accepted/rejected
+experiments and the evidence which moved active work from process micro-tuning to
+the real ``qt-thread`` backend.
 
-The canonical worker for process-backed measurements is
-``QPSYCOPG_WORKER_IMPL=binary``.
+For the live numbered optimisation sequence see
+:doc:`qt-process-optimization-log`. For current ownership and immediate next work
+see :doc:`qt-process-project-map`.
 
 Performance target
 ------------------
 
-For frequent database operations the target is approximately ``1x`` normal
-Psycopg binary behaviour while retaining the Qt/process-isolation semantics the
-experiment is testing.
+The target for frequent database operations is approximately normal upstream
+Psycopg behaviour while preserving the chosen Qt worker semantics. Performance
+claims must consider more than wall-clock median:
 
-Do not optimise a metric in isolation. Current comparisons include:
-
-* wall latency (median/p95 and selected tail measurements);
-* bulk throughput;
-* parent + worker CPU;
+* latency median and tails;
+* CPU per operation;
 * context switches;
-* process-tree Working Set/RSS and Private Bytes;
+* bulk throughput;
+* process-tree RSS/private memory;
 * handles, threads and process count;
-* cancellation latency;
-* Qt timer responsiveness;
-* connect/startup behaviour.
+* connection startup;
+* cancellation;
+* Qt p95/p99 responsiveness.
 
-This is important because an earlier parent-only RSS comparison made qt-process
-appear to use less memory than vanilla while the worker held a substantial part
-of the real process-tree footprint.
+Process-backed resource totals must use the whole parent+worker process tree.
+Parent-only memory/CPU is useful for attribution, not architecture comparison.
 
-Benchmark methodology
----------------------
+Current canonical methodology
+-----------------------------
 
-``tools/test.ps1`` currently performs repeated qpsycopg runs but only one fresh
-vanilla sentinel for an unchanged workload. ``tools/vanilla_baseline.py`` scans
-compatible historical benchmark archives and constructs a reusable vanilla
-baseline using robust median/MAD statistics and sample counts.
+The current acceptance benchmark is ``tools/benchmark_qpsycopg.ps1``.
 
-Compatibility is keyed by workload details such as worker implementation,
-iterations, row count, thread count and ``benchmark_workload_version``. A new
-vanilla baseline is still required when the workload changes or when a new metric
-was not collected by older archives.
+The upstream comparison revision is the merge-base with ``psycopg/psycopg``::
 
-Resource measurements use the process tree for qt-process. Parent-only memory or
-CPU is useful for phase attribution but is not a valid architecture-level total.
+    99356800e90aa0e7b604f652d714ef0f33422b47
 
-Checkpoint map
---------------
+Upstream and fork are installed into isolated, non-editable benchmark venvs built
+from the same CPython and against the same local PostgreSQL/libpq installation.
+The benchmark reruns upstream in every checkpoint because Windows scheduler/load,
+CPU state and PostgreSQL/Docker state can move absolute timings.
 
-The preserved work contains several different kinds of checkpoints:
+Benchmark v3 is the canonical methodology for numbered optimisations:
 
-* ``optimizedNN``: full/end-to-end numbered benchmark checkpoints;
-* transport/native validations: same-run paired A/B used to make local design
-  decisions under the same environment;
-* architecture validations: direct vs dedicated-thread vs process comparisons.
+* every fork mode has an immediately adjacent upstream run;
+* pair orientation is alternated;
+* short query timing uses 5000 measured iterations after 200 warm-ups;
+* warm connection timing uses 40 samples;
+* cancellation uses 20 attempts per SQL run;
+* concurrency uses 20 batches on an already warmed thread pool;
+* Qt uses five paired runs and treats p95/p99 as primary tail metrics;
+* maximum Qt stall is diagnostic only;
+* the primary ratio is the median of per-pair ``fork / upstream`` ratios;
+* paired-ratio MAD/range and upstream drift are reported separately;
+* discrete architecture resources are reported as deltas rather than ratios.
 
-The latest full numbered checkpoint in the preserved handoff is ``optimized35``.
-The branch contains later retained changes and targeted validations, so
-``optimized35`` is not a complete description of current HEAD performance.
+The historical ``initial`` and ``baseline-v2`` checkpoints used older benchmark
+definitions and are diagnostic only. ``baseline-v3`` is the canonical before-state
+for the current numbered series.
 
-Major performance milestones
-----------------------------
+Canonical baseline -- baseline-v3
+---------------------------------
+
+The complete qt-thread smoke passed at ``baseline-v3``. Selected paired ratios
+were:
+
+=====================================  ===========  ============
+Metric                                 qt-thread    qt-process
+=====================================  ===========  ============
+cold connect                           1.366x       14.504x
+warm connect median                    1.409x       1.123x
+warm connect p95                       1.930x       1.166x
+SELECT 1 median                        1.273x       1.446x
+SELECT 1 p95                           1.249x       1.542x
+SELECT 1 p99                           1.395x       1.547x
+CPU / short query                      2.000x       3.163x
+context switches / query               3.032x       2.994x
+100k execute                           1.040x       1.067x
+100k fetch/decode                      1.013x       0.969x
+100k total                             1.027x       0.986x
+8-thread batch median                  1.341x       1.523x
+concurrent throughput                  0.746x       0.659x
+cancel call median                     1.048x       1.718x
+process-tree RSS                       1.320x       2.467x
+process-tree private memory            1.377x       2.384x
+Qt timer p95                           0.982x       1.005x
+Qt timer p99                           1.008x       1.005x
+=====================================  ===========  ============
+
+Connected-state architecture deltas were approximately:
+
+======================  ===========  ============
+Resource                qt-thread    qt-process
+======================  ===========  ============
+processes                +0           +2
+threads                  +2           +11
+handles                  +14          +306
+======================  ===========  ============
+
+The short-query median is sufficiently stable to drive normal optimisation:
+upstream median MAD was about ``0.72%`` and the qt-thread paired ratio MAD about
+``3.98%``. Context-switch and memory ratios were also stable. Cancellation
+latency remains scheduler-sensitive and is supporting evidence rather than a sole
+acceptance criterion.
+
+Qt p95/p99 are effectively at parity, so current work should not target Qt timer
+behaviour. Large-result decode is also near upstream and remains deprioritised.
+
+Historical performance milestones
+---------------------------------
 
 Native result packing -- optimized15
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The original large-result snapshot path built ``PackedValues`` in Python by
-calling ``PGresult.get_value()`` for every cell.
-
-For the 100k x 3 benchmark the measured value-packing cost changed roughly from::
+The original process worker created packed values through a Python per-cell
+``PGresult.get_value()`` loop. For the 100k x 3 workload the value-packing phase
+moved roughly from::
 
     Python snapshot values     ~108.9 ms
     native snapshot values       ~5.1 ms
 
-This was about a ``21x`` improvement in the packing phase and removed the first
-major large-result bottleneck. The native implementation was placed in shared
-Cython ``PGresult`` source so locally generated ``psycopg_binary`` can expose the
-same capability. The wire layout stayed unchanged.
+This was about a ``21x`` phase improvement and removed the dominant early bulk
+bottleneck. Do not return to per-cell packing without new profiling evidence.
 
 Cancellation isolation and WAIT batching -- optimized16
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Cancellation originally shared the main transport lock with query WAITs.
-Collapsing cancel chatter alone was insufficient because cancellation still had
-to wait for the query transport.
+Cancellation originally shared the main transport lock with query WAITs. A
+separate authenticated cancellation channel removed that dependency. This allowed
+the worker readable-data drain to grow from ``1 ms`` to ``10 ms``; a representative
+100k profile dropped from roughly 67 remote WAIT operations to 11 and improved
+elapsed time by about 11%.
 
-A dedicated authenticated cancellation control channel removed that dependency.
-Representative targeted cancellation measurements reached roughly::
+The remaining WAIT wall time was mostly real libpq/socket waiting. Increasing the
+drain further merely to minimise request count is not an optimisation target.
 
-    qpsycopg cancel_call    ~6.0 ms
-    vanilla cancel_call     ~6.5 ms
+Compact process short-query path and worker reuse -- optimized17..29
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-With cancellation isolated, the worker readable-data drain could grow from
-``1 ms`` to ``10 ms``. A representative 100k x 3 profile changed from roughly
-``67`` remote WAIT operations to ``11`` and reduced profiler elapsed time by
-about ``11%``.
+Measured retained changes included:
 
-The remaining WAIT wall time was mostly real worker/libpq waiting, not avoidable
-RPC chatter. This remains the reason not to keep increasing the drain merely to
-minimise request count.
-
-Compact short-query path and worker reuse -- optimized17..29
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-A sequence of measured changes reduced fixed short-query overhead:
-
-* ``Request``/``Response`` protocol simplification;
+* generic request/response simplification;
 * dedicated fast-execute framing;
-* compact payloads;
-* marshal on the common fast path;
-* warmed worker-process reuse between PostgreSQL sessions;
+* compact payloads/marshal on the common path;
+* warmed worker-process reuse;
 * stable client-encoding caching;
 * removal/reuse of redundant status work;
 * native result metadata capability detection.
 
-The structural connect penalty changed most dramatically. Before worker reuse a
-full checkpoint had measured connection startup around ``13.8x`` vanilla. The
-first reuse checkpoint reduced this to roughly ``1.34x`` and later runs often
-stayed close to parity.
+Worker reuse removed the structural process-start cost from most normal connect
+operations. Old checkpoints which mixed worker cold-start and warm session setup
+must not be interpreted as one homogeneous connect distribution.
 
-One useful later checkpoint was ``optimized22`` with approximately::
-
-    connect             1.01x
-    SELECT median       1.32x
-    SELECT p95          1.22x
-    100k total          1.04x
-    execute             1.17x
-    fetchall            0.93x
-    threads             1.31x
-    cancel call         1.16x
-
-Run-to-run vanilla drift remained visible, so later decisions increasingly used
-same-run paired A/B tests instead of comparing isolated checkpoint ratios.
-
-Windows TCP loopback fast path -- optimized30
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Enabling ``SIO_LOOPBACK_FAST_PATH`` on both ends of the Windows TCP main channel
-was a real improvement and became the retained TCP fallback.
-
-Compared with ``optimized29`` the paired summary moved approximately::
-
-=====================  ============  ============
-Metric                 optimized29   optimized30
-=====================  ============  ============
-connect ratio          1.122x        1.125x
-SELECT median          1.538x        1.482x
-SELECT p95             1.565x        1.530x
-100k total             1.041x        1.090x
-execute                1.114x        1.161x
-fetchall               0.949x        1.020x
-threads                1.555x        1.343x
-=====================  ============  ============
-
-Absolute qpsycopg SELECT median in that run moved from about ``0.916`` to
-``0.771 ms``. The paired short-query improvement was smaller than the absolute
-run-to-run difference but still positive.
-
-Experiments immediately after optimized30
+Windows transport work -- optimized30..35
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Several plausible micro-optimisations were explicitly rejected instead of being
-stacked indefinitely:
+``SIO_LOOPBACK_FAST_PATH`` improved the retained TCP fallback. A local transport
+microbenchmark then showed lower fixed latency for raw Windows named pipes,
+particularly for tiny request/response messages. The production Windows process
+path moved to a raw byte-stream named pipe with read-ahead preservation.
 
-* coalesced small-frame ``recv``: no useful SELECT benefit, worse threads and a
-  correctness risk if a TCP read crossed a frame boundary without preserving
-  over-read;
-* returning fast ``SendSnapshot`` directly: effectively neutral;
-* Windows ``AF_UNIX``: rejected against the retained TCP path;
-* shortened fast response state and transaction-status caching: insufficient or
-  noisy benefit relative to added state-machine complexity.
-
-The project then switched from serial full SQL A/B guesses to targeted transport
-and resource measurements.
-
-IPC microbenchmark and resource telemetry -- optimized34
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-A local IPC microbenchmark measured representative 64-byte round-trip medians::
-
-    TCP loopback             ~60.9 us
-    TCP loopback fast path   ~53.6 us
-    Windows named pipe       ~27.9 us
-
-At 512 bytes the gap narrowed::
-
-    TCP-fast                 ~55.4 us
-    named pipe               ~48.1 us
-
-This suggested that the pipe advantage was primarily lower fixed synchronization
-cost for tiny messages rather than bulk bandwidth.
-
-The benchmark harness was then extended to measure parent+worker resources.
-``optimized34`` exposed the architecture cost much more clearly:
-
-===========================  ============  ============  ========
-Metric                       vanilla       qt-process    q/v
-===========================  ============  ============  ========
-SELECT median                0.519 ms      0.768 ms      1.48x
-SELECT CPU                   156 us/call   594 us/call   3.80x
-context switches             1.01/call     3.07/call     3.05x
-RSS after SELECT             38.6 MB       90.3 MB       2.34x
-Private Bytes                26.7 MB       56.9 MB       2.13x
-handles                      197           522           2.65x
-threads                      6             19            3.17x
-100k total                   0.254 s       0.281 s       1.11x
-100k CPU                     0.203 s       0.250 s       1.23x
-100k context switches        800           835           1.04x
-===========================  ============  ============  ========
-
-This corrected the old interpretation of RSS. The process-backed architecture
-uses materially more total memory/resources even when the parent process alone
-can look smaller than vanilla.
-
-CPU phase profiling also showed that serialization itself was no longer the
-main issue. One 10k SELECT profile was approximately::
-
-    wall                        ~817 us/query
-    parent CPU                  ~202 us/query
-    worker CPU                  ~147 us/query
-    serialize                     ~3 us/query
-    socket send                 ~12.5 us/query
-    restore                      ~1.6 us/query
-
-The fixed receive/IPC path was a much more promising target than result packing
-or marshal/pickle micro-tuning.
-
-Raw Windows named pipe -- optimized35
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The first named-pipe implementation used ``multiprocessing.Connection`` and lost
-part of the microbenchmark advantage through extra framing/copies. It was
-replaced by a raw byte stream using ``CreateNamedPipeW`` / ``CreateFileW`` and
-``io.FileIO``.
-
-A paired TCP-fast vs raw-pipe run then measured approximately:
+A representative paired TCP-fast vs raw-pipe run measured approximately::
 
 ====================  ============  ============
 Metric                TCP-fast      raw pipe
@@ -246,88 +172,56 @@ SELECT p95            1.191 ms      1.016 ms
 SELECT CPU            625 us        469 us
 connect               30.02 ms      28.77 ms
 100k total            0.2742 s      0.2730 s
-fetchall              0.1327 s      0.1319 s
 ====================  ============  ============
 
-``optimized35`` subsequently reported a qpsycopg SELECT around ``0.735 ms``,
-about ``1.24x`` the accumulated vanilla baseline around ``0.591 ms``. Parent CPU
-and total tree CPU also improved while worker CPU stayed nearly unchanged.
+This established raw named pipe as the preferred Windows process transport while
+retaining TCP as a fallback.
 
-Paired Qt validation showed the occasional large timer stalls were not specific
-to named pipes; TCP runs could show similar scheduler spikes. Raw named pipe was
-therefore made the Windows default, with TCP retained through
-``QPSYCOPG_IPC=tcp``.
+Process resource telemetry
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``optimized34`` exposed the real cost of process isolation once the whole process
+tree was measured. Representative figures were::
+
+    SELECT median          ~1.48x vanilla
+    SELECT CPU             ~3.80x
+    context switches       ~3.05x
+    process-tree RSS       ~2.34x
+    private memory         ~2.13x
+    100k total             ~1.11x
+
+This corrected earlier parent-only RSS interpretations.
 
 Native parent IPC
 -----------------
 
-Why move the data plane below Python
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A synthetic Python-vs-Cython named-pipe experiment showed a real opportunity to
+move the parent frame exchange below Python. For a small request/response class a
+representative result was roughly::
 
-A synthetic Python-vs-Cython named-pipe experiment tested the architecture
-question directly rather than assuming Python overhead was dominant.
+    median       25.3 -> 19.0 us
+    p95          39.1 -> 25.7 us
+    CPU          14.06 -> 4.69 us
 
-For a 128-byte request/response class it measured approximately::
+The first integration regressed because it forced separate header/payload reads.
+After adding native read-ahead, a same-run process validation showed roughly:
 
-    median       25.3 -> 19.0 us   (-24.9%)
-    p95          39.1 -> 25.7 us   (-34.3%)
-    CPU          14.06 -> 4.69 us  (-66.7%)
+* SELECT median ``-4.1%``;
+* SELECT p95 ``-17.7%``;
+* parent CPU about ``-20%``;
+* process-tree CPU about ``-7.5%``;
+* bulk and Qt behaviour effectively neutral.
 
-At 8 KiB the median improvement was about ``21%`` and CPU reduction about ``43%``.
-This was strong enough evidence to integrate a native parent frame exchange into
-the real named-pipe fast path.
-
-The first integration regressed because it forced two ``ReadFile`` operations
-(header then payload), while the Python read-ahead path often obtained both in
-one kernel read. The implementation was corrected to use a reusable read-ahead
-buffer and parse the header in C.
-
-A same-run Python-pipe vs native-pipe validation then showed the retained native
-parent exchange was worthwhile:
-
-* SELECT median: about ``-4.1%`` paired median;
-* SELECT p95: about ``-17.7%``;
-* SELECT mean: about ``-12.6%``;
-* parent CPU: ``184.4 -> 146.9 us/query`` (about ``-20.3%``);
-* process-tree CPU: ``310.9 -> 287.5 us/query`` (about ``-7.5%``);
-* context switches: effectively unchanged;
-* bulk: statistically neutral;
-* Qt median/p95: neutral.
-
-This is the current reason the preferred Windows parent fast path uses the Cython
-named-pipe frame exchange when available.
+The native parent named-pipe frame exchange is therefore retained.
 
 Worker-side native experiments
 ------------------------------
 
-Worker CPU phase profiling
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+Worker hot-path profiling showed that result snapshot work was already tiny while
+worker wait/receive/dispatch dominated the process fixed cost. Native worker frame
+receive and native Winsock wait were therefore tested separately.
 
-A worker hot-path profile decomposed approximately::
-
-    worker total CPU          ~195.3 us/query
-    recv request frame         ~95.3 us
-    handle/dispatch            ~93.8 us
-    send response frame         ~6.3 us
-
-Most of ``handle`` was the query execution/wait path::
-
-    _executePending            ~87.5 us CPU
-    _wait                      ~85.9 us CPU-accounted time
-    select/libpq wait          ~523.7 us wall
-
-Result work was already tiny::
-
-    PGresult snapshot CPU       ~1.6 us
-    value packing CPU           ~1.6 us
-
-This prevented another round of unnecessary snapshot/serialization work.
-
-Native worker receive and native Winsock wait
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Native worker frame receive gave only a small signal in an initial paired run.
-A later controlled three-way test isolated the choices:
+A controlled three-way result was approximately::
 
 ======================  ============  ============
 Mode                    SELECT median SELECT p95
@@ -337,115 +231,55 @@ native worker receive   ~0.731 ms     ~0.955 ms
 native receive + wait   ~0.757 ms     ~1.247 ms
 ======================  ============  ============
 
-The native receive result was essentially neutral and native Winsock ``select``
-was clearly worse. Bulk also showed no stable win.
+Native worker receive was neutral and native socket wait was worse. Both helpers
+remain experimental switches only; do not enable them by default or repeat the
+same experiment without new evidence.
 
-Therefore the production default was restored to:
+Architecture boundary result
+----------------------------
 
-* native parent named-pipe frame exchange;
-* Python worker frame receive;
-* Python ``select.select()`` for the libpq socket.
-
-The native worker helpers remain useful experiment switches but must not be
-confused with the current default.
-
-Architecture boundary benchmark
--------------------------------
-
-After the worker-native experiments failed to expose a large remaining local
-Python bottleneck, the project tested the process boundary itself.
-
-The benchmark compared:
-
-* direct normal Psycopg binary;
-* the same normal Psycopg connection executed through a dedicated thread;
-* current qt-process.
-
-Short-query median results were approximately::
+After local process micro-optimisations stopped exposing a large missing win, the
+project compared direct Psycopg, the same work through a dedicated thread and the
+process backend. Representative short-query medians were::
 
     direct       ~533 us
     thread       ~567 us
     process      ~724 us
 
-Paired interpretation:
+The dedicated thread was about ``+5%`` over direct in that synthetic architecture
+gate, while qt-process was roughly ``+38.6%``. Process CPU was about ``2.44x`` the
+dedicated-thread CPU. Both worker architectures were around three context switches
+per query versus about one direct, so context-switch count alone did not explain
+the process penalty.
 
-* thread vs direct: about ``+5.0%`` median;
-* process vs direct: about ``+38.6%`` median;
-* process vs thread: about ``+31.2%`` median;
-* process CPU vs thread: about ``2.44x``;
-* 100k-row fetch: thread approximately direct, process about ``+6.6%`` versus
-  thread.
+This result motivated the real ``PSYCOPG_IMPL=qt-thread`` backend instead of
+continuing random process-IPC micro-tuning.
 
-Context switches per query were approximately::
+Real qt-thread validation
+-------------------------
 
-    direct       ~1
-    thread       ~3
-    process      ~3
+The real qt-thread implementation initially exposed several correctness/setup
+issues which are now resolved:
 
-This is a critical result. The process backend is not slower simply because it
-performs more context switches than the thread architecture; both worker
-architectures are around three. The remaining process penalty includes the
-process boundary itself, kernel IPC, serialization/framing and a second Python
-runtime.
+* Python generator-layer selection;
+* shared-interpreter worker pq namespace consistency;
+* connection-handshake lifecycle/fatal-health checks;
+* dispatch deadlock after worker exit;
+* Windows libpq/DLL bootstrap for validation tooling;
+* native packed-decoder selection for qt-thread.
 
-Qt and cancellation architecture gate
--------------------------------------
+The standalone semantic smoke now passes fully, including COPY, multiple result
+sets, cancellation, fatal backend termination, shared connection access and
+``AsyncConnection``.
 
-A focused gate compared direct, dedicated-thread and qt-process behaviour.
+An important measurement correction was also made: an early qt-thread bulk
+regression came from accidentally using ``psycopg.adapt.Transformer`` without the
+native remote decoder. Enabling the same native packed decoder used by qt-process
+brought 100k fetch/decode back near direct/upstream. Do not treat the pre-fix bulk
+numbers as architectural evidence.
 
-With synchronous DB work invoked from a worker thread, Qt timer behaviour was
-approximately::
-
-==================  ============  ============  ============
-                    direct        thread        qt-process
-==================  ============  ============  ============
-timer median        ~9.90 ms      ~10.05 ms     ~9.98 ms
-timer p95           ~11.67 ms     ~11.52 ms     ~11.55 ms
-max stall           ~3.78 ms      ~3.23 ms      ~3.04 ms
-==================  ============  ============  ============
-
-Cancellation succeeded for all three and the connection remained usable after
-rollback/recovery.
-
-When the synchronous query was invoked from the Qt main thread, all three blocked
-the event loop, approximately::
-
-    direct       ~579 ms
-    thread       ~594 ms
-    process      ~701 ms
-
-Therefore worker topology does not make the synchronous API non-blocking. The
-relevant result is that the dedicated-thread architecture passed the same
-worker-thread Qt/cancellation gate while remaining much closer to direct Psycopg
-performance.
-
-Current architectural conclusion
---------------------------------
-
-The remaining dominant question is no longer a missing process-IPC
-micro-optimisation.
-
-The evidence now says:
-
-#. large-result packing/decoding is near native;
-#. cancellation is isolated and near practical parity;
-#. worker reuse removes most startup penalty;
-#. raw named pipe + native parent exchange has reduced process IPC cost;
-#. worker-side receive/wait native rewrites do not expose a large additional win;
-#. a dedicated thread is much closer to direct Psycopg than the separate process.
-
-This motivated a real ``PSYCOPG_IMPL=qt-thread`` proof of concept which reuses the
-full synthetic pq facade/cache/snapshot semantics through ``SimpleQueue`` instead
-of process IPC.
-
-That proof of concept is not yet validated. The current branch handoff has fixed
-its Python generator selection and shared-interpreter worker backend namespace,
-but the standalone smoke still fails during initial connection setup. No
-``qt-thread`` performance result should be treated as representative until the
-semantic smoke suite passes.
-
-Rejected or deprioritised experiments
--------------------------------------
+Rejected / deprioritised experiments
+------------------------------------
 
 Protocol-5 out-of-band pickle buffers
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -455,20 +289,20 @@ Slower in earlier measurements; rolled back.
 Speculative ``get_result()`` during WAIT
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Changed result-boundary timing and broke correctness/fatal semantics. Do not
+Changed result-boundary timing and broke fatal/COPY semantics. Do not
 reintroduce without a new design argument.
 
 Longer WAIT drain as a goal by itself
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The ``10 ms`` drain already removed most avoidable WAIT RPC count. Remaining
-wall time is mostly real libpq waiting.
+The ``10 ms`` drain already removed most avoidable WAIT crossings. Remaining wall
+time is largely real libpq/socket waiting.
 
-TCP one-read over-read experiment
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Unsafe one-read TCP receive
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-A naive large ``recv`` did not improve SELECT and could consume bytes from the
-next frame without preserving them. The named-pipe adapter instead uses explicit
+Did not improve SELECT and risked consuming bytes from a following frame without
+preserving the over-read. The retained named-pipe adapter explicitly preserves
 read-ahead state.
 
 Windows AF_UNIX
@@ -476,56 +310,76 @@ Windows AF_UNIX
 
 Did not beat the retained Windows transport path and was removed.
 
-Direct ``SendSnapshot`` return shortcut
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Direct ``SendSnapshot`` shortcut and small state-cache variants
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-No useful real-world improvement; removed.
+No useful stable end-to-end improvement relative to added state-machine
+complexity; reverted/deprioritised.
 
-Small state/cache micro-optimisations
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Native worker receive / native wait
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Several response-state shortening and transaction-status cache experiments were
-neutral or negative relative to complexity and were reverted.
+Receive was neutral; native wait was slower. Disabled by default.
 
-Native worker receive
-~~~~~~~~~~~~~~~~~~~~~
+Generic serialization/snapshot micro-tuning
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Controlled result was essentially neutral. Helper remains experimental only.
+Profiling no longer showed these phases as the dominant process cost. Do not
+resume them without fresh phase evidence.
 
-Native worker socket wait
-~~~~~~~~~~~~~~~~~~~~~~~~~
+Bulk decoder tuning
+~~~~~~~~~~~~~~~~~~~
 
-Clearly worse in the controlled three-way test. Disabled by default.
+Current qt-thread/process bulk decode is near upstream. Do not spend another
+iteration here while short-query CPU/latency remains materially higher.
+
+Current numbered optimisation -- optimized01
+---------------------------------------------
+
+``optimized01`` is a narrow qt-thread lifecycle experiment. Before the change,
+``Connection.connect()`` created the full cancel-control infrastructure even for a
+connection immediately closed without running a query. The implementation now:
+
+* skips eager cancel-control creation for qt-thread;
+* opens it immediately before the first normal ``send_query*``;
+* retains an on-demand ``cancel_safe()`` fallback;
+* leaves qt-process unchanged.
+
+Implementation commits are ``4637ff9`` and ``371bda8``.
+
+Expected signals are reduced qt-thread connection/resource overhead before the
+first query. Short-query latency is not the primary target because cancellation
+support is still established before the first query and then reused.
+
+``optimized01`` is not accepted yet. The next required action is to run the
+unchanged v3 benchmark as checkpoint ``optimized01`` and compare it directly with
+``baseline-v3``. Do not stack another runtime optimisation before this result is
+available.
 
 Performance rules for future work
 ---------------------------------
 
-#. Prefer same-run paired A/B for small changes; absolute Windows timing drifts
-   materially between runs.
-#. Do not repeat unchanged vanilla seven times. Use the accumulated compatible
-   baseline plus a sentinel.
-#. Measure qt-process resources as parent + worker tree.
-#. Do not optimise serialization or snapshot code without a phase profile showing
-   it dominates again.
-#. Keep the current raw named pipe and native parent exchange while evaluating
-   the architecture; they are the measured best process-backed data path.
-#. Keep worker native receive/wait disabled by default.
-#. Do not interpret process isolation as GUI asynchrony.
-#. The next meaningful performance checkpoint is a smoke-clean real ``qt-thread``
-   backend compared with direct binary and qt-process under the same full Psycopg
-   proxy/cache/snapshot semantics.
+#. Use compatible adjacent paired upstream/fork measurements for optimisation
+   claims.
+#. Keep upstream code fixed while rerunning its measurements in every checkpoint.
+#. Treat historical upstream runs as drift evidence, not the sole denominator.
+#. Measure process-backed resources across the whole process tree.
+#. Keep raw named pipe + native parent exchange as the measured process default.
+#. Keep native worker receive/wait disabled by default.
+#. Do not infer GUI responsiveness from worker topology.
+#. Do not optimise bulk decode or Qt p95/p99 while they remain near upstream.
+#. Change one bounded runtime hypothesis at a time and measure before stacking the
+   next optimisation.
 
 Next work
 ---------
 
-#. Fix the current ``qt-thread`` initial connection/lifecycle failure using only
-   the standalone smoke while iterating.
-#. Complete the entire semantic smoke suite before running full performance
-   comparisons.
-#. Run the balanced ``binary/direct`` vs ``qt-thread`` vs ``qt-process``
-   validation after smoke passes.
-#. If real qt-thread remains close to the earlier dedicated-thread architecture
-   result and preserves semantics, make the architecture decision before doing
-   more process-IPC micro-optimisation.
-#. After that decision, create a new full numbered checkpoint representing the
-   chosen current runtime and update this document.
+#. Run ``optimized01`` with ``tools/benchmark_qpsycopg.ps1`` using the unchanged
+   v3 benchmark.
+#. Confirm the semantic smoke remains clean.
+#. Compare connection/resource deltas and unrelated regressions against
+   ``baseline-v3``.
+#. Retain or revert ``optimized01`` from evidence, and document the result.
+#. If retained, select the next bounded target from the remaining measured cost;
+   current evidence points to qt-thread short-query CPU/latency, not bulk decode
+   or process-IPC micro-tuning.

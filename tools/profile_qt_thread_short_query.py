@@ -93,10 +93,12 @@ def instrumentThread(phases: dict, state: dict) -> cProfile.Profile:
 
     @wraps(originalHandle)
     def handle(self, request):
-        if state["enabled"] and not state["profiling"]:
+        # CPython 3.13 cProfile uses one monitoring tool: two simultaneously
+        # active Profile objects (even on different threads) conflict.
+        if state["profile_worker"] and not state["profiling"]:
             workerProfile.enable()
             state["profiling"] = True
-        elif not state["enabled"] and state["profiling"]:
+        elif not state["profile_worker"] and state["profiling"]:
             workerProfile.disable()
             state["profiling"] = False
         return timedHandle(self, request)
@@ -150,30 +152,43 @@ def main() -> int:
     if impl not in ("c", "qt-thread"):
         parser.error(f"unexpected pq implementation: {impl!r}")
     phases: dict = {}
-    state = {"enabled": False, "profiling": False}
+    state = {"enabled": False, "profile_worker": False, "profiling": False}
     workerProfile = None
+    workerProfiled = None
     callerProfile = cProfile.Profile(timer=time.thread_time)
     with psycopg.connect(args.dsn) as connection:
         for _ in range(args.warmup):
             selectOne(connection)
 
-        # Keep the control sample free of monkeypatched timing hooks.
+        # Clean warm control: no hooks or profilers are installed yet.
         unprofiled = measure(connection, args.iterations)
         if impl == "qt-thread":
             workerProfile = instrumentThread(phases, state)
 
-        state["enabled"] = True
+        # Pass 1: caller profile only. Concurrent cProfile objects conflict on
+        # Python 3.13, so the worker must not enable its profiler here.
         callerProfile.enable()
-        profiled = measure(connection, args.iterations)
-        callerProfile.disable()
-        state["enabled"] = False
+        try:
+            callerProfiled = measure(connection, args.iterations)
+        finally:
+            callerProfile.disable()
 
         if impl == "qt-thread":
+            # Pass 2: worker profile and phase timers, with caller profile OFF.
+            # Even if measurement fails, disable worker profiling before the
+            # connection context manager attempts COMMIT/ROLLBACK/close.
             from psycopg.pq._qt_process_protocol import Operation
-            # Force an out-of-window request so the worker disables its own profiler.
-            connection.pgconn._transport.request(Operation.GET, 1, "status")
-            if state["profiling"]:
-                raise AssertionError("worker profiler did not stop")
+
+            state["enabled"] = True
+            state["profile_worker"] = True
+            try:
+                workerProfiled = measure(connection, args.iterations)
+            finally:
+                state["enabled"] = False
+                state["profile_worker"] = False
+                connection.pgconn._transport.request(Operation.GET, 1, "status")
+                if state["profiling"]:
+                    raise AssertionError("worker profiler did not stop")
 
     result = {
         "impl": impl,
@@ -182,12 +197,13 @@ def main() -> int:
         "psycopg_module": str(psycopg.__file__),
         "iterations": args.iterations,
         "warmup": args.warmup,
-        "note": "Diagnostic only: cProfile + phase hooks perturb timing. Do not compare profiled wall time to v3.",
+        "note": "Diagnostic only: unprofiled control, caller-only cProfile pass, then worker-only cProfile/phase pass. Profiled timings are not v3 acceptance data.",
         "unprofiled": unprofiled,
-        "profiled": profiled,
+        "caller_profiled": callerProfiled,
         "caller_profile": profileRows(callerProfile, args.iterations),
     }
     if workerProfile is not None:
+        result["worker_profiled"] = workerProfiled
         result["worker_profile"] = profileRows(workerProfile, args.iterations)
         result["phase_totals"] = {
             name: {

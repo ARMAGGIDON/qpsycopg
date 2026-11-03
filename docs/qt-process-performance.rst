@@ -619,7 +619,7 @@ of the locally supplied ZIP are in
 :doc:`qt-process-optimization-log`.
 
 Real qt-thread no-SQL GET path attribution -- complete
-----------------------------------------------------
+------------------------------------------------------
 
 The Coordinator-authorised real-path diagnostic
 ``qt-thread-real-get-profile-20261103-213627-044.zip``

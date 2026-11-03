@@ -425,93 +425,95 @@ checkpoint and proposed next direction to ``00 Coordinator``
 for independent milestone review before starting a new runtime
 optimisation direction.
 
-Queue-response wait A/B -- approved diagnostic, awaiting measurements
----------------------------------------------------------------------
+Queue-response wait A/B -- REJECT, completed diagnostic
+------------------------------------------------------
 
-Independent Coordinator review of HEAD ``ae01f74f4e3f2f075e918a641e1df94e53c2ebc6``
-returned **CONTINUE** for a diagnostic-only A/B. The sole tested hypothesis
-is that the timed response ``SimpleQueue.get(timeout=0.1)`` call inside
-``_ThreadTransport._dispatch`` contributes at least 10 us of avoidable
-fixed wall latency to a warmed no-SQL request/response round trip.
+The Coordinator-approved diagnostic was run on Windows at fork commit
+``516ccc8ca2e627f3c1575933704077df88e60f07``; archive:
+``qt-thread-queue-wait-ab-20261103-195939-054.zip``. Manifest and result
+agree on branch ``feature/qt-process-pq``, CPython ``3.13.5``,
+``PSYCOPG_IMPL=qt-thread``, C worker, eight alternating A/B pairs,
+4000 warmed no-SQL requests per mode per pair, 300 warmup calls per mode,
+and 8-second watchdog for isolated fault scenarios. The archive contains
+``manifest.json``, ``results.json`` and an empty ``stderr.log``. All
+eight pairs and six fault scenarios returned explicit results.
+Production code and the canonical v3 benchmark were **not** modified.
 
-Two standalone diagnostics have been added, **without modifying the
-production runtime or canonical v3 benchmark**:
+Each pair uses the same connected worker and ``Operation.GET`` PGconn status
+request/response path, changing only the caller's response wait between
+``SimpleQueue.get(timeout=0.1)`` and raw untimed ``get()``.
+Paired difference below is *timed minus untimed* (positive favors untimed)::
 
-* ``tools/bench_qt_thread_queue_wait.py`` runs an existing qt-thread
-  connection, sends direct ``Operation.GET`` of the PGconn status over
-  the normal request/response path, and switches the transport class's
-  response wait method between the original timed implementation and
-  an untimed local replica. The class patch exists *only in the
-  diagnostic Python process*. Each of eight interleaved pairs
-  alternates timed/untimed order after warming each mode, with 4000
-  measured no-SQL requests per mode by default. The entire measured
-  untimed A/B also executes in a watchdog-protected subprocess (60 seconds
-  by default) so an unexpected worker failure cannot hang the runner. The script collects
-  uninstrumented wall time, total process CPU, caller CPU and process
-  context switches with per-pair timed-minus-untimed differences,
-  median, MAD, range and sign count.
-* ``tools/bench_qt_thread_queue_wait.ps1`` loads the usual local
-  environment and runs the diagnostic with the existing isolated
-  fork benchmark venv, preserving a separate
-  ``qt-thread-queue-wait-ab-*.zip`` artifact and restoring environment
-  variables after completion. The v3 acceptance workload, upstream
-  environment and measured production implementation are untouched.
+    Pair             1       2       3       4       5       6       7       8
+    Wall delta (us) -0.865  -4.403  +1.304  +2.119  -3.192  -0.159  +0.190  +0.583
 
-**Predeclared performance gate**: at least 10 us median improvement
-for untimed relative to timed, median improvement greater than
-three times the paired MAD, and positive improvement in all but at most
-one pair. These numbers are a diagnostic screen, not proof of a safe
-runtime optimisation.
+Predeclared gate and observed result::
 
-**Liveness/semantics gate**: each wait mode is separately tested
-for worker exception propagation, clean close with rejection of later
-requests, and worker exit without returning a response. Every scenario
-runs in a subprocess with a watchdog. The untimed mode is expected to
-block forever if the worker disappears after a request is submitted
-without a response; the harness explicitly records watchdog timeout
-as an **unsafe production behavior**, not as a successful safety test.
-A production change would need a different design that preserves
-worker exit detection, exceptional return and close. Never install
-the untimed replica directly into the runtime.
+    metric                                      observed           required
+    median wall improvement                    +0.01546 us        >=10 us
+    paired wall MAD                             1.08491 us         median >3*MAD
+    range of paired wall delta                  -4.403 to +2.119  repeatable benefit
+    pairs favoring untimed                       4/8               >=7/8
+    median process CPU delta                     0 us              supporting
+    median context-switch delta                 -0.001125/call     supporting
 
-This A/B **has not yet been measured** on the user's Windows machine.
-Do not conclude that the timed wait adds measurable overhead, approve
-a runtime change, or stack ``optimized02`` until results and safety
-evidence are inspected. If the signal is absent or safety requirements
-cannot be met with a viable design, reject the hypothesis and record
-the negative outcome.
+The observed wall improvement is practically zero and smaller than
+measurement noise. ``hypothesis_passes_noise_gate=false``.
+CPU and context-switch results show no repeatable benefit. No further
+v3 benchmark was warranted, since no runtime candidate was created.
 
-Windows command after branch sync::
+Isolated behavior tests:
 
-    .\tools\bench_qt_thread_queue_wait.ps1
+* Both timed and untimed returned the expected remote ``AttributeError``,
+  remained usable and closed normally. Post-close requests were rejected.
+* On a deliberate worker exit **without sending a response**, timed
+  waiting detected termination and returned ``OperationalError``.
+* Raw untimed waiting **hung** in this scenario; the child was killed
+  after the 8-second watchdog deadline.
+* The harness reports ``failure_checks_pass=true`` because the expected
+  *negative* untimed-liveness demonstration occurred. This does **not**
+  mean raw untimed waiting is production-safe:
+  ``untimed_detects_worker_exit=false`` and
+  ``production_change_authorized=false``.
 
-The implementation chat retains ownership of analysis and the final
-bounded decision. Route the completed significant checkpoint to
-``00 Coordinator`` for independent review; no Scout is needed yet.
+**Decision: REJECT the timed-vs-untimed SimpleQueue response-wait
+optimisation hypothesis.** It fails the predeclared >=10 us/noise
+criterion and cannot preserve fatal worker detection as a direct
+production substitution. Do **not** rerun the same timed/untimed
+variant or add it to production absent genuinely new evidence.
+This negative experiment is retained here specifically to prevent
+rediscovery.
+
+The fixed ~40-45 us no-SQL request/response overhead reported by the
+earlier CPU profile is still real, but these data show that the 100 ms
+timed response wait is *not* its dominant avoidable component.
+No conclusion about a different queue/scheduling architecture follows.
+The next direction requires independent ``00 Coordinator`` review;
+no ``optimized02`` code was created, and retained ``optimized01``
+remains unchanged. CPU/query, cancellation, Qt p95/p99, bulk,
+connect and resource guardrails remain applicable to any future
+candidate.
 
 Post-optimized01 priorities
 ---------------------------
 
-``optimized01`` remains retained. The completed CPU profiling study isolated
-a substantial fixed request/response handoff cost, and ``00 Coordinator``
-approved a **diagnostic-only** timed-vs-untimed comparison at reviewed
-HEAD ``ae01f74f``.
+``optimized01`` remains RETAIN. The CPU profiling investigation
+identified a significant fixed queue handoff, but the bounded
+timed-vs-untimed response wait A/B has now **failed**.
 
-#. Run the staged diagnostic A/B and inspect repeated paired wall/CPU/context
-   switch data plus all subprocess watchdog tests before making a decision.
-#. If the >=10 us noise-adjusted signal does not hold, **REJECT** the
-   SimpleQueue timed-wait hypothesis. Do not introduce ``optimized02``.
-#. If the performance signal holds, raw untimed waiting is still unsafe
-   when a worker dies without a response. Design a safe liveness-preserving
-   mechanism and evaluate its own overhead before proposing any runtime
-   candidate.
-#. Continue to avoid previously rejected worker-native socket wait,
-   speculative WAIT prefetch, snapshot/serialization experiments, and bulk
-   decoder micro-tuning without new evidence.
-#. Only a semantically safe future candidate may advance to qt-thread smoke
-   and unchanged paired v3 benchmark, checking CPU/query, cancellation,
-   Qt p95/p99, bulk, connect and resource guardrails. Route the completed
-   bounded decision back to the existing ``00 Coordinator``.
+#. Submit the completed negative A/B result and this documentation
+   checkpoint to the existing ``00 Coordinator`` for mandatory
+   independent review and next-target selection.
+#. Do not repeat the timed-vs-untimed SimpleQueue wait experiment
+   without new evidence; raw untimed get also loses worker-exit
+   detection. No runtime candidate was accepted.
+#. Keep rejected worker-native wait, speculative WAIT prefetch,
+   snapshot/serialization tuning and bulk decoder work out of the
+   default optimisation path.
+#. Any new bounded hypothesis requires its own evidence before a
+   runtime experiment, then qt-thread semantic smoke and unchanged
+   adjacent-paired v3 with CPU/query, cancellation, Qt p95/p99,
+   bulk, connection and resource guardrails.
 
 Checkpoint rule
 ---------------

@@ -66,6 +66,7 @@ PGcancelConn = _base.PGcancelConn
 waitRemote = _base.waitRemote
 
 _FAST_EXECUTE = "qpsycopg_execute_pending"
+_DISPATCH_POLL_SECONDS = 0.1
 
 
 class _ThreadTransport(_base._Transport):
@@ -186,8 +187,20 @@ class _ThreadTransport(_base._Transport):
             reason = f": {self._stopReason}" if self._stopReason else ""
             self._markBroken()
             raise e.OperationalError(f"qpsycopg worker thread stopped{reason}")
+
         self._requests.put(request)
-        return self._responses.get()
+        while True:
+            try:
+                return self._responses.get(timeout=_DISPATCH_POLL_SECONDS)
+            except queue.Empty:
+                if self.closed:
+                    reason = f": {self._stopReason}" if self._stopReason else ""
+                    raise e.OperationalError(f"qpsycopg worker thread is closed{reason}")
+                if self.thread.is_alive():
+                    continue
+                reason = f": {self._stopReason}" if self._stopReason else ""
+                self._markBroken()
+                raise e.OperationalError(f"qpsycopg worker thread stopped{reason}")
 
     def _responseValue(self, request: Request, objectId: int, response: Response) -> Any:
         if response.requestId != request.requestId:

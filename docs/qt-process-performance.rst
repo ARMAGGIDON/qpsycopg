@@ -461,7 +461,7 @@ Performance rules for future work
    next optimisation.
 
 Timed/untimed queue-wait A/B -- rejected
---------------------------------------
+----------------------------------------
 
 The Coordinator-authorised diagnostic at fork commit ``516ccc8c``
 completed with eight interleaved pairs and 4000 no-SQL GET status

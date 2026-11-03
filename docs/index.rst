@@ -37,6 +37,7 @@ Documentation
     qt-process
     qt-process-project-map
     qt-process-performance
+    qt-process-optimization-log
 
 Release notes
 -------------

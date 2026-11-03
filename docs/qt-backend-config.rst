@@ -157,7 +157,23 @@ integration; do not treat a failed repository-wide lint run as feature-clean
 without checking its diagnostics. The full upstream test matrix is a separate
 CI gate, and no SQL performance ratios have been claimed.
 
-Coordinator review should decide whether to accept this minimal, import-time
-configuration alternative or require a separate deferred-bootstrap design for
-the proposed post-import ``psycopg.configure()`` API. No runtime owner should
-attempt per-connection backend switching as a substitute.
+Coordinator review #5758449221 accepted the bounded import-time alternative
+and explicitly deferred ``psycopg.configure()`` to a separate architectural
+decision. PR #2 is not authorised for merging until the final integration
+checkpoint. Per-connection switching remains outside scope.
+
+Integration-readiness checks
+----------------------------
+
+In addition to the focused Qt smoke jobs, ``.github/workflows/qt-process.yml``
+now runs a separate warnings-as-errors Sphinx build and a Windows native
+``libpq.dll`` connection smoke using a real PostgreSQL service. The Windows
+connection smoke covers the Python ctypes backend and a Qt thread with its
+Python worker; it does not, by itself, validate the separately compiled
+``psycopg_c`` implementation or a Qt worker configured as ``c``.
+
+The complete upstream Tests matrix is a required integration gate. Lint
+baseline must be compared to the same base revision: pre-existing repository
+errors must not be treated as new feature failures, and all feature-owned
+files must be free of new lint diagnostics. Keep this change as a draft PR
+until final-head CI results and the Coordinator merge review are recorded.

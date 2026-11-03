@@ -10,7 +10,7 @@ import threading
 from typing import Any, cast
 
 from .. import errors as e
-from . import abc
+from . import abc, _enums
 from . import pq_qt_process as _base
 from ._enums import ConnStatus, PollingStatus
 from ._qt_process_protocol import Operation, RemoteError, Request, Response
@@ -31,6 +31,19 @@ def _loadWorkerPq() -> Any:
 
 
 _workerPq = _loadWorkerPq()
+for _name in (
+    "ConnStatus",
+    "PipelineStatus",
+    "PollingStatus",
+    "TransactionStatus",
+    "ExecStatus",
+    "Ping",
+    "DiagnosticField",
+    "Format",
+    "Trace",
+):
+    setattr(_workerPq, _name, getattr(_enums, _name))
+
 from . import _qt_process_worker as _workerBase
 
 _workerBase.pq = _workerPq

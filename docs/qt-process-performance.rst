@@ -767,36 +767,66 @@ decoding using one qt-thread cursor context, metadata,
 NULL/error/SQLSTATE and borrowed notice handling.
 The production runtime and benchmark v3 are unchanged.
 
-**Status: preflight ZIP pending; performance A/B NOT yet permitted.**
-A failed lifetime, safety or semantic check means **STOP**,
-with a committed negative conclusion and no optimized02.
-A positive preflight would allow only a diagnostic full
-current-vs-native warmed SELECT 1 comparison using the
-*same SQL work*, *same adaptation context* and *two
-queue handoffs*, with independent repeated short paired
-blocks and noise/drift controls. Predeclared material
-screen: >=15 us process CPU/SELECT improvement,
-repeatable beyond noise. No speed/CPU outcome exists yet.
+**Status: native access violation in first Windows preflight;
+performance A/B BLOCKED.** The archive
+``qt-thread-native-result-preflight-20261103-223124-116.zip``
+at HEAD ``dc25abe6`` reports the Python diagnostic's
+exit 2 because its child died with Windows status
+``3221225477`` (``0xC0000005``). It was not a
+watchdog timeout. Child stdout/stderr were empty,
+so no case or C operation can yet be identified.
+Neither native lifetime nor Transformer parity
+has been established. A native crash is a
+**hard safety gate**, not a performance result.
+
+The diagnostic script was subsequently amended
+**only for forensic observability**, adding
+``faulthandler``, flushed checkpoints before
+potentially dangerous native operations and
+capture of the last stage/extended stderr.
+No native operation, production runtime or v3
+benchmark changed.
+
+One watchdog-isolated forensic rerun is justified
+to discriminate a defect in the probe from an
+actual unsafe pointer/ownership operation.
+If the trace shows a real native blocker,
+**STOP** and document. If it reveals a probe
+defect, a minimal correction must be justified
+before reconsidering feasibility; absent a
+localized, safe explanation, do not repeat
+native crash exploration. The predeclared
+>=15 us process CPU/SELECT material-benefit
+screen is **not activated**; there are no
+valid speed/CPU observations.
 
 Next work
 ---------
 
-#. On the Windows checkout, after syncing
-   ``feature/qt-process-pq``, run
-   ``.\tools\preflight_qt_thread_native_pgresult.ps1``.
-   Preserve and upload
-   ``qt-thread-native-result-preflight-*.zip``.
-#. Inspect errors and all required ownership/type,
-   NULL/metadata/error, C Transformer, PGconn.finish,
-   clear/destructor and notice guardrails. Failure
-   means STOP, not an invitation to keep tuning
-   snapshots.
-#. Only if positive, return to the **current
-   Implementation chat** for a controlled
-   diagnostic-only SELECT 1 current-vs-native
-   boundary A/B. Do not edit production or v3.
-#. After completing an evidence-backed bounded
-   checkpoint, document the decision and route
-   to existing ``00 Coordinator`` for independent
-   review. Do not engage a competing runtime owner.
+#. Sync the branch and execute **one**
+   forensic preflight rerun with the
+   existing 40-second subprocess watchdog::
 
+       .\tools\preflight_qt_thread_native_pgresult.ps1
+
+   Upload the new ZIP (manifest, results and
+   captured crash trace) to the current
+   Implementation chat. Do not rerun the
+   original silent preflight.
+#. Inspect the last flushed stage and any
+   ``faulthandler`` stack. Determine
+   whether failure originates in diagnostic
+   code, C PGresult ownership/clear,
+   notice callbacks or native Transformer.
+   If a fundamental safety failure
+   or unlocalised repeated crash remains,
+   **STOP** and record it.
+#. Full native SELECT 1 A/B stays
+   prohibited until all ownership,
+   semantic and adaptation checks pass.
+   No optimized02 or production/v3 edit.
+#. After a completed STOP/feasibility
+   checkpoint, refresh the optimization
+   log, project map and performance notes;
+   request independent 00 Coordinator
+   review. Keep one runtime owner.

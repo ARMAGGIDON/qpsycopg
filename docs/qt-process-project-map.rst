@@ -363,27 +363,107 @@ Immediate next work
    nested phase overlap, nonstationary host timing and
    quantized Windows CPU counters cannot establish a
    semantically removable real-code operation.
-#. Next bounded direction: two independent **read-only
-   architecture/performance Scouts**, both starting
-   from this repository revision and identical factual
-   constraints, should examine the actual short-query
-   ``qt-thread`` versus upstream/fork-direct execution
-   differences. Return at most one falsifiable, scoped,
-   semantically safe hypothesis each, or recommend no
-   runtime change. Do not rerun synthetic echo/GET
-   profiling or rejected waits/prefetch/snapshot ideas.
-#. The existing ``10 Implementation — current`` remains
-   sole runtime writer but **must not start another
-   performance runtime experiment** while independent
-   exploration is pending. Scouts must not edit the
-   active branch or run overlapping benchmarks.
-   Coordinator reviews their independent reports
-   and selects zero or one bounded target for the
-   existing Implementation owner. ``optimized02``
-   remains uncreated and ``optimized01`` RETAIN.
+#. Both read-only short-query Scouts **COMPLETED**
+   at ``9777f09a``. Coordinator decision: **INVESTIGATE
+   -- diagnostic-only native PGresult handoff screen**.
+   No production change or ``optimized02`` is approved.
+#. Scout A identified a possible hybrid Transformer
+   cost; its proposed stable-vs-alternating query-object
+   identity A/B is not selected because query/cache
+   effects can confound Transformer attribution.
+   This hypothesis is not disproven.
+#. Scout B identified a thread-specific structural
+   alternative: completed C-worker native PGresult
+   transfer across the existing two SimpleQueues,
+   rather than ``ResultSnapshot/PackedValues``
+   plus synthetic-result restoration. This is a
+   distinct architectural possibility, **not**
+   renewed generic snapshot micro-tuning; historical
+   small snapshot costs limit expected upside.
+#. **Next owner:** existing ``10 Implementation — current``.
+   First perform a bounded, diagnostic-only
+   ownership/type/Transformer feasibility check.
+   If safe, perform a same-workload Windows C-worker
+   two-queue SELECT 1 comparison: current full result
+   snapshot/restore/decode versus native result
+   handoff/native Transformer. Preserve query work,
+   adaptation context, two handoffs and output
+   equivalence. Use short rotated paired blocks,
+   independent repeats, process CPU/query, wall,
+   context switches and drift/noise controls.
+   Predeclare a material screen such as >=15 us
+   CPU/query with reproducible signal beyond noise.
+#. **STOP** if feasibility or reproducible material
+   benefit fails. In either case record the result
+   and route to Coordinator before any runtime
+   variant. Preserve all public PGresult semantics:
+   independent ownership, ``clear``, result lifetime
+   after connection finish, error/NULL/metadata,
+   multiple results, COPY, cancellation and
+   callbacks. Do not transfer ``PGconn`` ownership
+   or native borrowed notice results. Keep
+   ``qt-process`` unchanged; unsupported worker
+   implementations need correct fallback.
+#. ``10 Implementation — current`` remains the sole
+   active runtime owner. Scouts remain read-only;
+   no second Implementation owner and no replay of
+   GET/echo, queue wait, native wait, speculative
+   prefetch or generic snapshot experiments.
 #. Feature PR #2 (``feature/qt-backend-config``) has
    its own integration gates and owner; it is not
    part of this performance/Scout decision.
+
+Coordinator review -- two independent short-query Scouts
+--------------------------------------------------------
+
+* **Source:** independent read-only Scouts A/B at
+  ``9777f09a821ecc7a358a595e34b98063e8e70f1e``.
+  Coordinator verified same current HEAD, core
+  result/Transformer code, prior profiling/rejection
+  evidence, and PostgreSQL 18 libpq thread rules.
+* **Decision:** **INVESTIGATE**, one diagnostic-only
+  feasibility/CPU screen for native-result handoff
+  with C worker; not ``optimized02`` and not
+  production-authorized. No new Scout.
+* **Scout comparison:** A's Transformer overhead
+  is plausible, but the suggested query-object
+  identity experiment does not isolate it from
+  query caching/preparation. B identifies a
+  distinct whole-boundary alternative, yet
+  historical snapshot profiling found this path
+  small; possible advantage is **unmeasured**.
+* **Preflight and measurement:** verify full
+  ownership, destructor/``clear()``, result
+  lifetime beyond ``PGconn.finish()``, exact native
+  C binding/Transformer compatibility, and basic
+  error/NULL/field parity. If valid, compare the
+  complete result boundary after actual warmed
+  ``SELECT 1`` with identical worker-thread SQL
+  work and two SimpleQueues. The control uses
+  snapshot/synthetic PGresult/hybrid Transformer;
+  candidate uses native PGresult/native C
+  Transformer. Rotate short paired blocks across
+  fresh subprocess runs; calculate process
+  CPU/query, wall, context switches and drift.
+  Predefine a >=15 us/query CPU/noise screen before
+  capture; do not attribute a small isolated
+  wrapper saving to end-to-end SELECT performance.
+* **STOP / ownership:** reject if native ownership
+  or semantic parity is unproven or a material
+  paired benefit does not survive noise/drift.
+  The Implementation chat alone writes diagnostic
+  tools and documents results; no production runtime
+  or benchmark-v3 edits. Preserve existing rejected
+  experiments, ``optimized01`` RETAIN, and
+  configuration PR #2's separate integration owner.
+  Return completed diagnostic for Coordinator
+  review before any runtime candidate.
+* **Recovery / context:** this is an in-progress
+  Coordinator handoff snapshot based on committed
+  repo sources and user-provided Scout reports.
+  No Windows diagnostic has yet been run, no ZIP
+  exists for this new screen, and no uncommitted
+  runtime change is asserted.
 
 Coordinator review -- enriched echo decision
 --------------------------------------------

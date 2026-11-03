@@ -1064,7 +1064,8 @@ The selected next bounded stage is a single diagnostic-only
 current-vs-native **complete result-boundary** CPU screen.
 New tools ``tools/bench_qt_thread_native_result_boundary.py``
 and ``tools/bench_qt_thread_native_result_boundary.ps1``
-have been committed; **Windows A/B results are pending**.
+were committed before measurement; the completed **REJECT** evidence
+is recorded in the next measured A/B section.
 They use one native C PGconn, created, used and finished
 only inside one worker thread, plus two SimpleQueues
 and a single fixed qt-thread cursor adaptation context.

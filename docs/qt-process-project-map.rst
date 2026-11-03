@@ -479,7 +479,7 @@ Coordinator review -- enriched echo decision
   historical evidence of its own last handoff.
 
 Coordinator review -- real GET attribution plateau
--------------------------------------------------
+--------------------------------------------------
 
 * **Role / review commit:** existing ``00 Coordinator``
   independently checked ``feature/qt-process-pq``

@@ -86,3 +86,6 @@ def bootstrap() -> None:
         os.environ.setdefault(key, value)
 
     _setup_windows_libpq()
+
+# Configuration must be loaded before psycopg.pq is first imported.
+bootstrap()

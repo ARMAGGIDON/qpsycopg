@@ -150,15 +150,15 @@ def main() -> int:
     phases: dict = {}
     state = {"enabled": False, "profiling": False}
     workerProfile = None
-    if impl == "qt-thread":
-        workerProfile = instrumentThread(phases, state)
-
     callerProfile = cProfile.Profile(timer=time.thread_time)
     with psycopg.connect(args.dsn) as connection:
         for _ in range(args.warmup):
             selectOne(connection)
 
+        # Keep the control sample free of monkeypatched timing hooks.
         unprofiled = measure(connection, args.iterations)
+        if impl == "qt-thread":
+            workerProfile = instrumentThread(phases, state)
 
         state["enabled"] = True
         callerProfile.enable()

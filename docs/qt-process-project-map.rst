@@ -371,16 +371,25 @@ Immediate next work
    NULL/metadata/SQLSTATE/notice parity, result
    lifetime after PGconn.finish, and clear/destructor.
    Worker PGconn remains on worker thread only.
-#. **Next user action:** sync the Windows checkout and run
-   ``.\tools\preflight_qt_thread_native_pgresult.ps1``.
-   This command has already produced one CRASHING run:
-   ``qt-thread-native-result-preflight-20261103-223124-116.zip``
-   at ``dc25abe6``. Child exit ``0xC0000005`` was an
-   access violation, not watchdog timeout; stderr was empty.
-   Re-run ONCE with newly added faulthandler/trace diagnostics,
-   then upload the resulting NEW ZIP to this chat. The
-   probe runs in a subprocess with a watchdog and
-   preserves a ZIP even on failure.
+#. **Next user action:** after syncing the branch,
+   run the *corrected* forensic preflight once::
+
+       .\tools\preflight_qt_thread_native_pgresult.ps1
+
+   The second ZIP ``qt-thread-native-result-preflight-20261103-224615-903.zip``
+   at ``9e5ddb54`` localized ``0xC0000005``
+   to the probe's invalid
+   ``hybrid Transformer.load_rows(0, 0)``
+   on a ``FATAL_ERROR`` result.
+   Ordinary Psycopg raises the SQL error before row
+   decoding. Commit ``54bccf73`` now restricts
+   row decoding to nonempty tuple results and
+   retains SQLSTATE parity for errors.
+   The prior normal SELECT case passed native
+   two-queue transfer, native/hybrid decoding
+   and double ``clear()``. Full preflight
+   still lacks notice/PGconn.finish validation.
+   Upload the NEW corrected ZIP to this chat.
 #. **Gate:** do **not** begin the full native
    current-vs-candidate SELECT 1 performance A/B
    unless every required safety/Transformer/semantic

@@ -159,7 +159,11 @@ def buildRows(
 def hostRows(referenceDir: Path, checkpointDir: Path, modes: tuple[str, ...]) -> list[Json]:
     reference = loadMany(referenceDir, "host-*-*-upstream-*.json")
     currentUpstream = loadMany(checkpointDir, "host-*-*-upstream-*.json")
-    current = {mode: loadMany(checkpointDir, f"host-*-{mode}-*.json") for mode in modes}
+    current = {
+        mode: loadMany(checkpointDir, f"host-*-{mode}-before.json")
+        + loadMany(checkpointDir, f"host-*-{mode}-after.json")
+        for mode in modes
+    }
     rows: list[Json] = []
     for metric, unit, getter in HOST_METRICS:
         referenceItems = [float(value) for item in reference if (value := getter(item)) is not None]

@@ -702,7 +702,7 @@ for future repository-first recovery. There are
 no production runtime modifications in this stage.
 
 Real qt-thread GET status -- Coordinator-approved phase probe pending
-------------------------------------------------------------------
+---------------------------------------------------------------------
 
 Independent ``00 Coordinator`` review at
 ``0fc10d668ac9166f07ae3a575049da7b4b14ccd1`` approved

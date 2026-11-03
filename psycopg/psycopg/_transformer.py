@@ -18,7 +18,7 @@ Transformer: type[abc.Transformer]
 
 if _psycopg:
     Transformer = _psycopg.Transformer
-elif pq.__impl__ == "qt-process":
+elif pq.__impl__ in ("qt-process", "qt-thread"):
     from . import _py_transformer
 
     try:

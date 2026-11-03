@@ -193,11 +193,13 @@ def measure(func: Callable[[], None], calls: int) -> dict[str, float]:
     )
     for _ in range(calls):
         func()
-    wall = time.perf_counter_ns() - started
+    ended = time.perf_counter_ns()
+    wall = ended - started
     processCpu = time.process_time_ns() - beforeCpu
     callerCpu = time.thread_time_ns() - beforeCaller
     afterSwitch = proc.num_ctx_switches()
     return {
+        "midpoint_ns": (started + ended) // 2,
         "wall_us_per_call": wall / calls / 1000,
         "process_cpu_us_per_call": processCpu / calls / 1000,
         "caller_cpu_us_per_call": callerCpu / calls / 1000,
@@ -263,12 +265,21 @@ def run_repeat(dsn: str, repeat: int, cycles: int, calls: int, warmup: int) -> d
             echo.set_mode("bare")
             baseline_after = measure(echo.invoke, calls)
 
-            # Bracketed bare-echo controls: interpolate each mode's position
-            # between surrounding controls. This removes *linear* local drift,
-            # but cannot compensate nonlinear thermal or scheduling variation.
+            # Use actual block midpoint times, not ordinal positions: mode
+            # duration differs and an ordinal interpolation biases drift
+            # correction. This removes only approximately linear host drift.
             residuals: dict[str, dict[str, float]] = {}
-            for index, mode in enumerate(order, start=1):
-                share = index / (len(order) + 1)
+            shares: dict[str, float] = {}
+            span = baseline_after["midpoint_ns"] - baseline_before["midpoint_ns"]
+            if span <= 0:
+                raise AssertionError("nonmonotonic block midpoints")
+            for mode in order:
+                share = (
+                    observations[mode]["midpoint_ns"] - baseline_before["midpoint_ns"]
+                ) / span
+                if not 0 < share < 1:
+                    raise AssertionError("mode midpoint outside baseline bracket")
+                shares[mode] = share
                 residuals[mode] = {
                     key: observations[mode][key] - (
                         baseline_before[key]
@@ -282,6 +293,7 @@ def run_repeat(dsn: str, repeat: int, cycles: int, calls: int, warmup: int) -> d
                 "bare_before": baseline_before,
                 "modes": observations,
                 "bare_after": baseline_after,
+                "interpolation_fraction": shares,
                 "residual_vs_interpolated_bare": residuals,
             })
     report: dict[str, Any] = {"repeat": repeat, "cycles": records}

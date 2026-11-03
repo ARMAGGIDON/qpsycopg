@@ -185,3 +185,18 @@ def test_no_env_file_uses_upstream_default(tmp_path):
         "import psycopg; assert psycopg.pq.__impl__ in ('c', 'binary', 'python')",
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_absolute_env_file_does_not_depend_on_working_directory(tmp_path):
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / ".env").write_text("PSYCOPG_IMPL=not-an-impl\n", encoding="utf-8")
+    trusted = tmp_path / "trusted.env"
+    trusted.write_text("PSYCOPG_IMPL=python\n", encoding="utf-8")
+
+    result = _run(
+        app,
+        "import psycopg; assert psycopg.pq.__impl__ == 'python'",
+        settings={"QPSYCOPG_ENV_FILE": str(trusted)},
+    )
+    assert result.returncode == 0, result.stderr

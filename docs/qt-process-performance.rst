@@ -546,7 +546,7 @@ and validation costs against the minimal echo, without
 modifying production, before attempting any local tuning.
 
 Enriched echo protocol/bookkeeping isolation -- measured
-------------------------------------------------------
+--------------------------------------------------------
 
 The independently repeated diagnostic archive
 ``qt-thread-enriched-echo-20261103-205855-365.zip``

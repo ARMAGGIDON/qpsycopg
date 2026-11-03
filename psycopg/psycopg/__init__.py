@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from . import _qt_backend_config  # noqa: F401 load .env before pq
 from . import pq  # noqa: F401 import early to stabilize side effects
-from . import dbapi20, postgres, types
+from . import dbapi20, postgres, types  # noqa: F401
 from ._tpc import Xid
 from .copy import AsyncCopy, Copy
 from .types import array as types_array
@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from .connection_async import AsyncConnection
 elif pq.__impl__ in ("qt-process", "qt-thread"):
     from .connection_qt_process import AsyncConnection, Connection
+
     if pq.__impl__ == "qt-thread":
         from .pq import _qt_thread_lazy as _qt_thread_lazy  # noqa: F401
 else:

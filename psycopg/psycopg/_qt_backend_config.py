@@ -87,5 +87,6 @@ def bootstrap() -> None:
 
     _setup_windows_libpq()
 
+
 # Configuration must be loaded before psycopg.pq is first imported.
 bootstrap()

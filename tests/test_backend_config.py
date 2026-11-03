@@ -117,9 +117,8 @@ def test_backend_remains_fixed_after_environment_changes(tmp_path):
     )
     assert result.returncode == 0, result.stderr
 
-@pytest.mark.skipif(
-    sys.platform != "win32", reason="Windows DLL bootstrap only"
-)
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows DLL bootstrap only")
 def test_windows_dll_directory_registered_before_pq(tmp_path):
     bin_dir = tmp_path / "pgsql" / "bin"
     bin_dir.mkdir(parents=True)

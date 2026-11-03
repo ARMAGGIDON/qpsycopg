@@ -235,6 +235,33 @@ patterns:
 Do not ask a saturated chat to generate the only handoff summary. Update the
 repository first, then start a fresh chat from repository state.
 
+Explicit routing after completed work
+-------------------------------------
+
+The user must never have to infer which chat should receive the next action.
+After every completed bounded implementation stage, benchmark analysis,
+architectural decision or handoff, the owning chat must end with a short
+``ROUTING`` section.
+
+It must state:
+
+* whether the user should remain in the current chat;
+* ``Next owner`` -- the chat/role responsible for the next action;
+* ``Action`` -- the concrete next step;
+* whether another existing chat should be contacted;
+* whether a new role/scout chat should be created;
+* when another chat should explicitly **not** be contacted yet.
+
+If another chat becomes the next owner, provide a short ready-to-send message for
+that chat. If no cross-chat action is required, write ``Next owner: current chat``
+and say explicitly that the user should stay in the current chat.
+
+A role must finish its own bounded responsibility before routing work elsewhere.
+Do not hand off incomplete work merely to avoid finishing the current role's task.
+Coordinator or scout involvement should be requested only when the documented
+coordination/plateau criteria justify it; otherwise say explicitly that they are
+not needed yet.
+
 Project memory
 --------------
 

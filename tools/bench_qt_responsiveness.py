@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import statistics
 import threading
@@ -14,20 +15,25 @@ import psycopg
 from PySide6.QtCore import QCoreApplication, QTimer, Qt
 
 
-def summary(samples: list[float]) -> dict[str, float]:
+def percentile(samples: list[float], fraction: float) -> float:
     ordered = sorted(samples)
+    return ordered[min(len(ordered) - 1, max(0, math.ceil(len(ordered) * fraction) - 1))]
+
+
+def summary(samples: list[float]) -> dict[str, float]:
     return {
         "mean_ms": statistics.fmean(samples),
         "median_ms": statistics.median(samples),
-        "p95_ms": ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))],
-        "max_ms": ordered[-1],
+        "p95_ms": percentile(samples, 0.95),
+        "p99_ms": percentile(samples, 0.99),
+        "max_ms": max(samples),
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("dsn")
-    parser.add_argument("--queries", type=int, default=20)
+    parser.add_argument("--queries", type=int, default=60)
     parser.add_argument("--sleep-ms", type=float, default=50.0)
     parser.add_argument("--timer-ms", type=int, default=10)
     parser.add_argument("--caller", choices=("thread", "main"), default="thread")
@@ -83,6 +89,9 @@ def main() -> int:
     # The first interval includes event-loop startup and isn't representative.
     samples = intervals[1:]
     stats = summary(samples)
+    stats["samples"] = len(samples)
+    stats["p95_stall_ms"] = max(0.0, stats["p95_ms"] - args.timer_ms)
+    stats["p99_stall_ms"] = max(0.0, stats["p99_ms"] - args.timer_ms)
     stats["max_stall_ms"] = max(0.0, stats["max_ms"] - args.timer_ms)
     result = {
         "impl": psycopg.pq.__impl__,

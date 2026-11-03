@@ -235,6 +235,54 @@ patterns:
 Do not ask a saturated chat to generate the only handoff summary. Update the
 repository first, then start a fresh chat from repository state.
 
+Mandatory milestone review
+--------------------------
+
+The coordinator independently reviews every **significant completed checkpoint**
+before the implementation owner begins the next *new* optimisation direction.
+This is an evidence and direction review, not a second implementation loop.
+
+A significant checkpoint includes:
+
+* a named, measured optimisation checkpoint (e.g. ``optimized01``) with an
+  explicit RETAIN/REVERT decision and committed benchmark/handoff evidence;
+* a material architecture or backend-boundary decision;
+* a major correctness/lifecycle change with broad semantic risk;
+* completion of a bounded investigation that materially changes the next
+  optimisation target or invalidates the existing plan.
+
+Ordinary implementation iterations do **not** require coordinator review:
+small commits, test fixes, narrow profiling steps, requests for benchmark
+artifacts, and intermediate hypotheses remain with the implementation owner.
+A checkpoint is not completed until the owner has analyzed the evidence,
+recorded the decision, and committed the relevant repository state.
+
+At the end of a significant completed checkpoint, the implementation chat must
+route to ``00 Coordinator``, naming the branch, checkpoint, HEAD, decision,
+updated documents and proposed next bounded target. It must provide a short
+ready-to-send message. The user should not have to infer when to switch chats.
+
+The coordinator then independently checks:
+
+* whether semantic tests and benchmark methodology support RETAIN/REVERT;
+* whether the observed changes exceed measurement noise and whether regressions
+  or gaps were accounted for;
+* whether code, benchmark log, project map and performance notes agree;
+* whether the proposed next bounded target follows the evidence;
+* whether independent Scout/Critic review is justified by plateau, conflicting
+  evidence or architectural risk (no automatic Scout on every checkpoint).
+
+The coordinator returns ``CONTINUE``, ``INVESTIGATE``, ``REVISE`` or
+``CREATE SCOUT`` and routes the next action to its actual owner, normally
+``10 Implementation — current``. It does not take runtime-edit ownership,
+repeat the benchmark by default or remain the next owner simply because it
+awaits future results.
+
+If the checkpoint evidence is incomplete, the implementation owner still owns
+its completion; do not route a merely pending benchmark as a finished milestone.
+For a critical blocker or contradictory architecture evidence, an earlier
+coordinator escalation is allowed and should state what remains unfinished.
+
 Explicit routing after completed work
 -------------------------------------
 
@@ -258,9 +306,10 @@ and say explicitly that the user should stay in the current chat.
 
 A role must finish its own bounded responsibility before routing work elsewhere.
 Do not hand off incomplete work merely to avoid finishing the current role's task.
-Coordinator or scout involvement should be requested only when the documented
-coordination/plateau criteria justify it; otherwise say explicitly that they are
-not needed yet.
+Coordinator review is mandatory after a significant completed checkpoint as
+specified above, even without a plateau. Outside those milestones, request
+coordinator or scout involvement only when the documented escalation criteria
+justify it; otherwise say explicitly that they are not needed yet.
 
 Project memory
 --------------

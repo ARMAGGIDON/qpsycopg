@@ -560,7 +560,7 @@ Coordinator review -- real GET attribution plateau
   ownership has occurred.
 
 Native PGresult boundary -- measured implementation recovery snapshot
---------------------------------------------------------------------
+---------------------------------------------------------------------
 
 * **Current role and ownership:** existing Implementation/
   Optimisation chat is the sole ordinary runtime owner

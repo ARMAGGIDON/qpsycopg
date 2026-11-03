@@ -64,9 +64,15 @@ try {
 
     Write-Host "qt-thread queue wait A/B: $Pairs interleaved pairs, $Iterations requests/mode/pair"
     Write-Host "Worker failure scenarios run in child processes with $WatchdogSeconds-second watchdog"
-    & $forkPython $bootstrap $probe $env:QPSYCOPG_DSN --pairs $Pairs --iterations $Iterations --warmup $Warmup --watchdog-seconds $WatchdogSeconds > $resultFile 2> $stderrFile
-    $exitCode = $LASTEXITCODE
+    $exitCode = 1
+    try {
+        & $forkPython $bootstrap $probe $env:QPSYCOPG_DSN --pairs $Pairs --iterations $Iterations --warmup $Warmup --watchdog-seconds $WatchdogSeconds > $resultFile 2> $stderrFile
+        $exitCode = $LASTEXITCODE
+    } catch {
+        Add-Content -Path $stderrFile -Value ($_ | Out-String)
+    }
 
+    # Preserve diagnostics even if the Python experiment returns an error.
     Compress-Archive -Path (Join-Path $folder "*") -DestinationPath $archive -CompressionLevel Optimal -Force
     Write-Host "Diagnostic archive: $archive"
     if ($exitCode -ne 0) {

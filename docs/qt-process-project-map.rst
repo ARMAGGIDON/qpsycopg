@@ -356,11 +356,34 @@ Immediate next work
    removable, semantically safe operation was identified.
    Production runtime and benchmark v3 are unchanged.
    No ``optimized02`` or new acceptance benchmark.
-#. **Next owner: existing 00 Coordinator** for
-   independent review of this completed negative profiling
-   checkpoint and selection of the next bounded direction.
-   No further runtime experiments, Scouts, or competing
-   Implementation owners until Coordinator decides.
+#. **Independent Coordinator review COMPLETE** at
+   ``5832702e``: **CREATE SCOUT -- GET/echo attribution
+   plateau**. The profiling methodology is adequate for
+   the negative conclusion; its strong probe overhead,
+   nested phase overlap, nonstationary host timing and
+   quantized Windows CPU counters cannot establish a
+   semantically removable real-code operation.
+#. Next bounded direction: two independent **read-only
+   architecture/performance Scouts**, both starting
+   from this repository revision and identical factual
+   constraints, should examine the actual short-query
+   ``qt-thread`` versus upstream/fork-direct execution
+   differences. Return at most one falsifiable, scoped,
+   semantically safe hypothesis each, or recommend no
+   runtime change. Do not rerun synthetic echo/GET
+   profiling or rejected waits/prefetch/snapshot ideas.
+#. The existing ``10 Implementation — current`` remains
+   sole runtime writer but **must not start another
+   performance runtime experiment** while independent
+   exploration is pending. Scouts must not edit the
+   active branch or run overlapping benchmarks.
+   Coordinator reviews their independent reports
+   and selects zero or one bounded target for the
+   existing Implementation owner. ``optimized02``
+   remains uncreated and ``optimized01`` RETAIN.
+#. Feature PR #2 (``feature/qt-backend-config``) has
+   its own integration gates and owner; it is not
+   part of this performance/Scout decision.
 
 Coordinator review -- enriched echo decision
 --------------------------------------------
@@ -391,6 +414,57 @@ Coordinator review -- enriched echo decision
   no uncommitted runtime work or local measurement.
   The Implementation rolling snapshot below remains
   historical evidence of its own last handoff.
+
+Coordinator review -- real GET attribution plateau
+-------------------------------------------------
+
+* **Role / review commit:** existing ``00 Coordinator``
+  independently checked ``feature/qt-process-pq``
+  at observed HEAD ``5832702e12578c8fd146ac8eeee7fd9c9a7f76e7``,
+  the current profiling tool, four qt-process docs,
+  and the measured optimisation log. The measured
+  archive was Windows-local/chat-uploaded and was
+  not re-executed or independently reparsed here.
+* **Decision:** **CREATE SCOUT** for the exhausted
+  GET/echo attribution sequence. Four independent
+  repetitions and correct phase counts support
+  ``NO ACTIONABLE RUNTIME TARGET``; +18.31 us
+  instrumented/clean is probe overhead, not a
+  production saving; the +61.18% repeat drift and
+  CPU-clock resolution rule out exclusive attribution.
+  No ``optimized02``, runtime changes, or v3
+  acceptance run is warranted by this checkpoint.
+* **Immediate next reproducible action:** create
+  two independent read-only Scout chats. Both must
+  begin from the same base HEAD, read
+  ``qt-process.rst``, ``qt-process-project-map.rst``,
+  ``qt-process-performance.rst``,
+  ``qt-process-coordination.rst`` and the
+  optimisation log; independently inspect real
+  SQL short-query architecture, compare with
+  upstream/direct, and propose no more than one
+  falsifiable safe alternative (or STOP).
+  Do not give one Scout the other's hypotheses
+  before both finish. No local Windows command
+  is required or authorised at this handoff.
+* **Ownership / guardrails:** existing
+  ``10 Implementation — current`` retains sole
+  runtime ownership but pauses speculative new
+  performance work until Coordinator selects
+  zero or one idea. Scout roles may inspect code
+  and send read-only proposals; neither writes
+  to the runtime branch. Keep accepted
+  ``optimized01`` RETAIN and historical
+  rejections intact. Configuration PR #2 remains
+  a separate integration workstream.
+* **Evidence locality and recovery:** original
+  ``test-results\\qt-thread-real-get-profile-20261103-213627-044.zip``
+  is local/uploaded, not GitHub-tracked.
+  Its SHA256 and numerical results are recorded
+  in the optimisation log. This Coordinator
+  review created no uncommitted code or benchmark
+  artifacts. No transfer of implementation
+  ownership has occurred.
 
 Rolling recovery snapshot -- current Implementation owner
 ---------------------------------------------------------

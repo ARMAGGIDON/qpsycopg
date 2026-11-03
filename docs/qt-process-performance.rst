@@ -493,15 +493,63 @@ a valid measured cost, but the 100 ms timed poll does **not**
 explain it. Do not retest this same variant without new evidence.
 Full evidence is recorded in :doc:`qt-process-optimization-log`.
 
+Minimal SimpleQueue echo baseline -- diagnostic staged
+------------------------------------------------------
+
+Coordinator independently confirmed the timed-vs-untimed REJECT
+at ``577d568``. The newly approved bounded experiment does
+**not** change the queue wait implementation. It compares:
+
+* a minimal request/response echo using two ``SimpleQueue``
+  objects, one dedicated worker thread and
+  ``get(timeout=0.1)``;
+* the existing ``qt-thread`` no-SQL ``Operation.GET``
+  of the PGconn status on a warmed connection, using the
+  original timed response wait.
+
+Both workers run in the same measured process; eight pairs
+alternate execution order with 4000 calls/mode/pair by default.
+The independent Python probe
+``tools/bench_qt_thread_echo_baseline.py`` records clean
+block-level wall time, process and caller CPU, implied
+other-thread CPU and context switches. It reports absolute
+medians and per-pair ``qpsycopg - echo`` differences,
+MAD, range and favorable-pair count. A subprocess watchdog
+protects the full measurement. The Windows runner
+``tools/bench_qt_thread_echo_baseline.ps1`` reuses the
+isolated v3 fork environment and emits a ZIP containing
+the manifest, JSON measurements and stderr.
+
+The intended inference is limited: the minimal echo
+estimates the fixed two-queue/scheduling floor. The
+difference between that and the qpsycopg GET path
+includes required request/response structure, lock
+handling, status checks, cache/liveness and worker
+bookkeeping. It is **not** proven removable overhead
+or a predicted SQL speedup. Windows CPU quantization
+and cross-round drift must be accounted for.
+
+**Status: not yet measured on Windows**. The production
+runtime and canonical v3 benchmark are unchanged.
+No ``optimized02`` decision or new performance
+claim is warranted before archive analysis.
+
 Next work
 ---------
 
-#. Route the completed REJECT checkpoint to the existing
-   ``00 Coordinator`` for independent review and selection of
-   the next bounded cost hypothesis. Do not start ``optimized02``.
-#. Preserve qt-thread worker-exit/close/error semantics and keep
-   CPU/query, cancellation, Qt p95/p99, bulk, connection and
-   resource measurements as acceptance guardrails.
-#. Continue to avoid already rejected native wait, speculative
-   WAIT prefetch, serialization/snapshot tuning and unnecessary
-   bulk decoder optimisation.
+#. Run ``.\tools\bench_qt_thread_echo_baseline.ps1``
+   on the Windows development checkout and inspect the
+   generated ``qt-thread-echo-baseline-*.zip`` with
+   interleaved wall/CPU/context-switch differences.
+#. Quantify the scheduling/queue floor and residual
+   qpsycopg overhead with paired noise and measurement
+   limitations; do not treat the residual as automatically
+   avoidable. Record one supported falsifiable hypothesis,
+   or a documented absence of further evidence.
+#. Preserve ``optimized01`` and reject the previous
+   timed/untimed ``SimpleQueue.get()`` variant, native
+   wait and speculative WAIT/serialization experiments.
+#. Update performance and optimisation logs with the
+   measured decision and route the completed significant
+   checkpoint to existing ``00 Coordinator``. No Scout
+   or new runtime path is required while data is pending.

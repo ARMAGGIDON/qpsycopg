@@ -425,6 +425,68 @@ checkpoint and proposed next direction to ``00 Coordinator``
 for independent milestone review before starting a new runtime
 optimisation direction.
 
+Queue-response wait A/B -- approved diagnostic, awaiting measurements
+---------------------------------------------------------------------
+
+Independent Coordinator review of HEAD ``ae01f74f4e3f2f075e918a641e1df94e53c2ebc6``
+returned **CONTINUE** for a diagnostic-only A/B. The sole tested hypothesis
+is that the timed response ``SimpleQueue.get(timeout=0.1)`` call inside
+``_ThreadTransport._dispatch`` contributes at least 10 us of avoidable
+fixed wall latency to a warmed no-SQL request/response round trip.
+
+Two standalone diagnostics have been added, **without modifying the
+production runtime or canonical v3 benchmark**:
+
+* ``tools/bench_qt_thread_queue_wait.py`` runs an existing qt-thread
+  connection, sends direct ``Operation.GET`` of the PGconn status over
+  the normal request/response path, and switches the transport class's
+  response wait method between the original timed implementation and
+  an untimed local replica. The class patch exists *only in the
+  diagnostic Python process*. Each of eight interleaved pairs
+  alternates timed/untimed order after warming each mode, with 4000
+  measured no-SQL requests per mode by default. The script collects
+  uninstrumented wall time, total process CPU, caller CPU and process
+  context switches with per-pair timed-minus-untimed differences,
+  median, MAD, range and sign count.
+* ``tools/bench_qt_thread_queue_wait.ps1`` loads the usual local
+  environment and runs the diagnostic with the existing isolated
+  fork benchmark venv, preserving a separate
+  ``qt-thread-queue-wait-ab-*.zip`` artifact and restoring environment
+  variables after completion. The v3 acceptance workload, upstream
+  environment and measured production implementation are untouched.
+
+**Predeclared performance gate**: at least 10 us median improvement
+for untimed relative to timed, median improvement greater than
+three times the paired MAD, and positive improvement in all but at most
+one pair. These numbers are a diagnostic screen, not proof of a safe
+runtime optimisation.
+
+**Liveness/semantics gate**: each wait mode is separately tested
+for worker exception propagation, clean close with rejection of later
+requests, and worker exit without returning a response. Every scenario
+runs in a subprocess with a watchdog. The untimed mode is expected to
+block forever if the worker disappears after a request is submitted
+without a response; the harness explicitly records watchdog timeout
+as an **unsafe production behavior**, not as a successful safety test.
+A production change would need a different design that preserves
+worker exit detection, exceptional return and close. Never install
+the untimed replica directly into the runtime.
+
+This A/B **has not yet been measured** on the user's Windows machine.
+Do not conclude that the timed wait adds measurable overhead, approve
+a runtime change, or stack ``optimized02`` until results and safety
+evidence are inspected. If the signal is absent or safety requirements
+cannot be met with a viable design, reject the hypothesis and record
+the negative outcome.
+
+Windows command after branch sync::
+
+    .\tools\bench_qt_thread_queue_wait.ps1
+
+The implementation chat retains ownership of analysis and the final
+bounded decision. Route the completed significant checkpoint to
+``00 Coordinator`` for independent review; no Scout is needed yet.
+
 Post-optimized01 priorities
 ---------------------------
 

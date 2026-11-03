@@ -17,10 +17,12 @@ Repository state
 * canonical local worker for the current paired benchmark: ``QPSYCOPG_WORKER_IMPL=c``;
 * upstream comparison revision: ``99356800e90aa0e7b604f652d714ef0f33422b47``;
 * canonical optimisation baseline: ``baseline-v3``;
-* current runtime experiment: ``optimized01`` lazy qt-thread cancellation setup;
+* accepted runtime optimisation: ``optimized01`` lazy qt-thread cancellation setup;
 * ``optimized01`` implementation commits: ``4637ff9`` and ``371bda8``;
-* ``optimized01`` is implemented but is not accepted until measured against
-  ``baseline-v3`` with the unchanged v3 benchmark.
+* ``optimized01`` measured at ``7c781a97`` with the unchanged v3 benchmark,
+  semantic smoke OK; retained for improved connection and resource lifecycle;
+* next target: measure and isolate qt-thread short-query CPU/latency overhead,
+  keeping cancellation/Qt responsiveness as guardrails.
 
 The current branch has moved beyond the old qt-thread connection blocker. The
 complete standalone qt-thread smoke passes. Do not restart work from the old
@@ -282,28 +284,36 @@ Established decisions / do not repeat blindly
 Immediate next work
 -------------------
 
-#. Do not make another runtime optimisation on top of the current code yet.
-#. Run the unchanged v3 benchmark as checkpoint ``optimized01``.
-#. Confirm the qt-thread semantic smoke remains clean in that run.
-#. Compare ``optimized01`` with ``baseline-v3`` using connection cost, connected
-   thread/handle/resource deltas and unrelated regression checks.
-#. Retain ``optimized01`` only if the intended lifecycle/resource signal is
-   supported; otherwise revert the two runtime commits and document the result.
-#. If retained, update :doc:`qt-process-performance` and
-   :doc:`qt-process-optimization-log` with measured results.
-#. Only then choose the next bounded target. The likely candidate is remaining
-   qt-thread short-query CPU/latency overhead, but selection must follow the
-   measured ``optimized01`` state rather than the old baseline.
+#. ``optimized01`` is retained after the matching paired v3 checkpoint;
+   the ``qt-thread`` semantic smoke passed. Its expected connected-state
+   resource reduction is confirmed (-1 thread, -6 handles compared with
+   ``baseline-v3``), and warm-connect ratios improved.
+#. Keep the accepted lazy cancellation lifecycle intact. Do not rerun
+   ``optimized01`` or modify the benchmark workload without new evidence.
+#. Next bounded optimisation stage: inspect and profile the current
+   ``qt-thread`` short-query CPU/latency path. Identify one extra
+   allocation, conversion, cache, request/response or scheduling cost
+   relative to direct upstream, and form a falsifiable local hypothesis.
+#. Before committing a new runtime variant, make sure the hypothesis is
+   distinct from rejected process IPC/native wait/packing experiments.
+   Preserve Psycopg public semantics and the complete qt-thread smoke gate.
+#. Change only one local mechanism, benchmark against the retained
+   ``baseline-v3`` and ``optimized01`` checkpoints using unchanged v3
+   workload, and check CPU/query, SELECT median, connect, cancellation,
+   resource counts, Qt p95/p99 and bulk for regressions.
+#. Retain/revert and update :doc:`qt-process-optimization-log` and
+   :doc:`qt-process-performance` before stacking further changes.
+   The optimized01 CPU/query ratio (2.429x versus 2.000x at baseline) is
+   a watch item, not yet a proven causal regression.
 
 When resuming in a new chat/session
 -----------------------------------
 
-#. Read :doc:`qt-process`.
-#. Read this project map.
-#. Read :doc:`qt-process-performance`.
-#. Read :doc:`qt-process-coordination`.
-#. Inspect current branch HEAD and :doc:`qt-process-optimization-log`.
-#. Treat ``baseline-v3`` as the canonical before-state for ``optimized01``.
-#. Remember that optimized01 is not accepted until measured.
+#. Read :doc:`qt-process`, this project map, :doc:`qt-process-performance`
+   and :doc:`qt-process-coordination`; then inspect current HEAD.
+#. Review :doc:`qt-process-optimization-log` for the canonical v3 results.
+#. Treat ``optimized01`` as **retained**, not pending measurement.
 #. Do not restart the old qt-thread smoke blocker or previously rejected
    process-IPC/native-wait experiments.
+#. Continue with the short-query CPU/latency investigation; do not silently
+   create a competing implementation path in another chat.

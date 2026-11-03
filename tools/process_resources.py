@@ -24,9 +24,19 @@ def processResources() -> dict[str, Any] | None:
                 memory = process.memory_full_info()
             except (psutil.Error, AttributeError):
                 memory = process.memory_info()
-            entry: dict[str, int | float | str] = {
+            try:
+                name = process.name()
+            except psutil.Error:
+                name = ""
+            try:
+                executable = process.exe()
+            except (psutil.Error, OSError):
+                executable = ""
+            entry: dict[str, Any] = {
                 "pid": process.pid,
                 "role": "parent" if process.pid == root.pid else "child",
+                "name": name,
+                "exe": executable,
                 "cpu_user_seconds": float(cpu.user),
                 "cpu_system_seconds": float(cpu.system),
                 "rss_bytes": int(memory.rss),

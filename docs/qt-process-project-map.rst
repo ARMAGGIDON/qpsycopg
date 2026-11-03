@@ -542,7 +542,7 @@ Coordinator review -- real GET attribution plateau
   ownership has occurred.
 
 Native preflight forensic addendum -- current in-progress snapshot
----------------------------------------------------------------
+------------------------------------------------------------------
 
 * **Owner / branch / base:** current Implementation chat is the
   sole runtime owner on ``feature/qt-process-pq``; Coordinator

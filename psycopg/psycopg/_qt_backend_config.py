@@ -41,7 +41,9 @@ def _read_env(path: Path) -> dict[str, str]:
             quote = value[0]
             closing = value.find(quote, 1)
             if closing < 0:
-                raise ValueError(f"{path}:{number}: unterminated quoted value for {key}")
+                raise ValueError(
+                    f"{path}:{number}: unterminated quoted value for {key}"
+                )
             suffix = value[closing + 1 :].strip()
             if suffix and not suffix.startswith("#"):
                 raise ValueError(f"{path}:{number}: unexpected trailing text for {key}")
@@ -64,7 +66,7 @@ def _setup_windows_libpq() -> None:
         raise FileNotFoundError(f"PSYCOPG_PG_ROOT/bin not found: {bin_dir}")
 
     directory = str(bin_dir.resolve())
-    _DLL_DIR_HANDLES.append(os.add_dll_directory(directory))
+    _DLL_DIR_HANDLES.append(getattr(os, "add_dll_directory")(directory))
     path = os.environ.get("PATH", "")
     paths = [p for p in path.split(os.pathsep) if p]
     if os.path.normcase(directory) not in {

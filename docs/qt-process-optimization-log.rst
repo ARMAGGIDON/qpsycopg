@@ -444,7 +444,9 @@ production runtime or canonical v3 benchmark**:
   an untimed local replica. The class patch exists *only in the
   diagnostic Python process*. Each of eight interleaved pairs
   alternates timed/untimed order after warming each mode, with 4000
-  measured no-SQL requests per mode by default. The script collects
+  measured no-SQL requests per mode by default. The entire measured
+  untimed A/B also executes in a watchdog-protected subprocess (60 seconds
+  by default) so an unexpected worker failure cannot hang the runner. The script collects
   uninstrumented wall time, total process CPU, caller CPU and process
   context switches with per-pair timed-minus-untimed differences,
   median, MAD, range and sign count.

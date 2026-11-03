@@ -228,6 +228,9 @@ def pairedMeasurements(dsn: str, pairs: int, iterations: int, warmup: int) -> di
                         statusGet(transport)
                     row[mode] = measure(transport, iterations)
                 samples.append(row)
+            # Close the performance connection with the original runtime path.
+            # Untimed close behavior is tested separately under a watchdog.
+            setMode("timed")
     finally:
         setMode("timed")
     return {"pairs": samples, "summary": summarizePairs(samples)}

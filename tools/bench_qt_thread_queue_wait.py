@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import queue
 import statistics
 import subprocess
@@ -213,6 +214,25 @@ def checkScenario(dsn: str, mode: str, scenario: str, timeout: float) -> dict[st
     }
 
 
+def pairedMeasurements(dsn: str, pairs: int, iterations: int, warmup: int) -> dict[str, Any]:
+    samples: list[dict[str, Any]] = []
+    try:
+        with psycopg.connect(dsn) as connection:
+            transport = connection.pgconn._transport
+            for pair in range(pairs):
+                order = ("timed", "untimed") if pair % 2 == 0 else ("untimed", "timed")
+                row: dict[str, Any] = {"pair": pair + 1, "order": list(order)}
+                for mode in order:
+                    setMode(mode)
+                    for _ in range(warmup):
+                        statusGet(transport)
+                    row[mode] = measure(transport, iterations)
+                samples.append(row)
+    finally:
+        setMode("timed")
+    return {"pairs": samples, "summary": summarizePairs(samples)}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("dsn")
@@ -220,6 +240,8 @@ def main() -> int:
     parser.add_argument("--iterations", type=int, default=4000)
     parser.add_argument("--warmup", type=int, default=300)
     parser.add_argument("--watchdog-seconds", type=float, default=8.0)
+    parser.add_argument("--benchmark-watchdog-seconds", type=float, default=60.0)
+    parser.add_argument("--benchmark-child", action="store_true")
     parser.add_argument("--child-mode", choices=["timed", "untimed"])
     parser.add_argument("--child-scenario", choices=[
         "error_propagation", "close", "worker_exit_no_response",
@@ -231,8 +253,15 @@ def main() -> int:
         return runChildScenario(args.dsn, args.child_mode, args.child_scenario)
     if args.pairs < 4 or args.iterations < 100 or args.warmup < 0:
         parser.error("requires >=4 pairs, >=100 iterations, nonnegative warmup")
-    if args.watchdog_seconds < 2:
-        parser.error("watchdog must be at least 2 seconds")
+    if args.watchdog_seconds < 2 or args.benchmark_watchdog_seconds < 10:
+        parser.error("watchdogs must be >=2 seconds (scenario) and >=10 seconds (A/B)")
+    if psycopg.pq.__impl__ != "qt-thread":
+        raise RuntimeError("this diagnostic requires PSYCOPG_IMPL=qt-thread")
+    if args.benchmark_child:
+        print(json.dumps(pairedMeasurements(
+            args.dsn, args.pairs, args.iterations, args.warmup,
+        )), flush=True)
+        return 0
 
     result: dict[str, Any] = {
         "method": "diagnostic-only qt-thread A/B; timed production _dispatch versus local untimed variant",
@@ -250,28 +279,38 @@ def main() -> int:
             "Do not deploy the untimed variant; no runtime or benchmark-v3 change is made.",
         ],
     }
-    if psycopg.pq.__impl__ != "qt-thread":
-        raise RuntimeError("this diagnostic requires PSYCOPG_IMPL=qt-thread")
-
-    result["worker_impl"] = __import__("os").environ.get("QPSYCOPG_WORKER_IMPL")
-    samples: list[dict[str, Any]] = []
+    result["worker_impl"] = os.environ.get("QPSYCOPG_WORKER_IMPL")
+    result["benchmark_watchdog_seconds"] = args.benchmark_watchdog_seconds
+    runner = Path(__file__).with_name("run_with_pg_root.py")
+    cmd = [
+        sys.executable, str(runner), str(Path(__file__).resolve()), args.dsn,
+        "--benchmark-child", "--pairs", str(args.pairs),
+        "--iterations", str(args.iterations), "--warmup", str(args.warmup),
+    ]
     try:
-        with psycopg.connect(args.dsn) as connection:
-            transport = connection.pgconn._transport
-            for pair in range(args.pairs):
-                order = ("timed", "untimed") if pair % 2 == 0 else ("untimed", "timed")
-                row: dict[str, Any] = {"pair": pair + 1, "order": list(order)}
-                for mode in order:
-                    setMode(mode)
-                    for _ in range(args.warmup):
-                        statusGet(transport)
-                    row[mode] = measure(transport, args.iterations)
-                samples.append(row)
-    finally:
-        setMode("timed")
+        completed = subprocess.run(
+            cmd, capture_output=True, text=True,
+            timeout=args.benchmark_watchdog_seconds, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        result["benchmark_error"] = "watchdog timeout: A/B child terminated"
+        print(json.dumps(result, indent=2))
+        return 3
 
-    result["pairs"] = samples
-    result["summary"] = summarizePairs(samples)
+    if completed.returncode:
+        result["benchmark_error"] = {
+            "returncode": completed.returncode,
+            "stderr_tail": completed.stderr[-2000:],
+        }
+        print(json.dumps(result, indent=2))
+        return 3
+    try:
+        result.update(json.loads(completed.stdout))
+    except (TypeError, ValueError):
+        result["benchmark_error"] = "invalid A/B child JSON"
+        print(json.dumps(result, indent=2))
+        return 3
+
     checks: list[dict[str, Any]] = []
     for scenario in ("error_propagation", "close", "worker_exit_no_response"):
         for mode in ("timed", "untimed"):

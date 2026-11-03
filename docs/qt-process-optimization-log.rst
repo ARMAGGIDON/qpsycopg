@@ -495,7 +495,7 @@ connect and resource guardrails remain applicable to any future
 candidate.
 
 Minimal SimpleQueue echo versus qpsycopg status GET -- diagnostic pending
------------------------------------------------------------------------
+-------------------------------------------------------------------------
 
 Following the independent Coordinator review at ``577d568``, the previous
 timed-vs-untimed queue experiment remains **REJECT**: it showed no

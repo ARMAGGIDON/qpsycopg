@@ -1133,33 +1133,205 @@ Upload ``test-results\qt-thread-native-boundary-ab-*.zip`` to
 the **current Implementation chat** for evaluation,
 documentation and Coordinator routing on completion.
 
+Native PGresult complete result-boundary A/B -- REJECT on drift/noise gate
+--------------------------------------------------------------------------
+
+**Completed diagnostic (no runtime candidate).** The previously passed
+standalone native-result preflight authorised one diagnostic-only whole
+result-boundary comparison, not a production branch. The Windows
+artifact is ``qt-thread-native-boundary-ab-20261103-230648-799.zip``,
+SHA256 ``997eb072dbaf3a148ef886fe3a353e1ddd16c6ca0a028605d7eb04855109f6c3``.
+The ZIP's CRC passes and contains ``manifest.json``,
+``results.json`` and empty ``stderr.log``. This is a
+user-uploaded/Windows-local ZIP, **not committed to GitHub**.
+Preserve the original artifact for future independent reanalysis.
+
+Manifest: captured branch HEAD
+``f19aafcee7d07441e704d22567f0e4abae780c74``,
+``feature/qt-process-pq``, CPython 3.13.5,
+``qt-thread`` with C worker, four independent child
+process repeats, 12 five-block cycles/repeat,
+1000 measured SELECT 1 calls/block (plus warmup),
+120 s watchdog per child. All four children finished,
+with 48 cycles / 240 measured blocks / 240,000
+actual query executions, and 96 locally bracketed
+comparisons. There is no reported crash, timeout
+or result mismatch. The script asserts the decoded
+``(1,)`` row on every operation. It records no
+production/v3 edits and does not authorise
+``optimized02``.
+
+Both modes run **identical** worker-thread
+``native_pq.PGconn.exec_params(b"SELECT 1", ())``
+on the same worker-owned PGconn and exchange
+requests/results through two ``SimpleQueue``
+instances with the same response timeout.
+Both use the same caller qt-thread cursor
+adaptation context and fresh Transformer,
+but different completed-result boundaries:
+current ``_snapshotResult`` / ``PackedValues``
+→ synthetic PGresult → hybrid Transformer,
+versus owned native C PGresult → C Transformer.
+Worker/client result ownership and release
+are included in each path. The benchmark is
+not the full production asynchronous
+``qt-thread`` SELECT path or canonical v3,
+and does not exercise all worker health,
+cache, notice, COPY, pipeline or
+cancellation semantics.
+
+**Measured paired difference:** all values
+below are **snapshot minus native**;
+positive means native is faster/uses less
+process CPU. Each figure is the median
+of 24 adjacent timestamp-interpolated
+comparisons within one independent
+repeat, not an independent 96-sample
+population::
+
+    repeat       CPU/query    wall/query   CPU positive   wall positive
+       1         +31.276 us    +35.380 us       16/24           17/24
+       2         +54.671 us    +51.540 us       20/24           20/24
+       3         +29.817 us    +77.012 us       17/24           20/24
+       4         +38.567 us    +25.192 us       18/24           15/24
+
+Across four **independent repeat medians**:
+process CPU difference +34.921 us/SELECT,
+MAD 4.375 us, range +29.817..+54.671 us;
+wall difference +43.460 us/SELECT,
+MAD 13.174 us, range +25.192..+77.012 us.
+All four independent CPU median signs
+are positive; across individual pairs,
+CPU difference is positive in **71/96**
+and wall difference in **72/96**.
+Caller thread CPU delta between repeats
+has median +23.896 us; other-thread
+CPU delta median +17.357 us. Both are
+noisy and need not sum to the independent
+median process CPU result.
+Context-switch delta median +0.0091
+switches/SELECT, near zero in practical
+terms and not evidence of a changed
+scheduling topology.
+
+**Noise and drift:** the per-pair CPU
+MAD within individual repetitions
+was **43.569, 34.974, 30.117 and
+42.770 us/SELECT** respectively, i.e.
+comparable to the size of the observed
+effect. The modes themselves had
+absolute wall medians roughly
+630..748 us/SELECT, reflecting
+synchronous native PQexecParams,
+not previously measured async
+qt-thread short-query latency.
+
+The predeclared first-to-last
+**mode-specific wall drift** (median
+of first vs last three cycles) was::
+
+    repeat       snapshot             native
+       1           -19.59%             -17.06%
+       2            -2.08%              +3.41%
+       3           +52.64%             +33.87%
+       4           +55.18%             +16.29%
+
+Thus **3/4 independent repeats** breach
+the predeclared 15% drift ceiling;
+only repeat 2 stays within it.
+Large local fluctuations also remain
+despite five-block counterbalancing
+and timestamp-bracket interpolation,
+which corrects approximately linear
+local drift, not nonstationary host
+contention. Windows process CPU
+accounting is quantized at the block
+scale. A positive paired effect is
+not enough to assert a reliable,
+portable CPU savings magnitude.
+
+**Predeclared material-benefit screen: FAIL.**
+The threshold >=15 us CPU/SELECT,
+positive median in every repeat,
+>=3/4 repeat medians above threshold,
+and independent-repeat median
+exceeding 3x MAD all pass. The
+separately required **no mode/repeat
+with >15% wall drift** condition fails.
+The script's own ``predeclared_screen.passes``
+is ``false``. This condition was set
+**before** capture; it must not
+be weakened post hoc because the
+observed median CPU delta is positive.
+
+**Decision: REJECT this native-handoff
+performance screen as insufficiently
+stable for a runtime target.**
+This is **not** a finding that native
+PGresult transfer is impossible or
+intrinsically slow; the standalone
+feasibility preflight remains PASS.
+It is also not evidence of an
+end-to-end qt-thread SQL improvement.
+No runtime candidate, ``optimized02``
+or new benchmark-v3 baseline is
+authorised by these measurements.
+Do not repeat the same A/B merely
+to obtain a cleaner or more favorable
+number without independent new
+evidence and direction review.
+
+Next owner: **existing 00 Coordinator**,
+for independent review of this
+completed significant negative
+checkpoint. Coordinator should
+choose a documented STOP/plateau
+or a *different*, evidence-backed
+bounded target, taking the positive
+but nonqualifying directionality
+and high drift into account.
+The active Implementation chat
+remains sole ordinary runtime
+owner until any explicit transfer.
+
 Post-optimized01 priorities
 ---------------------------
 
-``optimized01`` remains RETAIN and prior timed-vs-untimed
-SimpleQueue wait, native worker socket wait, speculative
-WAIT prefetch and generic snapshot micro-tuning remain
-rejected. The **distinct native PGresult whole-boundary**
-hypothesis has now passed its *standalone safety preflight*.
-No runtime performance signal has been measured yet.
+``optimized01`` remains **RETAIN**; historical
+timed/untimed queue waiting, native worker
+wait, speculative WAIT prefetch, GET/echo
+attribution and generic snapshot microtuning
+remain rejected/completed. The standalone
+native C PGresult handoff feasibility gate
+passed, but the entire diagnostic-only
+native-result boundary SELECT 1 A/B
+**FAILED its predeclared material-benefit
+screen** due to severe temporal drift.
+Do not mistake a positive median for
+accepted production speedup.
 
-#. Run and analyse the one permitted, diagnostic-only
-   paired native-result boundary SELECT 1 A/B using the
-   staged Python/PowerShell tools; preserve the full ZIP.
-#. Require correct row parity, same SQL execution,
-   two queue handoffs, same cursor adaptation,
-   independent repeats and paired process CPU/query,
-   wall, context-switch and drift evidence.
-#. Apply the predeclared >=15 us CPU/SELECT
-   materiality screen. Missing, negative, unstable or
-   low materiality evidence means **REJECT**.
-   A positive screen requires further independent
-   semantics/architecture review, not optimized02.
-#. After this bounded A/B, update this log, performance
-   notes and project-map recovery state, then submit
-   the **completed significant checkpoint** to the
-   existing 00 Coordinator for review. Do not start
-   an unapproved second runtime path.
+#. Route measured evidence and this
+   **REJECT** checkpoint to existing
+   ``00 Coordinator`` for independent
+   review before any new optimisation
+   direction.
+#. Do not rerun the same native boundary
+   A/B or relax its drift condition without
+   a new, independent, falsifiable reason.
+   Preserve both the positive CPU direction
+   and its noise/drift limitation.
+#. No ``optimized02``, production runtime
+   change, canonical benchmark-v3 change
+   or speculative generic snapshot tuning.
+#. Any new Coordinator-selected candidate
+   must first address public Psycopg
+   semantics and worker health, errors,
+   notices, close, cancellation, pipeline,
+   COPY, multi-result and non-C fallback,
+   then pass qt-thread semantic smoke and
+   unchanged adjacent-paired v3 with
+   CPU/query, Qt p95/p99, bulk, resource
+   and connection guardrails.
 
 Checkpoint rule
 ---------------

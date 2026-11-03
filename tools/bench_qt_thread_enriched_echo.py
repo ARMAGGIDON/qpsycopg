@@ -250,7 +250,8 @@ def run_repeat(dsn: str, repeat: int, cycles: int, calls: int, warmup: int) -> d
 
         for cycle in range(cycles):
             order = order_for_cycle(cycle, repeat)
-            baseline_before = measure(lambda: invoke("bare"), calls)
+            echo.set_mode("bare")
+            baseline_before = measure(echo.invoke, calls)
             observations: dict[str, dict[str, float]] = {}
             for mode in order:
                 if mode != "qpsycopg":
@@ -259,7 +260,8 @@ def run_repeat(dsn: str, repeat: int, cycles: int, calls: int, warmup: int) -> d
                 else:
                     op = lambda: status_get(transport)
                 observations[mode] = measure(op, calls)
-            baseline_after = measure(lambda: invoke("bare"), calls)
+            echo.set_mode("bare")
+            baseline_after = measure(echo.invoke, calls)
 
             # Bracketed bare-echo controls: interpolate each mode's position
             # between surrounding controls. This removes *linear* local drift,

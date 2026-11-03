@@ -426,7 +426,7 @@ for independent milestone review before starting a new runtime
 optimisation direction.
 
 Queue-response wait A/B -- REJECT, completed diagnostic
-------------------------------------------------------
+-------------------------------------------------------
 
 The Coordinator-approved diagnostic was run on Windows at fork commit
 ``516ccc8ca2e627f3c1575933704077df88e60f07``; archive:

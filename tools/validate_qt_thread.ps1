@@ -1,9 +1,19 @@
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path $PSScriptRoot -Parent
 $python = Join-Path $repoRoot ".venv\Scripts\python.exe"
-$dsn = $env:QPSYCOPG_DSN
 if (-not (Test-Path $python)) { throw "Virtual environment not found: $python" }
-if (-not $dsn) { throw "QPSYCOPG_DSN is not set" }
+
+$bootstrapEnv = @{}
+$config = & $python (Join-Path $PSScriptRoot "qpsycopg_env.py") --json | ConvertFrom-Json
+foreach ($item in $config.PSObject.Properties) {
+    $name = $item.Name
+    $previous = [Environment]::GetEnvironmentVariable($name)
+    $bootstrapEnv[$name] = $previous
+    if ($null -eq $previous) { [Environment]::SetEnvironmentVariable($name, [string] $item.Value) }
+}
+
+$dsn = $env:QPSYCOPG_DSN
+if (-not $dsn) { throw "QPSYCOPG_DSN is not set; add it to .env or the process environment" }
 
 $uv = Get-Command uv -ErrorAction Stop
 Write-Host "[build] psycopg-c"
@@ -110,4 +120,8 @@ try {
     if ($null -eq $oldNative) { Remove-Item Env:QPSYCOPG_NATIVE_IPC -ErrorAction Ignore } else { $env:QPSYCOPG_NATIVE_IPC = $oldNative }
     if ($null -eq $oldRecv) { Remove-Item Env:QPSYCOPG_NATIVE_RECV -ErrorAction Ignore } else { $env:QPSYCOPG_NATIVE_RECV = $oldRecv }
     if ($null -eq $oldWait) { Remove-Item Env:QPSYCOPG_NATIVE_WAIT -ErrorAction Ignore } else { $env:QPSYCOPG_NATIVE_WAIT = $oldWait }
+    foreach ($entry in $bootstrapEnv.GetEnumerator()) {
+        if ($null -eq $entry.Value) { Remove-Item "Env:$($entry.Key)" -ErrorAction Ignore }
+        else { [Environment]::SetEnvironmentVariable($entry.Key, [string] $entry.Value) }
+    }
 }

@@ -732,22 +732,71 @@ The optimization log records
 the local-only ZIP SHA256 and
 details of all repeats.
 
+Native PGresult result-boundary feasibility -- preflight pending
+----------------------------------------------------------------
+
+Independent Scouts led the Coordinator to select **INVESTIGATE** at
+``98a6ad178d03ff0ad94f1b28c6d3ddac6cd164a1``: a distinct,
+diagnostic-only, whole-boundary hypothesis. In the current
+qt-thread C-worker implementation, completed native PGresults are
+converted to ``ResultSnapshot``/``PackedValues``, transferred through
+two SimpleQueues, restored into synthetic PGresults, and decoded
+by a hybrid Python/native Transformer. A safe native-result handoff
+might avoid this *entire* boundary, but the effect is **unmeasured**.
+
+The source audit confirms that C native PGresult owns its
+``PGresult*`` and clears it through ``PQclear``, and that native
+C Transformer requires the C PGresult type. PostgreSQL's
+current libpq threading contract allows completed immutable
+results to transfer across threads, but not shared PGconn
+use. Borrowed notice callback results are specifically
+unsafe to transfer; preserve their immediate snapshots.
+The worker's completion-state/parameter checks depend on
+``ResultSnapshot``, so changing only the snapshot function
+would violate semantics. Native Transformer acceptance of
+the current synthetic-connection adaptation context remains
+an empirical gate, not a source-level assumption.
+
+Before performance work, the separate Windows preflight
+``tools/preflight_qt_thread_native_pgresult.ps1``
+runs ``tools/preflight_qt_thread_native_pgresult.py`` in
+a watchdog-isolated subprocess. It tests PGresult ownership
+across two queues, finished-connection lifetime,
+clear/destructor behavior, native-vs-hybrid Transformer
+decoding using one qt-thread cursor context, metadata,
+NULL/error/SQLSTATE and borrowed notice handling.
+The production runtime and benchmark v3 are unchanged.
+
+**Status: preflight ZIP pending; performance A/B NOT yet permitted.**
+A failed lifetime, safety or semantic check means **STOP**,
+with a committed negative conclusion and no optimized02.
+A positive preflight would allow only a diagnostic full
+current-vs-native warmed SELECT 1 comparison using the
+*same SQL work*, *same adaptation context* and *two
+queue handoffs*, with independent repeated short paired
+blocks and noise/drift controls. Predeclared material
+screen: >=15 us process CPU/SELECT improvement,
+repeatable beyond noise. No speed/CPU outcome exists yet.
+
 Next work
 ---------
 
-#. Route this completed measured negative
-   checkpoint to the existing ``00 Coordinator``
-   for independent review and decision
-   whether the qpsycopg GET/echo line has
-   reached an attribution plateau.
-#. Do not extend the local synthetic/
-   instrumented profiling sequence
-   without a new falsifiable target;
-   Coordinator may choose an alternative
-   bounded investigation or Scout.
-#. Any new runtime candidate must first
-   demonstrate a plausible semantic
-   invariant and local measured benefit,
-   then pass qt-thread smoke and unchanged
-   paired v3 (CPU/query, cancellation,
-   Qt p95/p99, bulk, connect, resources).
+#. On the Windows checkout, after syncing
+   ``feature/qt-process-pq``, run
+   ``.\tools\preflight_qt_thread_native_pgresult.ps1``.
+   Preserve and upload
+   ``qt-thread-native-result-preflight-*.zip``.
+#. Inspect errors and all required ownership/type,
+   NULL/metadata/error, C Transformer, PGconn.finish,
+   clear/destructor and notice guardrails. Failure
+   means STOP, not an invitation to keep tuning
+   snapshots.
+#. Only if positive, return to the **current
+   Implementation chat** for a controlled
+   diagnostic-only SELECT 1 current-vs-native
+   boundary A/B. Do not edit production or v3.
+#. After completing an evidence-backed bounded
+   checkpoint, document the decision and route
+   to existing ``00 Coordinator`` for independent
+   review. Do not engage a competing runtime owner.
+

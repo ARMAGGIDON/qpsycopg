@@ -77,6 +77,28 @@ function Run([string] $mode, [string] $label, [string[]] $scriptArgs, [string] $
     if ($LASTEXITCODE -ne 0) { throw "$mode host-state after $label failed with code $LASTEXITCODE" }
 }
 
+function Run-Pair(
+    [string] $mode,
+    [string] $kind,
+    [int] $round,
+    [int] $position,
+    [int] $total,
+    [string[]] $scriptArgs,
+    [string] $directory
+) {
+    $n = "{0:D2}" -f $round
+    $upstreamFile = "$kind-$n-$mode-upstream.json"
+    $modeFile = "$kind-$n-$mode.json"
+    $upstreamFirst = (($round + $position) % 2 -eq 0)
+    if ($upstreamFirst) {
+        Run "upstream" "$kind $round/$total paired with $mode" $scriptArgs $upstreamFile $directory
+        Run $mode "$kind $round/$total" $scriptArgs $modeFile $directory
+    } else {
+        Run $mode "$kind $round/$total" $scriptArgs $modeFile $directory
+        Run "upstream" "$kind $round/$total paired with $mode" $scriptArgs $upstreamFile $directory
+    }
+}
+
 try {
     Write-Host "[upstream] resolve comparison revision"
     & git -C $repoRoot fetch --quiet https://github.com/psycopg/psycopg.git master
@@ -95,7 +117,7 @@ try {
     if (-not (Test-Path $pgConfig)) { throw "pg_config.exe not found: $pgConfig" }
     $libpqVersion = (& $pgConfig --version).Trim()
 
-    $hashText = (@($bench, $qt, $resources, $runner, $hostState) | ForEach-Object {
+    $hashText = (@($bench, $qt, $resources, $runner, $hostState, $summary, $PSCommandPath) | ForEach-Object {
         (Get-FileHash $_ -Algorithm SHA256).Hash
     }) -join "|"
     $hashBytes = [Text.Encoding]::UTF8.GetBytes($hashText)
@@ -119,7 +141,6 @@ try {
         & git -C $repoRoot worktree add --detach $upstreamRoot $upstreamBase
         if ($LASTEXITCODE -ne 0) { throw "failed to create upstream worktree" }
     }
-
     if (-not (Test-Path $upstreamPython)) {
         Write-Host "[upstream] create benchmark venv"
         & $uv.Source venv $upstreamVenv --python $basePython
@@ -158,26 +179,37 @@ try {
     & $forkPython $runner $smoke $dsn 2>&1 | Tee-Object -FilePath (Join-Path $outDir "smoke-thread.log")
     if ($LASTEXITCODE -ne 0) { throw "qt-thread smoke failed with code $LASTEXITCODE" }
 
-    $benchArgs = @($bench, $dsn, "--iterations", "1000", "--rows", "100000", "--threads", "8")
-    $qtArgs = @($qt, $dsn, "--caller", "thread")
-    $orders = @(
-        @("upstream", "direct", "thread", "process"),
-        @("direct", "thread", "process", "upstream"),
-        @("thread", "process", "upstream", "direct"),
-        @("process", "upstream", "direct", "thread")
+    $benchArgs = @(
+        $bench, $dsn,
+        "--iterations", "5000",
+        "--warmup-iterations", "200",
+        "--rows", "100000",
+        "--threads", "8",
+        "--thread-batches", "20",
+        "--connect-iterations", "40",
+        "--cancel-iterations", "20"
     )
+    $qtArgs = @($qt, $dsn, "--caller", "thread", "--queries", "60")
+    $modeOrders = @(
+        @("direct", "thread", "process"),
+        @("thread", "process", "direct"),
+        @("process", "direct", "thread")
+    )
+    $sqlRepeats = 6
+    $qtRepeats = 5
 
-    for ($i = 1; $i -le 6; $i++) {
-        $n = "{0:D2}" -f $i
-        foreach ($mode in $orders[($i - 1) % 4]) {
-            Run $mode "SQL $i/6" $benchArgs "bench-$n-$mode.json" $outDir
+    for ($i = 1; $i -le $sqlRepeats; $i++) {
+        $position = 0
+        foreach ($mode in $modeOrders[($i - 1) % 3]) {
+            Run-Pair $mode "bench" $i $position $sqlRepeats $benchArgs $outDir
+            $position++
         }
     }
-
-    for ($i = 1; $i -le 3; $i++) {
-        $n = "{0:D2}" -f $i
-        foreach ($mode in $orders[($i - 1) % 4]) {
-            Run $mode "Qt $i/3" $qtArgs "qt-$n-$mode.json" $outDir
+    for ($i = 1; $i -le $qtRepeats; $i++) {
+        $position = 0
+        foreach ($mode in $modeOrders[($i - 1) % 3]) {
+            Run-Pair $mode "qt" $i $position $qtRepeats $qtArgs $outDir
+            $position++
         }
     }
 
@@ -195,13 +227,18 @@ try {
         psutil = $psutilVersion
         platform = $platform
         benchmark_hash = $benchmarkHash
-        methodology = "paired/interleaved upstream + direct + qt-thread + qt-process"
+        methodology = "adjacent paired upstream per fork mode; pair order alternates"
         environment = "isolated non-editable upstream/fork benchmark venvs"
-        repeats = 6
-        qt_repeats = 3
-        iterations = 1000
+        repeats = $sqlRepeats
+        qt_repeats = $qtRepeats
+        iterations = 5000
+        warmup_iterations = 200
         rows = 100000
         threads = 8
+        thread_batches = 20
+        connect_iterations = 40
+        cancel_iterations = 20
+        qt_queries = 60
         upstream_impl = "c"
         direct_impl = "c"
         worker_impl = "c"
@@ -212,10 +249,10 @@ try {
     } | ConvertTo-Json | Set-Content (Join-Path $outDir "manifest.json") -Encoding utf8
 
     if (-not (Test-Path (Join-Path $referenceDir "manifest.json"))) {
-        Write-Host "[reference] save first paired upstream run as historical drift reference"
+        Write-Host "[reference] save first adjacent-paired upstream run as historical drift reference"
         New-Item -ItemType Directory -Path $referenceDir -Force | Out-Null
-        Copy-Item (Join-Path $outDir "bench-*-upstream.json") $referenceDir
-        Copy-Item (Join-Path $outDir "qt-*-upstream.json") $referenceDir
+        Copy-Item (Join-Path $outDir "bench-*-*-upstream.json") $referenceDir
+        Copy-Item (Join-Path $outDir "qt-*-*-upstream.json") $referenceDir
         Copy-Item (Join-Path $outDir "host-*-upstream-*.json") $referenceDir
         [ordered]@{
             timestamp = (Get-Date).ToString("o")
@@ -229,12 +266,13 @@ try {
             psutil = $psutilVersion
             platform = $platform
             benchmark_hash = $benchmarkHash
+            methodology = "adjacent paired upstream per fork mode"
         } | ConvertTo-Json | Set-Content (Join-Path $referenceDir "manifest.json") -Encoding utf8
     } else {
         Write-Host "[reference] historical upstream reference: $referenceDir"
     }
 
-    Write-Host "[summary] paired current upstream vs fork + historical drift"
+    Write-Host "[summary] adjacent-paired current upstream vs fork + historical drift"
     & $forkPython $summary $referenceDir $outDir
     if ($LASTEXITCODE -ne 0) { throw "benchmark summary failed with code $LASTEXITCODE" }
 

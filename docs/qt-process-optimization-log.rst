@@ -908,7 +908,7 @@ process crash. The entire native-handoff performance A/B stays
 blocked. Source plausibility is not empirical feasibility.
 
 First Windows preflight attempt -- native access violation
---------------------------------------------------------
+----------------------------------------------------------
 
 Uploaded ZIP: ``qt-thread-native-result-preflight-20261103-223124-116.zip``.
 SHA256: ``8a3e2324bb51a5297b63d1c7ab1b424320c7c799c13a18265c15ce56689b58f7``.

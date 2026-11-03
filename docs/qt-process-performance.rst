@@ -618,28 +618,83 @@ Detailed per-repeat results, drift and SHA
 of the locally supplied ZIP are in
 :doc:`qt-process-optimization-log`.
 
+Real qt-thread no-SQL GET path attribution -- pending
+------------------------------------------------------
+
+The previous enriched echo diagnosed repeatable synthetic
+representation/bookkeeping scale but did **not** identify a
+semantically removable operation in production. The
+``00 Coordinator`` reviewed it and approved **CONTINUE --
+real-path, diagnostic-only profiling** at
+``0fc10d668ac9166f07ae3a575049da7b4b14ccd1``.
+The new standalone tools are
+``tools/profile_qt_thread_get_real_path.py`` and
+``tools/profile_qt_thread_get_real_path.ps1``.
+The production qt-thread backend, accepted ``optimized01``
+and canonical paired benchmark v3 have not been changed.
+
+The Python diagnostic creates two real, warmed qt-thread
+connections per independent subprocess: one untouched
+GET-status control connection, and one instrumented
+connection with temporary local phase clocks and worker
+queue observers. Each cycle executes five short blocks:
+``clean-profiled-clean-profiled-clean``.
+The two profiled blocks are compared against neighboring
+clean controls interpolated by actual block midpoint
+time. Defaults are four independent subprocess repeats,
+12 cycles/repeat, 1200 calls/block and 90-second watchdog.
+Per-block wall, process/caller CPU and context switches,
+per-phase call counts, and pooled phase timing per repeat
+are available in the resulting JSON ZIP.
+
+The actual operations measured include caller request,
+``_perform``, ``_dispatch``, ``_responseValue``,
+``_wire`` and ``_restore``; worker pool/base
+``_handle``, ``_normalize``,
+``_connectionReady``, ``_connectionBroken`` and
+an active worker ``_run`` turn (from request receipt
+to immediately before response publication).
+All phases are **inclusive** and may nest or overlap;
+the worker turn excludes idle queue wait and the
+response queue publication/wakeup itself.
+
+There is **instrumentation bias**: the clean and profiled
+samples use separate real connections/workers, and the
+profiled connection has queue proxies and method
+wrappers. Do not subtract inclusive timers to claim
+precise avoidable CPU or treat instrumented latency
+as a v3 acceptance metric. Windows thread CPU
+quantization remains an important limitation;
+pooled repeated phase counts and independent
+replication are preferred. The previous invalid
+cross-thread cProfile, failed timed/untimed
+SimpleQueue wait, native worker socket wait,
+speculative WAIT prefetch and generic snapshot
+tuning must not be repeated without new evidence.
+
+**Status: measured results pending on Windows; no
+``optimized02`` candidate.** The decision gate is
+one concrete actual-code, falsifiable and
+semantically safe hypothesis, or a documented
+absence of an actionable target.
+
 Next work
 ---------
 
-#. Route this significant completed diagnostic
-   checkpoint to the existing ``00 Coordinator``
-   for independent review. The decision concerns
-   whether real-path profiling is justified
-   after the synthetic attribution plateau.
-#. Do not repeat synthetic enrichment, the
-   rejected untimed response wait, worker-native
-   wait, speculative WAIT prefetch or generic
-   snapshot/serialization tuning without
-   substantially new evidence.
-#. Any Coordinator-approved next diagnostic
-   should isolate a real qpsycopg GET/worker
-   phase, controlling drift with repeated
-   short paired blocks. Do not start
-   ``optimized02`` without a falsifiable
-   semantically safe production hypothesis.
-#. If a future runtime candidate emerges,
-   require qt-thread semantic smoke and
-   unchanged adjacent paired benchmark v3
-   with CPU/query, cancellation latency,
-   Qt p95/p99, bulk, connection and
-   resource guardrails.
+#. Run ``.\tools\profile_qt_thread_get_real_path.ps1``
+   after syncing ``feature/qt-process-pq`` on the
+   Windows development machine. Preserve the ZIP,
+   including manifest, results and diagnostic errors.
+#. Examine all independent repeats, control drift,
+   paired clean/profiled deltas, phase call-count
+   invariants, inclusive worker/caller wall and
+   accumulated thread CPU. Do not infer precision
+   where clocks or instrumentation are too noisy.
+#. Update optimisation/performance evidence and
+   project-map handoff with the actual measured
+   result and explicit single-hypothesis/no-target
+   decision. Preserve public Psycopg and worker
+   liveness/cancellation semantics.
+#. Only then request independent
+   ``00 Coordinator`` review. No Scout/new
+   implementation owner is needed at present.

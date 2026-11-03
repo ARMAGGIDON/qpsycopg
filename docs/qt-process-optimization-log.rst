@@ -901,27 +901,56 @@ by snapshotting the borrowed callback result before return.
 The production qt-thread worker, Transformer selection,
 benchmark v3 and SQL execution implementation are untouched.
 
-**Preflight status: NOT YET VERIFIED ON WINDOWS.**
-A static source audit suggests a plausible path for
-completed, owned results only, but does **not** prove
-binary compatibility, correct adaptation or lifetime
-on the target machine. If any preflight check fails,
-**STOP** native-handoff investigation and document
-the failure. The preflight is not a throughput benchmark.
+**Preflight status: BLOCKED after a native access violation.**
+The first Windows attempt (details below) did not reach a Python
+PASS or a meaningful semantic assertion; it ended in a native
+process crash. The entire native-handoff performance A/B stays
+blocked. Source plausibility is not empirical feasibility.
 
-Run after syncing branch on the Windows machine::
+First Windows preflight attempt -- native access violation
+--------------------------------------------------------
+
+Uploaded ZIP: ``qt-thread-native-result-preflight-20261103-223124-116.zip``.
+SHA256: ``8a3e2324bb51a5297b63d1c7ab1b424320c7c799c13a18265c15ce56689b58f7``.
+Manifest confirms ``dc25abe6c1e98c9c349f5ce9596f99a93d2ba5b9``,
+branch ``feature/qt-process-pq``, CPython 3.13.5,
+qt-thread / C worker, 40-second watchdog and unchanged runtime/v3.
+ZIP CRC passes. ``results.json`` records Python diagnostic
+exit 2 because its **child process** returned Windows
+``3221225477`` (``0xC0000005``, access violation).
+The captured child's stdout/stderr and ZIP ``stderr.log``
+are all empty. This was **not** a watchdog timeout and there
+are no completed per-case results, so the crash location,
+PGresult lifetime and native Transformer parity are
+**unknown**. Treating this as proof that the proposed
+architecture is impossible would be premature; treating
+it as a PASS would be unsafe.
+
+**Bounded forensic correction, diagnostics only:** commit
+``ad3fc11b`` added ``faulthandler`` and flushed stage
+markers around native connect, worker exec/snapshot,
+queue response, metadata, both Transformers, clear,
+notice callback and connection finish. Commit
+``e0189753`` preserved the last marker, Windows
+hex exit code and an extended child stderr stack
+in ``results.json``. These changes do not alter
+the native calls, production source or v3 benchmark.
+
+Next action: **one** watchdog-isolated repeat of the
+*instrumented preflight*, not the prior silent probe
+and **not** the SELECT 1 A/B::
 
     .\tools\preflight_qt_thread_native_pgresult.ps1
 
-Upload the emitted ``test-results\qt-thread-native-result-preflight-*.zip``
-in this **current Implementation chat**. The ZIP is
-local-only until explicitly committed. A full-current-vs-native
-warmed ``SELECT 1`` A/B with the same SQL, adaptation context,
-two queue handoffs, output parity, short paired blocks,
-independent repeats and >=15 us process CPU/query material
-screen is **strictly deferred** until the preflight has
-passed and its evidence has been inspected. Even a
-positive preflight does not authorise production code.
+Upload the resulting new ZIP. If the trace locates a
+real ownership, pointer, Transformer or destructor
+violation, STOP and record the failure. If it reveals
+a **diagnostic-only** bug, justify a minimal correction
+before any new preflight attempt. An unlocalised repeat
+native crash is itself sufficient to suspend this
+investigation pending independent Coordinator review.
+The >=15 us CPU/SELECT material screen remains entirely
+deferred. Never start ``optimized02`` on this evidence.
 
 Post-optimized01 priorities
 ---------------------------

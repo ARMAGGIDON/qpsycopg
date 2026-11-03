@@ -69,11 +69,13 @@ def addResources(section: dict[str, Any], before: Any, after: Any, count: int | 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("dsn")
-    parser.add_argument("--iterations", type=int, default=200)
-    parser.add_argument("--rows", type=int, default=20_000)
-    parser.add_argument("--threads", type=int, default=4)
-    parser.add_argument("--connect-iterations", type=int, default=20)
-    parser.add_argument("--cancel-iterations", type=int, default=5)
+    parser.add_argument("--iterations", type=int, default=5_000)
+    parser.add_argument("--warmup-iterations", type=int, default=200)
+    parser.add_argument("--rows", type=int, default=100_000)
+    parser.add_argument("--threads", type=int, default=8)
+    parser.add_argument("--thread-batches", type=int, default=20)
+    parser.add_argument("--connect-iterations", type=int, default=40)
+    parser.add_argument("--cancel-iterations", type=int, default=20)
     parser.add_argument("--cancel-settle-ms", type=float, default=100.0)
     args = parser.parse_args()
 
@@ -87,8 +89,10 @@ def main() -> int:
             "decoder": getattr(Transformer, "__qpsycopg_decoder__", None),
         },
         "iterations": args.iterations,
+        "warmup_iterations": args.warmup_iterations,
         "rows": args.rows,
         "threads": args.threads,
+        "thread_batches": args.thread_batches,
         "connect_iterations": args.connect_iterations,
         "cancel_iterations": args.cancel_iterations,
         "cancel_settle_ms": args.cancel_settle_ms,
@@ -115,6 +119,9 @@ def main() -> int:
             with connection.cursor() as cursor:
                 cursor.execute("SELECT 1")
                 assert cursor.fetchone() == (1,)
+
+        for _ in range(args.warmup_iterations):
+            selectOne()
 
         requestsBefore = remoteRequests(connection)
         resourcesBefore = processResources()
@@ -167,9 +174,7 @@ def main() -> int:
             result["fetch"]["fetchall_remote_requests"] = count
         assert rows and isinstance(rows[0][1], Decimal)
 
-        barrier = threading.Barrier(args.threads)
-
-        def threaded(index: int) -> int:
+        def threaded(index: int, barrier: threading.Barrier) -> int:
             barrier.wait()
             with connection.cursor() as cursor:
                 cursor.execute("SELECT %s::int + pg_backend_pid() * 0", (index,))
@@ -177,16 +182,34 @@ def main() -> int:
                 assert row is not None
                 return int(row[0])
 
-        requestsBefore = remoteRequests(connection)
-        resourcesBefore = processResources()
-        start = time.perf_counter()
+        def threadBatch(pool: ThreadPoolExecutor) -> tuple[float, list[int]]:
+            barrier = threading.Barrier(args.threads + 1)
+            futures = [pool.submit(threaded, index, barrier) for index in range(args.threads)]
+            start = time.perf_counter_ns()
+            barrier.wait()
+            values = [future.result() for future in futures]
+            return (time.perf_counter_ns() - start) / 1_000_000, values
+
         with ThreadPoolExecutor(max_workers=args.threads) as pool:
-            values = list(pool.map(threaded, range(args.threads)))
-        threadsElapsed = time.perf_counter() - start
-        resourcesAfter = processResources()
-        requestsAfter = remoteRequests(connection)
-        result["threads"] = {"seconds": threadsElapsed, "values": values}
-        addResources(result["threads"], resourcesBefore, resourcesAfter, args.threads)
+            threadBatch(pool)  # Warm worker threads; don't benchmark pool creation.
+            requestsBefore = remoteRequests(connection)
+            resourcesBefore = processResources()
+            threadSamples = []
+            values = []
+            for _ in range(args.thread_batches):
+                elapsedMs, values = threadBatch(pool)
+                threadSamples.append(elapsedMs)
+            resourcesAfter = processResources()
+            requestsAfter = remoteRequests(connection)
+
+        result["threads"] = {
+            "batch": summary(threadSamples),
+            "batches": args.thread_batches,
+            "queries_per_batch": args.threads,
+            "queries_per_second": args.threads / (statistics.median(threadSamples) / 1000),
+            "values": values,
+        }
+        addResources(result["threads"], resourcesBefore, resourcesAfter, args.threads * args.thread_batches)
         if (requestCount := remoteDelta(requestsBefore, requestsAfter)) is not None:
             result["threads"]["remote_requests"] = requestCount
 

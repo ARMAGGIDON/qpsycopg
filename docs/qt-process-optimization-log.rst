@@ -61,67 +61,23 @@ process-tree private memory     1.392x       2.334x
 Qt timer p95                    1.026x       1.006x
 ==============================  ===========  ============
 
-Architecture deltas were approximately:
-
-======================  ===========  ============
-Resource                qt-thread    qt-process
-======================  ===========  ============
-processes                +0           +2
-threads                  +2           +11
-handles                  +14          +306
-======================  ===========  ============
-
 Benchmark v2 -- diagnostic baseline
 -----------------------------------
 
 Checkpoint ``baseline-v2`` was captured at fork commit
 ``93dc15deb92c0988edaa5c0accbf110f18941deb``. Correctness smoke passed completely.
 It introduced separate cold/warm connection metrics, repeated cancellation,
-Qt p99 and process inventory. The process inventory confirmed that qt-process
-contains one parent Python process plus two child Python processes while upstream,
-direct and qt-thread each contain one Python process.
+Qt p99 and process inventory, but pairing was still too loose for small
+optimisation claims. Upstream ``SELECT 1`` median had about ``22%`` MAD and
+roughly ``71%`` observed range between SQL runs.
 
-Selected v2 results were:
-
-=================================  ===========  ============
-Metric                             qt-thread    qt-process
-=================================  ===========  ============
-cold connect                       1.446x       15.449x
-warm connect median                1.337x       1.105x
-SELECT 1 median                    1.216x       1.234x
-CPU / short query                  1.462x       2.409x
-context switches / query           2.997x       3.015x
-100k fetch/decode                  1.002x       0.908x
-100k total                         0.977x       0.960x
-cancel call median                 1.324x       2.619x
-process-tree RSS                   1.335x       2.465x
-process-tree private memory        1.399x       2.331x
-Qt timer p99                       1.006x       1.029x
-=================================  ===========  ============
-
-These absolute ratios are useful architecture signals, but v2 exposed that the
-comparison pairing was still too loose for small optimisation claims. Upstream
-``SELECT 1`` median had about ``22%`` MAD and roughly ``71%`` observed range
-between the six SQL runs. Several modes in one logical round were separated by
-multiple complete benchmark runs, so a single per-round upstream measurement was
-not necessarily representative of the machine state when each fork mode ran.
-
-V2 also exposed two benchmark-definition problems:
-
-* the concurrency metric measured one batch together with
-  ``ThreadPoolExecutor`` construction, mixing thread-pool startup with database
-  work;
-* ``query finish after cancel`` used a near-zero upstream denominator and could
-  produce visually huge but practically meaningless ratios.
-
-For these reasons ``baseline-v2`` is retained as a diagnostic checkpoint but is
-not the baseline for numbered runtime optimisations.
+V2 is retained as a diagnostic checkpoint only.
 
 Benchmark v3 -- canonical optimisation methodology
 --------------------------------------------------
 
-V3 is the canonical methodology for the next optimisation series. Its important
-changes are:
+V3 is the canonical methodology for the numbered optimisation series. Its
+important rules are:
 
 * every fork mode has its own immediately adjacent upstream run;
 * pair order alternates so upstream is not systematically first or second;
@@ -134,9 +90,7 @@ changes are:
 * cancellation reports call median/p95 and end-to-end median;
 * Qt uses five repeated paired runs; p95/p99 are primary and maximum stall stays
   diagnostic;
-* the benchmark/reference hash now includes the orchestration and summary code,
-  so methodology-only changes cannot silently reuse an incompatible historical
-  reference.
+* the benchmark/reference hash includes orchestration and summary code.
 
 The SQL pair pattern is conceptually::
 
@@ -144,32 +98,110 @@ The SQL pair pattern is conceptually::
     adjacent upstream <-> qt-thread
     adjacent upstream <-> qt-process
 
-with pair orientation and mode order rotated between rounds. The primary ratio is
-therefore the median of six adjacent ``fork / paired upstream`` ratios for SQL
-metrics. The generated stability table reports the MAD and observed range of the
-paired ratio itself in addition to aggregate upstream drift/noise.
+The primary ratio is the median of six adjacent ``fork / paired upstream`` ratios
+for SQL metrics. The generated stability table reports MAD and observed range of
+the paired ratio itself.
 
-The next required run is ``baseline-v3``. No runtime optimisation should be
-committed before it exists, because that checkpoint is the clean before-state for
-``optimized01``.
+Canonical baseline -- baseline-v3
+---------------------------------
 
-Optimisation order
-------------------
+Checkpoint ``baseline-v3`` was captured before any numbered runtime optimisation.
+Correctness smoke passed and process inventory confirmed the expected topology:
+upstream/direct/qt-thread use one Python process, while qt-process uses one parent
+plus two child Python processes.
 
-Do not optimise every visible ratio at once. The current order is:
+Selected canonical ratios are:
 
-#. capture ``baseline-v3`` with the canonical benchmark;
-#. inspect its paired ratio MAD/ranges and confirm which costs remain stable;
-#. first runtime candidate: reduce qt-thread connection/resource overhead by
-   avoiding eager cancellation-control construction when cancellation is never
-   used;
-#. capture ``optimized01`` using exactly the same v3 workload/hash;
-#. retain or revert the optimisation according to measured paired improvement,
-   architecture deltas and semantic smoke;
-#. choose the next target only from the remaining measured cost.
+=====================================  ===========  ============
+Metric                                 qt-thread    qt-process
+=====================================  ===========  ============
+cold connect                           1.366x       14.504x
+warm connect median                    1.409x       1.123x
+warm connect p95                       1.930x       1.166x
+SELECT 1 median                        1.273x       1.446x
+SELECT 1 p95                           1.249x       1.542x
+SELECT 1 p99                           1.395x       1.547x
+CPU / short query                      2.000x       3.163x
+context switches / query               3.032x       2.994x
+100k execute                           1.040x       1.067x
+100k fetch/decode                      1.013x       0.969x
+100k total                             1.027x       0.986x
+8-thread batch median                  1.341x       1.523x
+concurrent throughput                  0.746x       0.659x
+cancel call median                     1.048x       1.718x
+process-tree RSS                       1.320x       2.467x
+process-tree private memory            1.377x       2.384x
+Qt timer p95                           0.982x       1.005x
+Qt timer p99                           1.008x       1.005x
+=====================================  ===========  ============
 
-Bulk decoding is not a current target. Both v1 and v2 showed the native
-qt-thread decoder near direct/upstream behaviour for large fetch/decode work.
+Architecture deltas at the connected-state sampling point were:
+
+======================  ===========  ============
+Resource                qt-thread    qt-process
+======================  ===========  ============
+processes                +0           +2
+threads                  +2           +11
+handles                  +14          +306
+======================  ===========  ============
+
+The stable optimisation signals are not all metrics equally. In ``baseline-v3``:
+
+* upstream ``SELECT 1`` median MAD is about ``0.72%``;
+* qt-thread paired ``SELECT 1`` median ratio MAD is about ``3.98%``;
+* context-switch ratios are extremely stable (around ``0.5%`` MAD or better);
+* RSS/private-memory ratios are stable (around ``1%`` MAD or better);
+* Qt p95/p99 are effectively at parity and should not currently drive work;
+* cancellation medians remain scheduler-sensitive and are supporting evidence,
+  not the primary acceptance criterion;
+* maximum Qt stall is intentionally diagnostic only because its observed spread
+  is very large.
+
+This is the first checkpoint suitable as the before-state for ``optimized01``.
+
+Optimized01 -- lazy qt-thread cancellation setup
+------------------------------------------------
+
+The first numbered runtime change is deliberately narrow. Before this change,
+``Connection.connect()`` created the full cancellation-control infrastructure for
+``qt-thread`` even for a connection which was immediately closed without running
+a query. That setup includes a ``PGcancelConn``, TCP listener/client and a cancel
+control thread.
+
+``optimized01`` changes only the lifecycle:
+
+* qt-thread connect no longer opens cancellation control eagerly;
+* the first ``send_query*`` request opens it immediately before the query is
+  handed to the worker thread, preserving cancellation availability while the
+  query is active;
+* ``cancel_safe()`` retains an on-demand fallback;
+* qt-process behaviour is unchanged;
+* the existing semantic smoke remains the correctness gate.
+
+Implementation commits are:
+
+* ``4637ff9`` -- add the qt-thread lazy-cancellation patch layer;
+* ``371bda8`` -- activate that patch only for ``PSYCOPG_IMPL=qt-thread``.
+
+The primary expected effects are lower qt-thread cold/warm connection cost and
+lower connected-state thread/handle/resource counts before the first query. Short
+query latency is not the primary target of this change because cancellation
+support is intentionally established before the first query and then reused.
+
+The next required checkpoint is ``optimized01`` using the unchanged v3 benchmark
+hash. Retain or revert this change only after comparing it with ``baseline-v3``.
+
+Optimisation order after optimized01
+------------------------------------
+
+Do not optimise every visible ratio at once. After ``optimized01``:
+
+#. compare connection/resource deltas and confirm smoke remains clean;
+#. if the lifecycle change is supported, target the remaining qt-thread short
+   query CPU/latency overhead rather than bulk decoding;
+#. keep bulk decode deprioritised while it remains near upstream;
+#. choose later worker reuse, thread-native command/response or cancellation
+   transport work only from measured remaining cost.
 
 Checkpoint rule
 ---------------

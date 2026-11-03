@@ -545,63 +545,101 @@ is to compare a richer echo with matched Request/Response
 and validation costs against the minimal echo, without
 modifying production, before attempting any local tuning.
 
-Enriched echo protocol/bookkeeping isolation -- pending diagnostic
-------------------------------------------------------------------
+Enriched echo protocol/bookkeeping isolation -- measured
+------------------------------------------------------
 
-At the minimal-echo checkpoint (fork HEAD ``492ab431``), real
-no-SQL qt-thread GET status exceeded a bare two-SimpleQueue echo
-by median ~18.96 us wall per call. The difference was positive
-in 8/8 paired blocks, but strong temporal drift (first four
-pairs median ~31.81 us, last four ~13.66 us) makes the cost
-nonstationary and does **not** identify removable overhead.
+The independently repeated diagnostic archive
+``qt-thread-enriched-echo-20261103-205855-365.zip``
+was captured at branch HEAD ``d1b6a5a`` using four fresh
+Windows Python 3.13.5 subprocesses, each with a warmed
+qt-thread/C connection and one synthetic worker. Each
+repeat has 16 cycles with 600 calls in each of six
+short blocks. Balanced ordering places the four
+enriched/real modes between timestamp-interpolated
+bare echo controls. All 64 cycles completed without
+reported error or watchdog activation.
 
-Independent ``00 Coordinator`` review authorised a *diagnostic-only*
-progressively enriched echo. Standalone scripts
-``tools/bench_qt_thread_enriched_echo.py`` and
-``tools/bench_qt_thread_enriched_echo.ps1`` compare:
-bare token; real ``Request/Response`` NamedTuple representation;
-added caller/worker validation; synthetic transport/worker
-bookkeeping; and unchanged real qt-thread no-SQL GET status.
+Wall overhead above interpolated bare echo (us/call,
+median across **four independent per-repeat medians**)
+was approximately::
 
-The measurement design uses four fresh subprocess repetitions
-by default, 16 cycles/repetition and six shorter 600-call
-blocks/cycle: a bare echo baseline, four modes in balanced
-rotating/reversed order, and another bare echo baseline.
-Each mode is warmed before measurements. Actual block midpoint
-timestamps interpolate local bare baseline to reduce approximately
-linear drift; medians, MAD, ranges, signs, incremental-stage
-deltas, baseline drift and independent-repeat variability
-remain available in the resulting JSON.
+    stage                                  wall delta     repeat range
+    Request/Response envelope               +4.031        3.209..4.722
+    envelope + validation                   +5.174        4.084..5.316
+    synthetic bookkeeping                   +9.420        8.731..9.673
+    real qt-thread GET status              +14.172       13.505..14.537
 
-All synthetic stages share one worker thread and two SimpleQueue
-objects, using the original timed response get. The
-bookkeeping proxy imitates selected qpsycopg branches with a
-fake status object, not a real PGconn, and is **not** a complete
-reimplementation of the worker. Effects from its synthetic
-branches, scheduling and Python CPU quantisation may interact.
-An incremental stage delta is not automatically a production
-optimisation opportunity and cannot predict SQL speedups.
+The directly paired incremental-stage wall deltas,
+summarized separately per repeat, were +0.855 us
+validation over envelope (positive in 44/64 cycles),
++4.184 us synthetic bookkeeping over validation
+(61/64), and +5.016 us actual GET over synthetic
+bookkeeping (59/64). Envelope over bare was positive
+in 60/64 cycles. The small validation increment
+is not stable at the within-cycle level, whereas
+synthetic representation and bookkeeping are more
+consistently measurable.
 
-**Status: Windows ZIP pending; production runtime, accepted
-optimized01 and canonical paired v3 benchmark unchanged.**
-Do not start optimized02 or redo the rejected timed-vs-untimed
-queue wait, native-worker wait, speculative result prefetch
-or snapshot/serialization tuning without new evidence.
+**Drift caution:** repeat 1's bare baseline rose
+131.8% from first to last control (15.486 to
+35.892 us/call). The other repeats changed
++6.5%, +3.5% and +6.7%; transient cycle-level
+spikes still occurred. Linear interpolation by
+actual block midpoints reduces local drift, not
+all nonlinear scheduling and thermal variation.
+The earlier ~18.96 us GET-minus-bare observation
+and this ~14.17 us repeat-median result cannot
+be interpreted as a runtime speedup or stable
+reduction in production work.
+
+Windows CPU measurements across 600-call blocks
+are coarsely quantized and not reliable at the
+individual few-microsecond stage level; inferred
+other-thread increments sometimes become
+negative. Context-switch deltas near zero do
+not establish new scheduling boundaries.
+Representation/validation/bookkeeping stages
+are **synthetic approximations**. The worker
+uses a fake PGconn and simplified object,
+status, notices, lock, cache and error paths.
+They cannot isolate one real qpsycopg function
+as dominant or show that removing an operation
+would preserve semantics. No SQL query
+latency claim follows.
+
+**Decision: diagnostic COMPLETE, no runtime
+candidate accepted.** ``optimized01`` stays
+RETAIN; timed-vs-untimed SimpleQueue wait
+stays REJECT. No code outside docs changed
+and canonical benchmark v3 is untouched.
+No ``optimized02`` or acceptance benchmark
+is justified by this synthetic result.
+Detailed per-repeat results, drift and SHA
+of the locally supplied ZIP are in
+:doc:`qt-process-optimization-log`.
 
 Next work
 ---------
 
-#. Run ``.\tools\bench_qt_thread_enriched_echo.ps1`` on the
-   Windows machine with the existing fork benchmark venv.
-#. Inspect four **independent** repetitions, within-cycle
-   bare-bracket drift and enriched-stage paired residuals,
-   including CPU and context-switch consistency. Reject
-   unstable or contradictory attribution.
-#. Record a bounded evidence-based finding (or explicit
-   failure to isolate one cost) in the optimisation log
-   and this performance document. Do not claim a safe
-   runtime change from synthetic deltas alone.
-#. After the significant completed profiling decision
-   and repository update, route to existing
-   ``00 Coordinator`` for independent review. New Scout
-   or other implementation owner is not currently needed.
+#. Route this significant completed diagnostic
+   checkpoint to the existing ``00 Coordinator``
+   for independent review. The decision concerns
+   whether real-path profiling is justified
+   after the synthetic attribution plateau.
+#. Do not repeat synthetic enrichment, the
+   rejected untimed response wait, worker-native
+   wait, speculative WAIT prefetch or generic
+   snapshot/serialization tuning without
+   substantially new evidence.
+#. Any Coordinator-approved next diagnostic
+   should isolate a real qpsycopg GET/worker
+   phase, controlling drift with repeated
+   short paired blocks. Do not start
+   ``optimized02`` without a falsifiable
+   semantically safe production hypothesis.
+#. If a future runtime candidate emerges,
+   require qt-thread semantic smoke and
+   unchanged adjacent paired benchmark v3
+   with CPU/query, cancellation latency,
+   Qt p95/p99, bulk, connection and
+   resource guardrails.

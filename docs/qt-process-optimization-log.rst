@@ -702,7 +702,7 @@ for future repository-first recovery. There are
 no production runtime modifications in this stage.
 
 Real qt-thread GET status -- measured diagnostic, no actionable target
---------------------------------------------------------------------
+----------------------------------------------------------------------
 
 Coordinator approved a bounded **real-path, diagnostic-only**
 ``GET status`` phase investigation at

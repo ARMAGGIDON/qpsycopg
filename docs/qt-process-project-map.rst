@@ -295,62 +295,58 @@ Established decisions / do not repeat blindly
 Immediate next work
 -------------------
 
-#. ``optimized01`` remains **RETAIN**. The short-query CPU attribution
-   investigation was completed and reviewed by the existing
-   ``00 Coordinator`` at checkpoint ``ae01f74f``.
-#. Coordinator decision: **CONTINUE**, authorising a *diagnostic-only*
-   timed-vs-untimed ``SimpleQueue.get()`` A/B for the fixed qt-thread
-   request/response handoff. No production runtime or canonical benchmark
-   v3 change is authorised by this decision.
-#. The implementation owner added
-   ``tools/bench_qt_thread_queue_wait.py`` and
-   ``tools/bench_qt_thread_queue_wait.ps1``. They compare the original
-   timed ``_dispatch`` response wait with a diagnostic untimed replica on
-   the **same warmed no-SQL PGconn status request path**. Eight pairs,
-   alternating order, 4000 calls/mode/pair by default. Clean wall,
-   process CPU, caller CPU and context-switch metrics plus per-pair
-   differences, median, MAD, range and positive-pair count are recorded.
-#. The main A/B runs in a watchdog-protected subprocess. Additional
-   subprocess/watchdog cases cover remote error propagation, normal
-   connection close/post-close requests and worker exit without response.
-   The raw untimed wait is expected to hang on worker exit; this is
-   explicit evidence of **unsafe production liveness**, not a passing
-   production safety design.
-#. Run ``.\tools\bench_qt_thread_queue_wait.ps1`` in the current Windows
-   checkout and upload the resulting ``qt-thread-queue-wait-ab-*.zip``
-   to the **current implementation chat**, not to Coordinator.
-#. Implementation owner must analyse the paired improvement against the
-   **predeclared >=10 us**, median >3*MAD and >=N-1 positive-pair
-   screen, plus CPU/context-switch and all liveness tests. If evidence
-   does not support the hypothesis, **REJECT**, document the result
-   and do not create ``optimized02``.
-#. If evidence is positive, first specify a *safe* runtime design
-   preserving worker exit/close/error detection. Do not install raw
-   blocking ``get()`` in production. Only a bounded candidate with
-   a credible safety argument may proceed through semantic smoke and
-   unchanged paired v3 benchmark, retaining/reverting by CPU/query,
-   SELECT latency, cancellation, Qt p95/p99, bulk, connect and resource
-   guardrails.
-#. After the significant bounded decision has been completed and
-   committed, route the results to the existing ``00 Coordinator``
-   for mandatory independent review. No Scout/second implementation
-   owner is needed.
+#. ``optimized01`` remains **RETAIN**. The CPU profiling checkpoint
+   identified a ~40-45 us wall fixed no-SQL request/response boundary,
+   but not a proven safe runtime optimisation.
+#. The subsequently Coordinator-approved diagnostic
+   timed-vs-untimed ``SimpleQueue.get()`` A/B is **REJECTED**,
+   after measurements in
+   ``qt-thread-queue-wait-ab-20261103-195939-054.zip``
+   at fork commit ``516ccc8c``. Eight interleaved paired comparisons
+   (4000 GET status calls per mode/pair) gave only +0.01546 us
+   median untimed advantage, paired MAD 1.08491 us, range
+   -4.403 to +2.119 us, and 4/8 favorable pairs. The predeclared
+   >=10 us improvement, >3*MAD and >=7/8 favorable screen failed.
+   Median process CPU difference was zero.
+#. The diagnostic proved a liveness regression: when a worker died
+   without responding, the original timed wait returned an
+   OperationalError; the raw untimed wait blocked until killed
+   by the 8-second subprocess watchdog. The harness's
+   ``failure_checks_pass=true`` marks expected *test outcomes*,
+   not production safety. Remote error handling and ordinary
+   close/post-close rejection behaved correctly in both modes.
+#. **Decision: REJECT** replacing timed response waiting with raw
+   blocking ``SimpleQueue.get()``. Do not repeat that experiment
+   without new evidence. It does not explain the measured
+   fixed worker handoff, and must not be called ``optimized02``.
+#. Production qt-thread runtime and benchmark v3 were not changed.
+   No new runtime variant needs smoke or v3 acceptance benchmarking
+   after this diagnostic-only negative result. Keep the original
+   ``optimized01`` semantic-smoke/benchmark evidence.
+#. The next action is mandatory independent review by the
+   **existing ``00 Coordinator``** of this completed negative
+   bounded stage, after which Coordinator selects the next
+   evidence-backed short-query target. Do **not** silently
+   start another runtime hypothesis, create a Scout, or ask
+   another implementation chat to edit this branch.
+#. For any future approved candidate preserve worker exit,
+   error and close semantics; measure CPU/query, cancellation
+   latency, Qt p95/p99, bulk, connection and resources using
+   semantic smoke plus unchanged paired benchmark v3.
 
 When resuming in a new chat/session
 -----------------------------------
 
 #. Read :doc:`qt-process`, this project map,
-   :doc:`qt-process-performance` and :doc:`qt-process-coordination`;
-   inspect current branch HEAD and :doc:`qt-process-optimization-log`.
-#. Treat ``optimized01`` as retained. Do not repeat the invalid
-   cross-thread Python 3.13 cProfile or the rejected native-wait,
-   speculative WAIT-prefetch, snapshot/serialization experiments.
-#. The measured fixed no-SQL thread boundary is 40-45 us wall and
-   36-47 us CPU; it does not explain all SELECT CPU overhead.
-#. Coordinator has approved only the diagnostic queue-wait A/B; the
-   code is staged but **Windows results are pending**. The next
-   artifact is the A/B ZIP. Implementation owner keeps responsibility
-   until result analysis and documentation commit.
-#. Do not stack ``optimized02``, contact another implementation chat,
-   or request another Coordinator review merely because measurements
-   are pending.
+   :doc:`qt-process-performance` and :doc:`qt-process-coordination`,
+   then inspect the latest HEAD and :doc:`qt-process-optimization-log`.
+#. ``optimized01`` is retained. The latest completed diagnostic
+   A/B **rejected** a raw untimed queue get: no repeatable
+   speedup and unsafe dead-worker behavior.
+#. Do not rerun the rejected untimed response wait, worker-native
+   wait, speculative WAIT-prefetch or generic snapshot/serialization
+   experiments absent new evidence.
+#. The next owner is the existing ``00 Coordinator`` for review
+   of the completed negative A/B checkpoint; no Scout/new
+   implementation chat is currently required. The current
+   implementation chat retains runtime ownership after review.

@@ -855,118 +855,166 @@ whole-boundary performance A/B remains
 necessary and still has a >=15 us paired
 process CPU/SELECT materiality screen.
 
-Native owned PGresult -- preflight passed, full-boundary A/B pending
---------------------------------------------------------------------
+Native PGresult result-boundary A/B -- drift-gated REJECT
+---------------------------------------------------------
 
-The corrected standalone C PGresult feasibility probe
-**PASSED** on Windows at commit
-§§c303749b6b1551901eb5fc7bf4c2bcaeb2f2ae56§§.
-Archive:
-§§qt-thread-native-result-preflight-20261103-225359-731.zip§§,
-SHA256 §§590ae47053e5b117d75ed596fceb23b71e50c78b37e97797162deac842b5145f§§.
-The archive contains a clean manifest, valid JSON and empty
-stderr; four cases all report complete success:
+The corrected standalone native C PGresult safety
+preflight remains **PASS** for the bounded ownership,
+NULL/error/notice and C/hybrid Transformer cases
+(see :doc:`qt-process-optimization-log`).
+That result is **not** full production semantic
+parity. The subsequent whole-result-boundary A/B
+was measured at HEAD
+``f19aafcee7d07441e704d22567f0e4abae780c74``.
+Evidence ZIP:
+``qt-thread-native-boundary-ab-20261103-230648-799.zip``
+(SHA256
+``997eb072dbaf3a148ef886fe3a353e1ddd16c6ca0a028605d7eb04855109f6c3``).
+ZIP CRC passes; manifest/results are valid;
+``stderr.log`` is empty. No watchdog,
+SQL mismatch or per-block failure was
+reported.
 
-* Native PGresult survives two SimpleQueue handoffs;
-  SELECT text/int/bool/NULL metadata, values and native
-  C Transformer match current snapshot/hybrid adaptation
-  with the same qt-thread cursor context.
-* FATAL_ERROR classification and SQLSTATE match,
-  **without** the prior invalid row decoding.
-* Server notice is preserved via snapshot inside
-  borrowed C callback and is not transmitted as
-  a stale native pointer.
-* Completed native result remains readable
-  **after PGconn.finish on its worker thread**;
-  double clear/garbage-collection succeed.
+All four fresh Windows Python 3.13.5
+subprocesses completed 12 balanced
+five-block cycles/repeat, 1000 queries
+per block. This is **240,000 actual
+SELECT 1 operations** (plus warmup)
+and 96 locally paired comparisons.
+The control and native paths share
+the same single worker-owned C PGconn,
+``exec_params(b"SELECT 1", ())``
+without parameters, two SimpleQueue
+handoffs, caller qt-thread cursor
+AdaptContext, fresh Transformer and
+verified decoded output ``(1,)``.
+The difference is completed result
+snapshot/``PackedValues``/synthetic
+PGresult/hybrid decoding versus owned
+C PGresult/native Transformer.
 
-This is a **basic standalone feasibility PASS**, not
-proof of full production semantics for pipeline, COPY,
-multi-result, worker health/parameter caching, error/
-notice delivery, cancellation, resource lifetime
-and non-C-worker fallback.
+**Paired repeat medians**, snapshot
+minus native (positive favors native),
+in microseconds per query::
 
-One diagnostic **current-vs-native whole-result-boundary**
-A/B is now staged in
-§§tools/bench_qt_thread_native_result_boundary.py§§
-and §§tools/bench_qt_thread_native_result_boundary.ps1§§.
-The worker owns one native C PGconn and executes the
-same warmed §§PGconn.exec_params(b"SELECT 1", ())§§
-on every request. Both alternatives use identical
-two SimpleQueue handoffs, timeout checks and
-one qt-thread cursor adaptation context.
-Only the completed result handling differs:
+    repeat        process CPU      wall-time       CPU positive pairs
+       1             +31.276        +35.380                16/24
+       2             +54.671        +51.540                20/24
+       3             +29.817        +77.012                17/24
+       4             +38.567        +25.192                18/24
 
-* snapshot control: native result metadata/values
-  packing via §§_snapshotResult§§, synthetic
-  PGresult reconstruction and fresh hybrid
-  Transformer;
-* native alternative: owned native C PGresult
-  crossing the response queue, fresh native C
-  Transformer and caller-side release.
+Median of the four independently
+replicated CPU differences:
+**+34.921 us/query**,
+between-repeat MAD 4.375 us,
+range +29.817..+54.671.
+For wall difference:
+**+43.460 us/query**,
+MAD 13.174 us,
+range +25.192..+77.012.
+The per-pair CPU difference was
+positive in **71/96**, wall in
+**72/96**. Within-repeat paired
+process CPU MAD was 43.569,
+34.974, 30.117, 42.770 us/query;
+thus substantial cycle-level
+variation is hidden by the
+positive repeat medians.
+Context-switch difference was
+near zero (+0.0091 median
+switches/call across repeats).
 
-Both must produce exactly one row §§(1,)§§.
-This is a **result-boundary diagnostic**, not a
-full upstream/qt-thread execution comparison:
-the shared synchronous native PQexecParams operation
-does not implement asynchronous production dispatch,
-worker liveness/cache logic or other Psycopg
-behaviors. It tests neither end-to-end public
-semantics nor canonical benchmark v3.
+**Temporal drift violates the
+predeclared material-benefit gate.**
+First-to-last three-cycle median
+wall changes by mode::
 
-Four independent subprocess repeats (each with a
-fresh worker/PGconn) contain 12 five-block cycles
-of 1000 requests per block. Alternating
-§§S-N-S-N-S§§ and §§N-S-N-S-N§§ bracket two
-target blocks with three opposite-mode controls
-and balance ordering. Paired differences are
-**snapshot minus native** (positive favors
-native), interpolated using block midpoint
-timestamps. Collect process CPU/query as
-the primary metric, wall, caller/other CPU,
-context switches and within-cycle/across-repeat
-drift. A watchdog protects every subprocess.
+    repeat          snapshot         native
+       1             -19.59%          -17.06%
+       2              -2.08%           +3.41%
+       3             +52.64%          +33.87%
+       4             +55.18%          +16.29%
 
-**Performance status: PENDING. No benchmark
-results or CPU savings have been observed.**
-The predeclared material screen requires at
-least +15 us paired process CPU/SELECT, with
->=3/4 independent repeat medians at or above
-15 us, all repeats positive, median >3x
-between-repeat MAD and no mode/repeat showing
->15% wall drift. If not met, REJECT the
-performance hypothesis and do not start
-§§optimized02§§. If met, separately review
-all remaining production semantic/lifetime
-invariants **before** any runtime design.
-No production code, C extension or v3
-benchmark has been edited.
+Three of four repeats breach
+the 15% mode-specific drift
+ceiling. Alternating
+``S-N-S-N-S`` / ``N-S-N-S-N``
+blocks and timestamp-interpolated
+opposite-mode controls handle
+approximately linear local drift;
+they cannot eliminate strong
+time-varying contention.
+Windows process CPU clock
+quantization adds uncertainty.
+
+**Predeclared screen result:
+FAIL; decision: REJECT.**
+The four independent CPU median
+differences are positive,
+three or more exceed +15 us,
+and their median exceeds
+3x between-repeat MAD. However,
+the simultaneous **no >15% wall
+drift** requirement fails.
+The machine-reported
+``predeclared_screen.passes=false``
+agrees with this decision.
+Do not revise that condition
+after seeing a promising median.
+
+This **does not** disprove native
+result handoff feasibility,
+which passed earlier. It says
+this one result-boundary run
+does not establish a sufficiently
+stable, material production
+optimization target. Moreover,
+the benchmark performs shared
+**synchronous native PQexecParams**
+and omits the complete asynchronous
+production qt-thread worker
+health/cache, notices/errors,
+COPY/pipeline and cancellation
+semantics. It is not an estimate
+of end-to-end SQL speedup and
+does not replace canonical
+paired benchmark v3.
+
+**No production runtime, C
+extension, benchmark v3 or
+``optimized01`` changes were made.**
+``optimized01`` remains RETAIN,
+and no ``optimized02``
+candidate is authorised.
 
 Next work
 ---------
 
-#. Run once in the synced Windows checkout::
-
-       .\tools\bench_qt_thread_native_result_boundary.ps1
-
-   Preserve the resulting
-   ``test-results\qt-thread-native-boundary-ab-*.zip``.
-   Do not run canonical v3 or edit runtime.
-#. Inspect full manifest and all four
-   independent repeats, paired process
-   CPU/SELECT, wall/context switches,
-   noise and temporal drift. Verify
-   equal SQL work, result, queue
-   handoffs and cursor adaptation context.
-#. Apply the predeclared >=15 us
-   materiality screen to a valid A/B.
-   Document REJECT on insufficient
-   or unstable signal; positive
-   boundary-level signal is not an
-   accepted production candidate.
-#. Record completed evidence in
-   optimisation log, this performance
-   file and project map; return
-   the significant checkpoint to
+#. Send the **completed negative
+   diagnostic checkpoint** to
    existing ``00 Coordinator``
    for independent review.
+#. Keep the positive paired
+   CPU direction and the
+   failing drift/noise evidence
+   together. No repeated native
+   boundary A/B solely to
+   obtain more favorable
+   timings, and no relaxations
+   of the original gate.
+#. Do not silently pivot to
+   snapshot micro-optimisations,
+   untimed queue waits,
+   native worker socket
+   waiting, GET/echo or
+   speculative WAIT prefetch.
+#. Any later evidence-based
+   runtime architecture
+   candidate must preserve
+   worker lifetime/error,
+   close, cancellation, COPY,
+   pipeline, multi-result,
+   notices and parameter cache
+   semantics, and pass
+   unchanged v3 and qt-thread
+   acceptance guardrails.

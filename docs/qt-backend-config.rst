@@ -5,8 +5,9 @@ Status
 ------
 
 This is a bounded configuration feature on ``feature/qt-backend-config``,
-separate from ``feature/qt-process-pq`` performance experiments. It is
-proposed for Coordinator review before integration.
+separate from ``feature/qt-process-pq`` performance experiments.
+Coordinator review of PR #2 accepted the import-time architecture
+(review ID 5758449221); merge remains blocked pending integration checks.
 
 Application ``.env``
 --------------------
@@ -36,12 +37,47 @@ Example application ``.env``::
 
     PSYCOPG_IMPL=qt-thread
     QPSYCOPG_WORKER_IMPL=c
-    PSYCOPG_PG_ROOT=C:\\PostgreSQL\\18\\pgsql
+    PSYCOPG_PG_ROOT=C:\PostgreSQL\18\pgsql
 
 Then application code simply does::
 
     import psycopg
     connection = psycopg.connect(...)
+
+Deployment and current-working-directory constraints
+----------------------------------------------------
+
+``.env`` is loaded **automatically during the first import** of
+``psycopg``. The default path is ``Path.cwd() / ".env"``, **not** the
+directory containing the imported script, the installed package, or the
+application's configuration module. A service manager, scheduled task,
+notebook kernel, test runner, web server, or process launched via a different
+working directory may therefore select a different file. Changing the
+current directory *after* importing ``psycopg`` has no effect on the chosen
+top-level implementation.
+
+In deployments, set ``QPSYCOPG_ENV_FILE`` to an **absolute path** for a
+trusted, access-controlled configuration file *before* Python imports
+``psycopg``, or set the individual backend keys in the process environment.
+Relative values of ``QPSYCOPG_ENV_FILE`` are resolved against the current
+working directory at import time. A missing file is ignored; unreadable
+files and malformed values in the selected backend keys raise during import.
+``.env`` values never override corresponding process environment keys.
+
+Do not run applications that implicitly read ``.env`` from an untrusted
+working directory. Although unrelated keys and credentials are ignored,
+these backend keys affect native library choice, and Windows
+``PSYCOPG_PG_ROOT`` can alter the DLL search location. A writable
+working directory can therefore become a **native-library loading trust
+boundary**. In services accepting user-controlled paths, explicitly provide
+a trusted absolute ``QPSYCOPG_ENV_FILE`` instead of relying on CWD.
+
+The settings apply to the **whole Python interpreter**, not just one
+connection or thread. Importing from plugins, tests, or application startup
+code can freeze the selection earlier than expected. Set configuration
+before any direct or indirect ``import psycopg``; changing the environment
+later is not supported as a backend-switching API. Processes with independent
+Python interpreters initialize separately.
 
 Precedence and freeze point
 ---------------------------

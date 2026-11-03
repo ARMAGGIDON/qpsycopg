@@ -304,6 +304,14 @@ def run_repeat(dsn: str, repeat: int, cycles: int, calls: int,
                             finally:
                                 rows = phases.end()
                         normalized = phase_per_call(rows, calls)
+                        missing = set(_PHASES) - set(normalized)
+                        if missing or any(
+                            normalized[name]["calls"] != calls for name in _PHASES
+                        ):
+                            raise AssertionError(
+                                f"incomplete profiled GET phase counts: {missing!r}; "
+                                f"{ {name: item['calls'] for name, item in normalized.items()}!r}"
+                            )
                         instrumented.append({
                             "metrics": values, "phases": normalized,
                         })
@@ -381,17 +389,6 @@ def aggregate(reports: list[dict]) -> dict[str, Any]:
     return {
         "independent_repeats": len(reports),
         "phase_costs": {
-            name: {
-                metric: describe([
-                    r["pooled_phases"][name][metric] for r in reports
-                ]),
-                "repeat_values": [
-                    r["pooled_phases"][name][metric] for r in reports
-                ],
-            }
-            for name in names
-            for metric in ()  # replaced by nested comprehension below
-        } if False else {
             name: {
                 metric: {
                     "summary": describe([

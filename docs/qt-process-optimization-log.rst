@@ -901,7 +901,7 @@ by snapshotting the borrowed callback result before return.
 The production qt-thread worker, Transformer selection,
 benchmark v3 and SQL execution implementation are untouched.
 
-**Preflight status: BLOCKED after a native access violation.**
+**Preflight status: BLOCKED; forensic crash localized to invalid probe row decoding.**
 The first Windows attempt (details below) did not reach a Python
 PASS or a meaningful semantic assertion; it ended in a native
 process crash. The entire native-handoff performance A/B stays
@@ -936,21 +936,85 @@ hex exit code and an extended child stderr stack
 in ``results.json``. These changes do not alter
 the native calls, production source or v3 benchmark.
 
-Next action: **one** watchdog-isolated repeat of the
-*instrumented preflight*, not the prior silent probe
-and **not** the SELECT 1 A/B::
+The forensic rerun was performed and localized the crash,
+as recorded in the second-attempt section below. Do not repeat
+the old diagnostic with invalid row decoding. The >=15 us
+CPU/SELECT material screen remains deferred; no
+``optimized02`` candidate exists.
+
+Second Windows native preflight -- fatal-error row decoder misuse
+-----------------------------------------------------------------
+
+Forensic artifact:
+``qt-thread-native-result-preflight-20261103-224615-903.zip``,
+SHA256
+``b476c81827bccc0d93e0b445ce2128290d9f7168b3834aaf5e66a92119fb4fcc``.
+ZIP CRC passed. The manifest records ``9e5ddb547b6d0d2a0c605aa939f7f908d9591643``,
+``feature/qt-process-pq``, CPython 3.13.5,
+qt-thread / C worker, 40-second watchdog and no
+production/v3 change. Child returned Windows
+``3221225477`` (``0xC0000005``) again;
+``results.json`` carries the flushed stage trace
+and ``faulthandler`` stacks. It was **not**
+a watchdog expiry. The separate ZIP ``stderr.log``
+is empty because child stderr is in the JSON error payload.
+
+**Localization:** the first ``select`` case completed native C
+``PGresult`` handoff, metadata/snapshot parity,
+both native C and hybrid Transformer row loads,
+explicit double ``clear()``, GC and end-of-case checks.
+The ``sql_error`` case then completed worker
+``exec_(b"SELECT 1 / 0")``, snapshot and two-queue
+handoff; both metadata and SQLSTATE exception checks
+passed, and the native C Transformer ``load_rows()``
+returned. The last flushed marker was
+``caller: before hybrid Transformer.load_rows``;
+the current thread's crash stack points to
+``psycopg/_transformer.py:84``, calling
+``_bulkLoadRows`` from ``load_rows(0, 0)``
+on a ``FATAL_ERROR`` result without tuple columns.
+
+**Root-cause classification: diagnostic misuse, not a
+demonstrated cross-thread PGresult safety failure.**
+Production ``BaseCursor._check_results()`` detects a
+``FATAL_ERROR`` and raises before attempting row
+decoding; the preflight incorrectly applied normal
+row decoding to that error result. The hybrid
+bulk-row helper's crash for invalid input is
+not evidence that native result transfer failed.
+It is not a general confirmation of native
+safety either: notice, PGconn.finish and their
+associated clear/lifetime checks had not run.
+
+A minimal **diagnostic-only** correction in commit
+``54bccf73`` retains native/snapshot metadata and
+SQLSTATE error parity but only calls either row decoder
+for tuple-bearing, nonempty ``TUPLES_OK`` results.
+``FATAL_ERROR`` and ``COMMAND_OK``/notice results
+are no longer submitted to ``load_rows()``.
+A per-case ``row_decoder_checked`` flag and
+end-of-test assertions ensure that real SELECT and
+PGconn-finished result parity must still pass,
+whereas error/DO cannot masquerade as row-decoding
+checks. The same existing two queues and
+watchdog are retained. No production source,
+C extension or benchmark v3 was changed.
+
+**Gate: STILL BLOCKED — corrected Windows feasibility
+rerun required.** After synchronizing the branch,
+execute the existing preflight runner once::
 
     .\tools\preflight_qt_thread_native_pgresult.ps1
 
-Upload the resulting new ZIP. If the trace locates a
-real ownership, pointer, Transformer or destructor
-violation, STOP and record the failure. If it reveals
-a **diagnostic-only** bug, justify a minimal correction
-before any new preflight attempt. An unlocalised repeat
-native crash is itself sufficient to suspend this
-investigation pending independent Coordinator review.
-The >=15 us CPU/SELECT material screen remains entirely
-deferred. Never start ``optimized02`` on this evidence.
+Review its new ZIP here before any native SELECT
+performance A/B. If it reveals an actual
+ownership/Transformer/notice lifetime failure,
+STOP, document and refer to Coordinator.
+If the corrected preflight passes all cases,
+that establishes only the bounded standalone
+feasibility gate; a separate full current-vs-native
+boundary A/B and the >=15 us CPU/SELECT
+screen would still be required.
 
 Post-optimized01 priorities
 ---------------------------

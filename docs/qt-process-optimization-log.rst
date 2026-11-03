@@ -492,21 +492,26 @@ bounded decision. Route the completed significant checkpoint to
 Post-optimized01 priorities
 ---------------------------
 
-The retained ``optimized01`` already delivered the measured connect/resource
-benefit. The completed CPU investigation narrows the next decision to the
-synchronous qt-thread request/response handoff; it does not establish a
-production optimisation yet.
+``optimized01`` remains retained. The completed CPU profiling study isolated
+a substantial fixed request/response handoff cost, and ``00 Coordinator``
+approved a **diagnostic-only** timed-vs-untimed comparison at reviewed
+HEAD ``ae01f74f``.
 
-#. Request independent ``00 Coordinator`` milestone review of the profiling
-   evidence and the single timed-vs-untimed response-wait diagnostic hypothesis.
-#. If approved, perform the diagnostic-only A/B before touching production
-   runtime. Reject the hypothesis if the fixed handoff does not measurably
-   improve, or if worker/connection liveness cannot be preserved.
-#. Do not repeat rejected worker-native wait, speculative WAIT prefetch,
-   snapshot/serialization experiments or bulk decoding optimisation.
-#. An accepted future runtime candidate must pass qt-thread semantic smoke
-   and unchanged adjacent-paired v3 benchmarks with CPU/query, cancellation,
-   Qt p95/p99, bulk, connection and resources as guardrails.
+#. Run the staged diagnostic A/B and inspect repeated paired wall/CPU/context
+   switch data plus all subprocess watchdog tests before making a decision.
+#. If the >=10 us noise-adjusted signal does not hold, **REJECT** the
+   SimpleQueue timed-wait hypothesis. Do not introduce ``optimized02``.
+#. If the performance signal holds, raw untimed waiting is still unsafe
+   when a worker dies without a response. Design a safe liveness-preserving
+   mechanism and evaluate its own overhead before proposing any runtime
+   candidate.
+#. Continue to avoid previously rejected worker-native socket wait,
+   speculative WAIT prefetch, snapshot/serialization experiments, and bulk
+   decoder micro-tuning without new evidence.
+#. Only a semantically safe future candidate may advance to qt-thread smoke
+   and unchanged paired v3 benchmark, checking CPU/query, cancellation,
+   Qt p95/p99, bulk, connect and resource guardrails. Route the completed
+   bounded decision back to the existing ``00 Coordinator``.
 
 Checkpoint rule
 ---------------

@@ -289,45 +289,68 @@ Code inspection identifies the warm thread-specific chain::
 Direct upstream/fork C execution has no qpsycopg request/response worker
 boundary. A source-level difference is not a measured bottleneck.
 
-Diagnostic-only tools introduced for this bounded stage:
+Diagnostic profile archive -- partial CPU attribution, invalid cProfile details
+-------------------------------------------------------------------------------
 
-* ``tools/profile_qt_thread_short_query.py`` profiles caller and worker
-  in **sequential, never overlapping passes** using
-  ``cProfile(timer=time.thread_time)``, and collects inclusive/exclusive
-  CPU, call counts and bounded phase wall/CPU totals for ``_fastExecute``,
-  ``_dispatch``, ``_responseValue``, ``Worker._handle``,
-  ``_executePending`` and ``_wait``.
-* ``tools/profile_qt_thread_short_query.ps1`` runs upstream, fork direct and
-  qt-thread in alternating order using the **existing** isolated v3 benchmark
-  venvs and local libpq; a warm uninstrumented control precedes each
-  instrumented run. Output is a separate JSON ZIP under ``test-results``.
-* Profiling hooks and Python-level timing instrumentation deliberately perturb
-  the instrumented pass. Use that pass to identify dominant functions and
-  call counts, **not** for a new speed ratio or an optimisation acceptance
-  claim. The unchanged paired v3 benchmark remains the acceptance gate.
-* No production runtime code or v3 benchmark workload/hash was changed.
+The Windows archive ``qt-thread-cpu-profile-20261103-191710-778.zip``
+contains six JSON profiles (two each of pristine upstream C, fork direct C,
+and qt-thread), plus a manifest. Its code revision was ``e135418a``.
+This is diagnostic, not an unchanged-v3 acceptance checkpoint.
 
-Run from the local Windows checkout after fetching the latest branch::
+The *uninstrumented* SELECT 1 controls measured::
+
+    metric                         upstream      fork direct     qt-thread
+    process CPU/query (us)        93.8-114.6      88.5-109.4     229.2-234.4
+    caller CPU/query (us)         93.8-114.6      88.5-109.4     114.6, 114.6
+    wall/query (us)                 701-734         599-617        754-761
+    context switches/query        1.01, 1.01      1.00, 1.01     3.03, 3.05
+
+Subtracting caller CPU from total process CPU gives approximately
+``115-120 us/query`` consumed by other threads in qt-thread. Its caller
+uses about ``115 us/query``, near fork direct's ``89-109 us/query``.
+Thus the additional worker-side execution is a major CPU ownership
+difference, but this does *not* establish which individual worker function,
+object allocation, snapshot or socket wait is dominant.
+
+The original detailed ``cProfile`` attribution is **invalid**. Despite
+separating simultaneous profiling in commit ``7e62e346``, the second run
+contains caller stack frames in the worker profile and impossible negative
+self-CPU entries (for example in caller ``_dispatch``). Python 3.13
+monitoring callbacks with a thread-local CPU clock do not provide a
+trustworthy cross-thread function profile in this configuration.
+Do **not** use top-function CPU, source CPU groups or instrumented
+phase CPU values from that run for a production optimisation decision.
+
+The diagnostic tool was revised in commit ``a4d11e37``:
+
+* ``tools/profile_qt_thread_short_query.py`` removes all ``cProfile`` use.
+  Local wrappers record each caller/worker phase's inclusive wall and
+  thread CPU clocks within that same function/thread. Nested timings
+  overlap and are not additive.
+* A cheap synthetic worker ``Operation.GET`` of PGconn status serves as a
+  real request/response-handoff control without SQL or libpq socket wait.
+  Direct status reads are also recorded.
+* Clean pre-instrumentation SELECT and status controls remain first.
+  The PowerShell runner, isolated benchmark venvs, production runtime and
+  canonical paired v3 workload remain unchanged.
+
+**Falsifiable diagnostic question:** how much of qt-thread's approximately
+``130 us/query`` excess CPU over fork direct is explained by the fixed
+request/response handoff rather than worker libpq execution/wait?
+Compare clean ``status_control`` with clean ``unprofiled`` SELECT CPU and
+the instrumented query/status phase counts and nonnegative CPU totals.
+The status RPC is not the same operation as the fast-execute query; it
+isolates the boundary but cannot alone prove a runtime improvement.
+
+The revised probe has **not yet run** on the target Windows machine.
+Do not select a dominant function or start speculative ``optimized02``
+until focused evidence is internally consistent. Any later candidate
+must pass semantic smoke and unchanged paired benchmark v3, checking
+CPU/query, cancellation, Qt p95/p99, bulk, connect and resources.
+
+Next diagnostic command from the Windows checkout::
 
     .\tools\profile_qt_thread_short_query.ps1
-
-The first Windows attempt at ``94d8ad1e`` failed during the qt-thread
-profile after upstream profile 1/2, with ``ValueError: Another profiling tool
-is already active``. On CPython 3.13 two simultaneous ``cProfile`` instances
-for caller/worker conflict over the interpreter monitoring tool. This was a
-**diagnostic harness failure**, not a runtime regression. Commit ``7e62e346``
-separated caller-only and worker-only profile passes and resets worker profiling
-before connection close, retaining the uninstrumented warm control. The runner
-is unchanged. Sequential cross-thread profiling was independently sanity-tested
-under Python 3.13.5; a full Windows/PostgreSQL retest is still required.
-
-This checkpoint is **not yet measured** on the target Windows environment.
-After the profile ZIP is inspected, choose **one falsifiable local hypothesis**.
-Only then perform a small runtime A/B experiment, semantic smoke, unchanged
-paired v3 checkpoint, retain/revert and documentation update. CPU/query,
-cancellation latency, Qt p95/p99, bulk and connection/resource metrics are
-guardrails. Rejected process native-wait, worker receive, speculative WAIT
-result prefetch, AF_UNIX and snapshot/serialization tuning remain out of scope.
 
 Optimisation order after optimized01
 ------------------------------------

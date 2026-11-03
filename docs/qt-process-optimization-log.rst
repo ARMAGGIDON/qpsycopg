@@ -494,6 +494,64 @@ remains unchanged. CPU/query, cancellation, Qt p95/p99, bulk,
 connect and resource guardrails remain applicable to any future
 candidate.
 
+Minimal SimpleQueue echo versus qpsycopg status GET -- diagnostic pending
+-----------------------------------------------------------------------
+
+Following the independent Coordinator review at ``577d568``, the previous
+timed-vs-untimed queue experiment remains **REJECT**: it showed no
+measurable improvement and lost worker-exit liveness. The new bounded
+question is different: **what portion of the 40-45 us no-SQL qpsycopg
+request/response wall latency is already present in a minimal
+two-SimpleQueue worker echo, and what remains attributable to extra
+qpsycopg request/response bookkeeping?**
+
+The diagnostic-only tools ``tools/bench_qt_thread_echo_baseline.py``
+and ``tools/bench_qt_thread_echo_baseline.ps1`` are staged. They do
+not change production runtime, the accepted ``optimized01``, or
+the canonical paired benchmark v3.
+
+* Minimal echo: one dedicated worker, two ``queue.SimpleQueue`` instances,
+  an unchanged token sent and returned, and the **same timed**
+  ``responses.get(timeout=0.1)`` response wait as the current transport.
+  The worker uses a blocking request wait, as the real worker does.
+  This is the minimum two-queue/scheduling round trip, not a substitute
+  production architecture.
+* qpsycopg control: the same established connected ``qt-thread``
+  session sends ``Operation.GET`` for PGconn ``status`` through
+  ``transport.request``, with no SQL or PostgreSQL socket wait.
+  This necessarily includes Request/Response representation, worker
+  dispatch, status and liveness checks, transport lock and bookkeeping.
+* Eight alternating paired blocks of 4000 measured warmed calls/mode
+  (300 extra warmups before each block) use uninstrumented per-block
+  ``perf_counter_ns`` wall, ``process_time_ns`` process CPU,
+  ``thread_time_ns`` caller CPU and ``psutil`` context-switch
+  counts. Report per-pair ``qpsycopg - echo`` differences and
+  median/MAD/range/sign count, plus absolute echo and qpsycopg
+  medians. Other-thread CPU is process minus caller CPU.
+* Both workers exist throughout all pairs, and their blocks alternate
+  order on the same host/process to bound drift. Measurement occurs
+  after both paths have been warmed. The complete diagnostic runs in
+  a watchdog-protected child, and the PowerShell wrapper preserves
+  ``manifest.json``, ``results.json`` and ``stderr.log``
+  in ``qt-thread-echo-baseline-*.zip`` even on failure.
+* The synthetic echo sends a bare token, whereas qpsycopg necessarily
+  has richer semantics. The difference is **not automatically removable**
+  overhead or a proven optimization target. Windows CPU clocks
+  are quantized; use paired wall/CPU/context consistency and
+  observed noise before drawing a conclusion. Do not subtract phase
+  totals as if they were independent.
+
+Status: **awaiting the first Windows measurement archive**. Do not
+invent a ratio, claim an optimisation, run ``optimized02``, or repeat
+the rejected timed/untimed A/B. Once measured, record a bounded
+conclusion and either a single falsifiable next hypothesis or a
+documented plateau. Route significant completed findings to the
+existing ``00 Coordinator`` after updating GitHub.
+
+Run from the Windows checkout after syncing the branch::
+
+    .\tools\bench_qt_thread_echo_baseline.ps1
+
 Post-optimized01 priorities
 ---------------------------
 

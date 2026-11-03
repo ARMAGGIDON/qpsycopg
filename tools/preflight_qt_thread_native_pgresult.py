@@ -130,6 +130,16 @@ def decode_same_context(native: Any, snap: ResultSnapshot, cursor: Any) -> dict:
         }
         raise AssertionError(f"native/snapshot metadata mismatch: {fields}")
 
+    if native_values["status"] == int(psycopg.pq.ExecStatus.FATAL_ERROR):
+        native_error = psycopg.errors.error_from_result(native)
+        snapshot_error = psycopg.errors.error_from_result(synthetic)
+        if (
+            type(native_error) is not type(snapshot_error)
+            or str(native_error) != str(snapshot_error)
+            or native_error.sqlstate != snapshot_error.sqlstate
+        ):
+            raise AssertionError("native/snapshot SQLSTATE exception parity failed")
+
     c_tx = native_fast.Transformer(cursor)
     c_tx.set_pgresult(native)
     hybrid_tx = adapt.Transformer(cursor)

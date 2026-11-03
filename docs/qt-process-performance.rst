@@ -493,63 +493,73 @@ a valid measured cost, but the 100 ms timed poll does **not**
 explain it. Do not retest this same variant without new evidence.
 Full evidence is recorded in :doc:`qt-process-optimization-log`.
 
-Minimal SimpleQueue echo baseline -- diagnostic staged
-------------------------------------------------------
+Minimal SimpleQueue echo baseline -- measured diagnostic
+-------------------------------------------------------
 
-Coordinator independently confirmed the timed-vs-untimed REJECT
-at ``577d568``. The newly approved bounded experiment does
-**not** change the queue wait implementation. It compares:
+The Windows diagnostic archive ``qt-thread-echo-baseline-20261103-202519-685.zip``
+was collected at branch commit ``5dcdbd51`` (Python 3.13.5,
+qt-thread with C worker). It contains eight alternating paired
+comparisons of minimal token echo versus warmed qpsycopg no-SQL
+``GET status``, 4000 calls per mode per pair and 300 block
+warmups. The same original timed response wait is used in
+both. The archive's error log is empty; the subprocess watchdog
+did not fire.
 
-* a minimal request/response echo using two ``SimpleQueue``
-  objects, one dedicated worker thread and
-  ``get(timeout=0.1)``;
-* the existing ``qt-thread`` no-SQL ``Operation.GET``
-  of the PGconn status on a warmed connection, using the
-  original timed response wait.
+Measured medians per call (microseconds unless noted)::
 
-Both workers run in the same measured process; eight pairs
-alternate execution order with 4000 calls/mode/pair by default.
-The independent Python probe
-``tools/bench_qt_thread_echo_baseline.py`` records clean
-block-level wall time, process and caller CPU, implied
-other-thread CPU and context switches. It reports absolute
-medians and per-pair ``qpsycopg - echo`` differences,
-MAD, range and favorable-pair count. A subprocess watchdog
-protects the full measurement. The Windows runner
-``tools/bench_qt_thread_echo_baseline.ps1`` reuses the
-isolated v3 fork environment and emits a ZIP containing
-the manifest, JSON measurements and stderr.
+    metric                        echo      qpsycopg GET    paired GET-echo
+    wall                          18.407        36.367          +18.957
+    process CPU                   13.672        35.156          +19.531
+    caller CPU                     9.766        21.484          +11.719
+    context switches               2.011         2.014           +0.0066
 
-The intended inference is limited: the minimal echo
-estimates the fixed two-queue/scheduling floor. The
-difference between that and the qpsycopg GET path
-includes required request/response structure, lock
-handling, status checks, cache/liveness and worker
-bookkeeping. It is **not** proven removable overhead
-or a predicted SQL speedup. Windows CPU quantization
-and cross-round drift must be accounted for.
+Wall paired delta MAD was 5.764 us, range +13.025 to +37.552 us,
+and positive in 8/8 pairs. CPU delta MAD was 5.859 us (7/8
+positive). Caller CPU and context-switch delta are noisier, subject
+to Windows CPU clock quantization. Both paths require approximately
+two context switches; extra qpsycopg **context switches are not
+demonstrated**. Minimal echo represents ~50.6% of the GET wall
+median (ratio of medians); median within-pair ratio is ~47.9%.
 
-**Status: not yet measured on Windows**. The production
-runtime and canonical v3 benchmark are unchanged.
-No ``optimized02`` decision or new performance
-claim is warranted before archive analysis.
+A substantial **temporal drift** matters: the first four pairs
+have median GET-echo excess ~31.81 us and the last four ~13.66 us.
+Both absolute modes become faster across the run. Pairwise
+alternation reduces order bias but does not establish a
+stationary benchmark. The ~19 us median residual is therefore
+descriptive, **not** a reliable saving target.
+
+The minimal echo includes two SimpleQueue exchanges with the
+same timed get; the full qpsycopg GET adds real Request/Response
+objects, transport lock, liveness checks, status validation,
+cache/worker bookkeeping and exception handling. The measured
+difference **does not identify which component dominates or
+whether it is removable**; no SQL-workload gain may be inferred.
+Prior timed-vs-untimed response wait remains REJECT due to zero
+speed signal and unsafe worker-exit behavior.
+
+**Decision: diagnostic COMPLETE; no production optimisation
+accepted.** No runtime code or canonical v3 workload changed.
+No numbered ``optimized02`` experiment is warranted. One
+possible next narrowly scoped diagnostic for Coordinator review
+is to compare a richer echo with matched Request/Response
+and validation costs against the minimal echo, without
+modifying production, before attempting any local tuning.
 
 Next work
 ---------
 
-#. Run ``.\tools\bench_qt_thread_echo_baseline.ps1``
-   on the Windows development checkout and inspect the
-   generated ``qt-thread-echo-baseline-*.zip`` with
-   interleaved wall/CPU/context-switch differences.
-#. Quantify the scheduling/queue floor and residual
-   qpsycopg overhead with paired noise and measurement
-   limitations; do not treat the residual as automatically
-   avoidable. Record one supported falsifiable hypothesis,
-   or a documented absence of further evidence.
-#. Preserve ``optimized01`` and reject the previous
-   timed/untimed ``SimpleQueue.get()`` variant, native
-   wait and speculative WAIT/serialization experiments.
-#. Update performance and optimisation logs with the
-   measured decision and route the completed significant
-   checkpoint to existing ``00 Coordinator``. No Scout
-   or new runtime path is required while data is pending.
+#. Submit the completed echo baseline and its strong temporal-drift
+   limitation to the existing ``00 Coordinator`` for milestone review.
+#. Do not treat the GET-minus-echo residual as a proven, removable
+   optimisation or stack ``optimized02``.
+#. If approved, run a strictly diagnostic matched Request/Response
+   echo comparison and use repeated paired CPU/wall/context data
+   to isolate the protocol and worker bookkeeping contribution.
+#. Keep ``optimized01`` RETAIN and prior timed/untimed queue wait
+   REJECT; avoid previously rejected worker native-wait,
+   speculative WAIT result prefetch, snapshot/serialization and
+   bulk decoder experiments without new evidence.
+#. Any future production candidate still requires qt-thread
+   semantic smoke and unchanged paired v3 benchmark with
+   CPU/query, cancellation, Qt p95/p99, bulk, connection and
+   resource guardrails.

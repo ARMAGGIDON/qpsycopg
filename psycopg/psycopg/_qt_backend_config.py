@@ -38,9 +38,14 @@ def _read_env(path: Path) -> dict[str, str]:
 
         value = value.strip()
         if value.startswith(("'", '"')):
-            if len(value) < 2 or value[-1] != value[0]:
+            quote = value[0]
+            closing = value.find(quote, 1)
+            if closing < 0:
                 raise ValueError(f"{path}:{number}: unterminated quoted value for {key}")
-            value = value[1:-1]
+            suffix = value[closing + 1 :].strip()
+            if suffix and not suffix.startswith("#"):
+                raise ValueError(f"{path}:{number}: unexpected trailing text for {key}")
+            value = value[1:closing]
         else:
             value = value.split(" #", 1)[0].rstrip()
         values[key] = value

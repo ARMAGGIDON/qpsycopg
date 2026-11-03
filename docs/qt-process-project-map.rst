@@ -303,6 +303,15 @@ Validation and benchmark map
     all phase counts valid, but probe overhead was ~18 us per GET and
     no real semantically removable bottleneck was identified.
 
+``tools/preflight_qt_thread_native_pgresult.py`` and
+``tools/preflight_qt_thread_native_pgresult.ps1``
+    Diagnostic-only, watchdog-protected owned native C PGresult
+    cross-thread SimpleQueue preflight. Compares metadata, NULLs,
+    SQLSTATE and native C versus current hybrid Transformer using
+    one qt-thread cursor adaptation context, plus PGconn.finish,
+    PGresult.clear/destructor and borrowed notice safeguards.
+    Windows pass/fail results are pending. Does not change runtime or v3.
+
 The canonical current baseline is ``baseline-v3``. Older ``initial`` and
 ``baseline-v2`` checkpoints used different benchmark definitions and must not be
 used as the direct before-state for numbered optimisations.
@@ -330,88 +339,62 @@ Established decisions / do not repeat blindly
 Immediate next work
 -------------------
 
-#. ``optimized01`` remains **RETAIN**. The rejected timed-vs-untimed
-   response queue wait and earlier native-wait, speculative
-   prefetch and serialization experiments remain rejected.
-#. The Coordinator-authorised **real qt-thread GET status diagnostic
-   is COMPLETE**, with archive
-   ``qt-thread-real-get-profile-20261103-213627-044.zip``,
-   captured at ``1c11f6525bfc75e3db27aeeae65c0498a56df4cd``.
-   Four independent repeats x 12 five-block cycles, 1200
-   GETs/block. All 48 cycles, 240 blocks and 12 required phase
-   counts passed; 115,200 profiled and 172,800 clean-control GETs.
-#. The clean GET block wall medians were 29.878-30.999 us/call.
-   Instrumented-minus-clean paired wall medians were
-   +18.082..+18.740 us/call, positive in 96/96 profiled blocks.
-   This **instrumented-versus-clean difference** is confounded
-   by the probe and separate connections, not a production saving.
-#. Nested instrumented phase wall medians: caller
-   ``request`` 50.906 us, ``_dispatch`` 38.412 us,
-   active worker ``_run`` turn 14.137 us,
-   worker pool ``_handle`` 6.264 us and base
-   ``_handle`` 3.965 us. Never sum these inclusive
-   times. Worker per-method CPU clocks were mostly zero
-   from Windows quantization; clean repeat 3 drifted +61.18%.
-#. **Decision: no actionable runtime target.** No real,
-   removable, semantically safe operation was identified.
-   Production runtime and benchmark v3 are unchanged.
-   No ``optimized02`` or new acceptance benchmark.
-#. **Independent Coordinator review COMPLETE** at
-   ``5832702e``: **CREATE SCOUT -- GET/echo attribution
-   plateau**. The profiling methodology is adequate for
-   the negative conclusion; its strong probe overhead,
-   nested phase overlap, nonstationary host timing and
-   quantized Windows CPU counters cannot establish a
-   semantically removable real-code operation.
-#. Both read-only short-query Scouts **COMPLETED**
-   at ``9777f09a``. Coordinator decision: **INVESTIGATE
-   -- diagnostic-only native PGresult handoff screen**.
-   No production change or ``optimized02`` is approved.
-#. Scout A identified a possible hybrid Transformer
-   cost; its proposed stable-vs-alternating query-object
-   identity A/B is not selected because query/cache
-   effects can confound Transformer attribution.
-   This hypothesis is not disproven.
-#. Scout B identified a thread-specific structural
-   alternative: completed C-worker native PGresult
-   transfer across the existing two SimpleQueues,
-   rather than ``ResultSnapshot/PackedValues``
-   plus synthetic-result restoration. This is a
-   distinct architectural possibility, **not**
-   renewed generic snapshot micro-tuning; historical
-   small snapshot costs limit expected upside.
-#. **Next owner:** existing ``10 Implementation — current``.
-   First perform a bounded, diagnostic-only
-   ownership/type/Transformer feasibility check.
-   If safe, perform a same-workload Windows C-worker
-   two-queue SELECT 1 comparison: current full result
-   snapshot/restore/decode versus native result
-   handoff/native Transformer. Preserve query work,
-   adaptation context, two handoffs and output
-   equivalence. Use short rotated paired blocks,
-   independent repeats, process CPU/query, wall,
-   context switches and drift/noise controls.
-   Predeclare a material screen such as >=15 us
-   CPU/query with reproducible signal beyond noise.
-#. **STOP** if feasibility or reproducible material
-   benefit fails. In either case record the result
-   and route to Coordinator before any runtime
-   variant. Preserve all public PGresult semantics:
-   independent ownership, ``clear``, result lifetime
-   after connection finish, error/NULL/metadata,
-   multiple results, COPY, cancellation and
-   callbacks. Do not transfer ``PGconn`` ownership
-   or native borrowed notice results. Keep
-   ``qt-process`` unchanged; unsupported worker
-   implementations need correct fallback.
-#. ``10 Implementation — current`` remains the sole
-   active runtime owner. Scouts remain read-only;
-   no second Implementation owner and no replay of
-   GET/echo, queue wait, native wait, speculative
-   prefetch or generic snapshot experiments.
-#. Feature PR #2 (``feature/qt-backend-config``) has
-   its own integration gates and owner; it is not
-   part of this performance/Scout decision.
+#. ``optimized01`` remains **RETAIN**. Previously rejected
+   native-worker socket wait, timed-vs-untimed queue
+   response waiting, speculative WAIT prefetch and
+   generic snapshot/serialization micro-tuning remain
+   rejected. The GET/echo attribution line is complete
+   and not being rerun.
+#. Independent Scouts A/B were reviewed by the existing
+   ``00 Coordinator`` at checkpoint
+   ``98a6ad178d03ff0ad94f1b28c6d3ddac6cd164a1``.
+   Decision: **INVESTIGATE**, only a diagnostic native
+   PGresult handoff feasibility/CPU screen, not a
+   production-authorized architecture change.
+#. Current Implementation owner performed a code
+   preflight: C PGresult owns its PQclear-managed
+   memory, PostgreSQL 18 allows transferring
+   completed read-only PGresult between threads,
+   and native C Transformer requires precisely
+   the C PGresult type. However the C notice
+   callback PGresult is **borrowed and invalidated**,
+   and worker health/cache logic depends explicitly
+   on ResultSnapshot. A naive identity replacement
+   is unsafe.
+#. Diagnostic-only preflight scripts
+   ``tools/preflight_qt_thread_native_pgresult.py``
+   and ``tools/preflight_qt_thread_native_pgresult.ps1``
+   were added, without changing production/v3.
+   They test real C-worker result handoff through
+   two SimpleQueues, native C Transformer using the
+   same qt-thread cursor adaptation context,
+   NULL/metadata/SQLSTATE/notice parity, result
+   lifetime after PGconn.finish, and clear/destructor.
+   Worker PGconn remains on worker thread only.
+#. **Next user action:** sync the Windows checkout and run
+   ``.\tools\preflight_qt_thread_native_pgresult.ps1``.
+   Upload the resulting
+   ``test-results\qt-thread-native-result-preflight-*.zip``
+   to **this current Implementation chat**. The
+   probe runs in a subprocess with a watchdog and
+   preserves a ZIP even on failure.
+#. **Gate:** do **not** begin the full native
+   current-vs-candidate SELECT 1 performance A/B
+   unless every required safety/Transformer/semantic
+   preflight passes and is reviewed here. If a
+   fundamental feasibility issue is observed:
+   **STOP** and document. A successful preflight
+   would allow one *diagnostic-only* A/B with
+   identical SQL, adaptation, queue topology,
+   outputs, independent paired runs and >=15 us
+   CPU/SELECT material-benefit screen. Not optimized02.
+#. After a **completed** bounded investigation
+   (negative preflight or later measured A/B),
+   update the optimization log, performance notes
+   and this recovery snapshot and hand off to
+   existing ``00 Coordinator`` for independent
+   milestone review. No new Scout or second
+   implementation owner is required meanwhile.
 
 Coordinator review -- two independent short-query Scouts
 --------------------------------------------------------
@@ -549,78 +532,91 @@ Coordinator review -- real GET attribution plateau
 Rolling recovery snapshot -- current Implementation owner
 ---------------------------------------------------------
 
-* **Owner / branch:** current ``10 Implementation`` chat is the sole
-  runtime implementation owner for ``ARMAGGIDON/qpsycopg``,
-  ``feature/qt-process-pq``. The next bounded responsibility
-  belongs to existing ``00 Coordinator`` for *independent review*.
-  No competing runtime owner is authorised.
-* **Base / known commits:** Coordinator approval
-  ``0fc10d668ac9166f07ae3a575049da7b4b14ccd1``;
-  Windows diagnostic captured at
-  ``1c11f6525bfc75e3db27aeeae65c0498a56df4cd``.
-  Measured-doc commits ``1064c818`` and ``83b68c8b``.
-  Last HEAD observed before this snapshot update was
-  ``83b68c8bf2cc67a9551a21d6f3717c03fd59be81``.
-  Verify live HEAD when resuming.
-* **Completed hypothesis:** real no-SQL GET worker/caller
-  phase profiling after synthetic enriched echo plateau.
-  The experiment proved phase call counts and recorded
-  inclusive wall-time, but **no exclusive safe removable
-  operation**. New hypothesis and new runtime experiment
-  remain **unselected** pending Coordinator direction.
-* **Code and local state:** this stage introduced only
-  ``tools/profile_qt_thread_get_real_path.py`` and
-  ``tools/profile_qt_thread_get_real_path.ps1`` plus
-  documentation. The measured-result update changes
-  **docs only**. No production runtime or canonical v3
-  files changed. The user's Windows working tree was
-  not inspected; do not assert it is clean.
-* **Evidence / tests:** archive
-  ``test-results\qt-thread-real-get-profile-20261103-213627-044.zip``
-  was uploaded to this chat and is **not committed to
-  GitHub**. SHA256 and all measured details are saved
-  in ``docs/qt-process-optimization-log.rst``. The user
-  should preserve the original ZIP. All 48 cycles
-  succeeded, phase counts were exact, and 96/96 paired
-  profiled blocks showed extra ~18 us wall. The probe
-  itself perturbs timing, repeat 3 drifted +61.18%,
-  and per-method Windows CPU is quantized. No smoke
-  or v3 acceptance benchmark was rerun: no runtime
-  candidate was created.
-* **Rejections and guardrails:** ``optimized01`` RETAIN;
-  raw untimed get REJECT for no speedup and loss of
-  fatal-worker detection. Also avoid prior native
-  worker wait, speculative WAIT prefetch and generic
-  snapshot/serialization/bulk experiments without new
-  evidence. Preserve public Psycopg semantics and
-  worker exit, errors, close and cancellation.
-* **Next reproducible action:** inspect current HEAD
-  and all primary qt-process docs, then send the
-  completed negative real-GET checkpoint to existing
-  ``00 Coordinator``. No pending Windows command;
-  **do not rerun this probe or start optimized02**
-  until a new direction is independently approved.
-* **Context risk: CAUTION.** Long, tool-heavy
-  Implementation history; state remains recoverable
-  from GitHub. No remaining-token/window estimates
-  and no observed HANDOFF NOW symptoms. A future
-  serious inconsistency requires a fresh snapshot
-  and explicit same-role transfer, with the former
-  owner stopping edits before the new owner resumes.
+* **Role / ownership:** existing ``10 Implementation — current``
+  alone owns the active runtime path for
+  ``ARMAGGIDON/qpsycopg``, branch
+  ``feature/qt-process-pq``. Existing
+  ``00 Coordinator`` made the latest direction
+  decision, but is **not** another runtime owner.
+  Configuration PR #2 is a separate owned workstream.
+* **Base / observed commits:** native result feasibility
+  direction at ``98a6ad178d03ff0ad94f1b28c6d3ddac6cd164a1``.
+  Preflight Python commit ``796bb9de``,
+  PowerShell commit ``5a666787``,
+  SQLSTATE check commit ``fbeab2ef``,
+  optimization-log stage ``f183d8b1``,
+  performance stage ``7dfda37f``.
+  Verify live HEAD before resumption; historical
+  commit IDs are not a current-branch guarantee.
+* **Unfinished bounded work:** source-based owned native
+  PGresult handoff/Transformer audit is complete and
+  supports **conditional feasibility**, not proof.
+  A watchdog-isolated Windows ownership/semantic
+  preflight is staged and **not yet measured**.
+  Pending: assess PGresult lifetime, clear,
+  notices (borrowed pointer), metadata/NULL/error
+  and C Transformer parity with the same qt-thread
+  cursor AdaptContext. If it fails, STOP; if it
+  passes, implement *only diagnostic* full SELECT 1
+  native-vs-snapshot boundary comparison with
+  two queue handoffs and >=15 us process CPU/query
+  repeatable material screen.
+* **Code / local-only state:** two new diagnostic tools
+  are committed; production qt-thread/qt-process,
+  benchmark v3 and accepted optimized01 were
+  **not edited**. No new Windows ZIP has yet
+  been submitted. This GitHub-only workflow
+  cannot verify the user's local Windows worktree
+  or assume it is clean; no uncommitted local
+  implementation edits were made here.
+* **Evidence / blockers:** official libpq 18 rules
+  permit cross-thread transfer of completed PGresult,
+  not concurrent PGconn access or borrowed notice
+  result handoff. C PGresult destructor calls
+  PQclear; native Transformer demands C PGresult.
+  The existing worker's connection-health and
+  SET/RESET parameter refresh logic assumes
+  ResultSnapshot. Any future production concept
+  must also preserve COPY, pipeline, multi-results,
+  error/notice callbacks, cancellation, close
+  and fallback for non-C workers. These remain
+  open and untested beyond source audit.
+* **Rejections:** optimized01 RETAIN. Do not rerun
+  rejected timed/untimed response wait, worker
+  native socket wait, speculative WAIT prefetch,
+  generic snapshot/serialization tuning, or
+  GET/echo experiments. No optimized02 candidate.
+* **Next command and route:** with existing
+  Windows benchmark fork venv, local root
+  .env, PostgreSQL libpq DLL root and DSN,
+  run ``.\tools\preflight_qt_thread_native_pgresult.ps1``.
+  Share ZIP **here** for feasibility evaluation.
+  Do **not** contact Coordinator or start
+  full performance A/B until preflight succeeds.
+  After a significant measured/STOP checkpoint,
+  update docs and route to existing 00 Coordinator.
+* **Context risk: CAUTION.** This is a long
+  tool-heavy Implementation chat; the task,
+  decisions and source remain consistent with
+  GitHub. This snapshot enables repository-first
+  recovery. No claimed token count; no observed
+  HANDOFF NOW symptom. If reliability worsens,
+  snapshot first, prepare a same-role continuation
+  bootstrap and explicitly transfer ownership;
+  old chat then stops editing.
 
 When resuming in a new chat/session
 -----------------------------------
 
-#. Read :doc:`qt-process`, this project map,
-   :doc:`qt-process-performance`,
+#. Verify HEAD and read :doc:`qt-process`,
+   this project map, :doc:`qt-process-performance`,
    :doc:`qt-process-coordination` and
-   :doc:`qt-process-optimization-log`;
-   inspect live branch HEAD.
-#. The real GET diagnostic has **already finished**,
-   with no actionable optimized02 candidate.
-   The uploaded ZIP remains local-only evidence.
-#. The next owner is **existing 00 Coordinator**
-   for independent milestone review. Runtime ownership
-   stays with this Implementation role unless explicitly
-   transferred due to context risk; never allow
-   simultaneous implementation owners.
+   :doc:`qt-process-optimization-log`.
+#. Native-result preflight tools are committed,
+   but Windows feasibility remains **pending**.
+   Do not run or fabricate the future SELECT A/B.
+#. Maintain single implementation ownership and
+   preserve all prior REJECT decisions.
+   Next required evidence is the Windows
+   ``qt-thread-native-result-preflight-*.zip``
+   in the current Implementation chat.

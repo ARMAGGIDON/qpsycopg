@@ -12,6 +12,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_ENV = _REPO_ROOT / ".env"
 _KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _EXPANSION = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_DLL_DIR_HANDLES: list[object] = []
 
 
 def _envPath(path: str | os.PathLike[str] | None = None) -> Path:
@@ -51,11 +52,29 @@ def readEnv(path: str | os.PathLike[str] | None = None) -> dict[str, str]:
     return values
 
 
+def _applyPgRuntime() -> None:
+    root = os.environ.get("PSYCOPG_PG_ROOT")
+    if not root:
+        return
+    binDir = Path(root) / "bin"
+    if not binDir.is_dir():
+        return
+
+    binValue = str(binDir)
+    pathItems = os.environ.get("PATH", "").split(os.pathsep)
+    if os.path.normcase(binValue) not in {os.path.normcase(item) for item in pathItems if item}:
+        os.environ["PATH"] = binValue + os.pathsep + os.environ.get("PATH", "")
+
+    if os.name == "nt" and hasattr(os, "add_dll_directory"):
+        _DLL_DIR_HANDLES.append(os.add_dll_directory(binValue))
+
+
 def loadEnv(path: str | os.PathLike[str] | None = None, *, override: bool = False) -> dict[str, str]:
     values = readEnv(path)
     for key, value in values.items():
         if override or key not in os.environ:
             os.environ[key] = value
+    _applyPgRuntime()
     return values
 
 

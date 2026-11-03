@@ -541,18 +541,49 @@ Coordinator review -- real GET attribution plateau
   artifacts. No transfer of implementation
   ownership has occurred.
 
-Native preflight forensic addendum
-----------------------------------
+Native preflight forensic addendum -- current in-progress snapshot
+---------------------------------------------------------------
 
-* First Windows preflight ZIP: ``qt-thread-native-result-preflight-20261103-223124-116.zip``,
-  captured at ``dc25abe6``. Its child crashed with ``0xC0000005`` and no stderr.
-  No feasibility case passed. This supersedes any older 'not yet measured'
-  or 'no ZIP uploaded' wording in the rolling snapshot below.
-* The current diagnostic probe now has faulthandler and flushed stage markers
-  (commits ``ad3fc11b``, ``e0189753``). **Next input:** one traced Windows
-  preflight ZIP; native SELECT A/B stays BLOCKED. No production/v3 changes.
-* Current Implementation chat remains sole runtime owner. Status CAUTION;
-  no HANDOFF NOW signs. Preserve this evidence if a same-role handoff is needed.
+* **Owner / branch / base:** current Implementation chat is the
+  sole runtime owner on ``feature/qt-process-pq``; Coordinator
+  decision base ``98a6ad178d03ff0ad94f1b28c6d3ddac6cd164a1``.
+  No simultaneous Implementation owner or new runtime candidate.
+* **Evidence:** initial local ZIP
+  ``qt-thread-native-result-preflight-20261103-223124-116.zip``
+  at ``dc25abe6`` crashed with ``0xC0000005`` without stderr.
+  Second local ZIP
+  ``qt-thread-native-result-preflight-20261103-224615-903.zip``
+  at ``9e5ddb54``, SHA256
+  ``b476c81827bccc0d93e0b445ce2128290d9f7168b3834aaf5e66a92119fb4fcc``,
+  contained detailed faulthandler stacks. Neither ZIP is a
+  GitHub artifact. Preserve both for review.
+* **Finding / correction:** the ordinary ``SELECT`` case passed
+  two-queue native result transfer, C/hybrid row parity and
+  double clear. The ``sql_error`` case passed
+  metadata/error parity, then the probe improperly called
+  hybrid ``load_rows(0, 0)`` on ``FATAL_ERROR``;
+  its native bulk decoder crashed. Source confirms
+  normal Psycopg raises this SQL error before row decoding.
+  Commit ``54bccf73`` corrected **only the diagnostic probe**.
+  Worker connection-finish lifetime and notices remain untested.
+* **Next reproducible step:** sync current branch, existing Windows
+  benchmark-fork venv/local ``.env``/PostgreSQL root/DSN,
+  run ``.\tools\preflight_qt_thread_native_pgresult.ps1``
+  **once** and upload the new corrected ZIP to this chat.
+  No full native SELECT A/B unless the whole feasibility
+  gate passes. If native ownership/lifetime fails, STOP.
+* **Production / tests / routing:** no runtime, C extension or
+  benchmark-v3 change; ``optimized01`` RETAIN,
+  ``optimized02`` absent. Previous rejected experiments
+  remain rejected. No CPU/query benefit measured.
+  Existing ``00 Coordinator`` is contacted only after
+  completed PASS/STOP or material diagnostic checkpoint.
+  GitHub state is authoritative; Windows worktree cleanliness
+  was not inspected.
+* **Context risk: CAUTION.** This is a long, tool-heavy
+  chat but current evidence is recoverable. This addendum
+  supersedes older pending/no-ZIP wording in the rolling
+  snapshot below. No HANDOFF NOW signal, no ownership transfer.
 
 Rolling recovery snapshot -- current Implementation owner
 ---------------------------------------------------------

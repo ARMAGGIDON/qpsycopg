@@ -40,6 +40,11 @@ Documentation
     qt-process-performance
     qt-process-optimization-log
 
+.. toctree::
+    :hidden:
+
+    qt-process-coordination
+
 Release notes
 -------------
 

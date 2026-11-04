@@ -676,17 +676,48 @@ Coordinator independent lint triage and PackedValues decision
 Immediate next work
 -------------------
 
-#. **PackedValues diagnostic audit COMPLETE; Coordinator
-   review pending.** All five isolated cell-size cases
-   and fast/fallback serialization checks passed.
-   The logical/physical sequence mismatch persists,
-   without reproduced current production failure.
-   **STOP runtime correction** pending independent review.
-   Real compiled-C/DB validation was not run.
-#. **Next owner: existing 00 Coordinator** for STOP/review
-   decision. ``11 Implementation — continuation`` remains
-   sole runtime owner, but must not start new runtime edits
-   or broad lint cleanup. Older tasks below are historical.
+#. **Coordinator independent ``PackedValues`` review
+   COMPLETE: ACCEPT audit, STOP runtime correction.**
+   The ``NamedTuple`` four-field physical iteration
+   and logical cell indexing/length are inconsistent
+   under ordinary sequence expectations, but no
+   current production consumer defect was reproduced.
+   The compact wire path intentionally requires
+   ``tuple(values)`` to contain four physical
+   fields. Do not add ``__iter__``, replace the
+   tuple representation, alter the wire format,
+   or silence the type diagnostics without new
+   demonstrated correctness evidence.
+#. **Next bounded stage: implement focused
+   regression tests for the existing dual
+   internal contract.** Sole owner is
+   ``11 Implementation — continuation``.
+   Add concise Python-only tests (no PostgreSQL
+   dependency) for 0/1/4/6/9 logical cells,
+   NULL/empty/binary data, negative index and
+   slicing, physical ``tuple(values)`` wire
+   fields, and compact marshal/pickle fast
+   frame pack/unpack. Preserve existing
+   behavior: tests are **invariants**, not
+   authorization for protocol redesign.
+   Execute targeted pytest and applicable
+   existing CI, correcting only test issues;
+   record evidence in the handoff map.
+   Ask the user for a concrete Windows/local
+   run **only if** CI cannot cover a material
+   integration gap.
+#. **Work directly through ordinary test iterations.**
+   No intermediate Coordinator report is required
+   for each small test commit or CI run. Return
+   only a completed test milestone or a real
+   correctness blocker. No production runtime,
+   wire format, benchmark v3, performance
+   experiment, broad lint cleanup or blanket
+   ignore changes are authorised.
+   ``optimized01`` RETAIN; native PGresult
+   boundary A/B REJECT; no ``optimized02``.
+   The previous audit and routing instructions
+   below are historical and superseded.
 
 #. **Coordinator independent Sphinx review: ACCEPT.**
    At tested branch SHA ``08f5a8048c14313107c5f635025776749598d402``,

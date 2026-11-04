@@ -162,7 +162,7 @@ microbenchmark then showed lower fixed latency for raw Windows named pipes,
 particularly for tiny request/response messages. The production Windows process
 path moved to a raw byte-stream named pipe with read-ahead preservation.
 
-A representative paired TCP-fast vs raw-pipe run measured approximately::
+A representative paired TCP-fast vs raw-pipe run measured approximately:
 
 ====================  ============  ============
 Metric                TCP-fast      raw pipe
@@ -221,7 +221,7 @@ Worker hot-path profiling showed that result snapshot work was already tiny whil
 worker wait/receive/dispatch dominated the process fixed cost. Native worker frame
 receive and native Winsock wait were therefore tested separately.
 
-A controlled three-way result was approximately::
+A controlled three-way result was approximately:
 
 ======================  ============  ============
 Mode                    SELECT median SELECT p95

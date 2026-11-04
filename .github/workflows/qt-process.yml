@@ -64,6 +64,16 @@ jobs:
           python tools/smoke_qt_process.py
           'postgresql://postgres:postgres@127.0.0.1:5432/postgres'
 
+      - name: Verify startup FATAL preservation (upstream and Qt Python workers)
+        env:
+          QPSYCOPG_CONNECT_ERROR_DSN: "postgresql://postgres:postgres@127.0.0.1:5432/postgres"
+          QPSYCOPG_WORKER_IMPL: python
+        run: |
+          for impl in python qt-thread qt-process; do
+            echo "Startup-error contract: $impl"
+            PSYCOPG_IMPL="$impl" python -m pytest -q tests/test_qt_failed_connection.py
+          done
+
   windows-dll-bootstrap:
     runs-on: windows-latest
     timeout-minutes: 10

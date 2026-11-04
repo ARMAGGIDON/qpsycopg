@@ -553,6 +553,56 @@ Implementation strict Sphinx CI cleanup -- PASS checkpoint
   Earlier **Sphinx cleanup pending** instructions
   below are historical and superseded.
 
+Implementation PackedValues contract audit -- diagnostic-only checkpoint
+------------------------------------------------------------------------
+
+* **Base and owner:** ``feature/qt-process-pq`` at
+  ``8642f4ec0081784d91130d93cb6d0a99a46a6f48``;
+  ``11 Implementation — continuation`` remains the sole
+  runtime owner. No local checkout was available in this
+  environment; the retired Windows worktree's uncommitted
+  state remains unknown and must not be overwritten.
+* **Consumer audit:** reviewed ``_qt_process_protocol``
+  fast-frame pack/unpack, ``_qt_process_worker`` Python and
+  native result packing, ``pq_qt_process.PGresult.get_value``,
+  ``pq_qt_thread`` SimpleQueue handoff, ``_transformer``
+  native and Python paths, ``_py_transformer``, and Cython
+  ``qt_bulk.pyx`` packed decoding. The packed native decoder
+  uses ``data/offsets/nulls`` directly; the transformer
+  fallback consumes logical slices; the Python transformer
+  uses ``get_value``. The four-field ``tuple(values)``
+  inside ``_packFastResult`` is an intentional wire contract.
+  No current production consumer expecting logical cells
+  from ``iter``/``tuple``/``list`` was identified.
+* **Confirmed inconsistency:** ``len``/truthiness/index/slice
+  and ``reversed`` expose logical cells; tuple/list iteration
+  always exposes ``(data, offsets, nulls, count)``. Inherited
+  tuple methods such as ``index`` operate on physical fields.
+  The mypy override complaints reflect a real structural
+  contract mismatch, not merely missing native stubs.
+* **Isolated diagnostics:** ran source-equivalent Python
+  tests on 0, 1, 4, 6 and 9 cells, including NULL, empty and
+  binary values, negative indexing, slice bounds, and a
+  NULL bitmap byte boundary. Python fallback packing,
+  ``PGresult.get_value``, direct packed-buffer layout
+  reference, ordinary pickle, compact marshal fast-response
+  socketpair round trips and pickle fast-response fallback
+  all passed. Cython source was inspected, but no compiled
+  Cython binary, Qt environment, PostgreSQL connection
+  or real backend smoke was available for execution.
+* **Recommendation: STOP runtime correction.** Sequence
+  inconsistency is reproducible, but no correctness failure
+  is established for inspected production consumers.
+  Adding ``__iter__`` or replacing ``NamedTuple`` could break
+  the compact four-field wire format and is not authorised.
+  ``optimized01`` RETAIN, native PGresult handoff A/B REJECT,
+  no ``optimized02``; benchmark v3 and CI are unchanged.
+* **Recovery / routing:** documentation-only checkpoint.
+  No runtime edits, new benchmarks, CI modifications or
+  local worktree changes. Send evidence to existing
+  ``00 Coordinator`` for independent STOP/review decision.
+  Do not create another Implementation owner or Scout yet.
+
 Coordinator independent lint triage and PackedValues decision
 -------------------------------------------------------------
 
@@ -626,33 +676,17 @@ Coordinator independent lint triage and PackedValues decision
 Immediate next work
 -------------------
 
-#. **Coordinator lint triage review COMPLETE.**
-   Repository-wide lint remains red
-   with six unchanged failed-hook
-   fingerprints across three CI jobs.
-   Broad lint cleanup is STOP.
-   New bounded target: **diagnostic-only
-   ``PackedValues`` sequence-contract
-   audit**. The object combines a
-   four-field ``NamedTuple`` wire
-   representation with logical cell
-   ``__len__``/``__getitem__``;
-   physical tuple iteration is
-   intentional in fast-frame packing.
-   Confirm call-site correctness and
-   actual behavior before proposing
-   any redesign or runtime patch.
-#. **Next owner:** existing
-   ``11 Implementation — continuation``,
-   sole implementation writer. No
-   runtime, wire-protocol, test-suite,
-   benchmark-v3 or CI changes
-   authorised during initial read-only
-   audit. Return reproducible defect
-   evidence or justified STOP to
-   ``00 Coordinator`` for decision.
-   ``optimized01`` RETAIN, native
-   boundary REJECT, no ``optimized02``.
+#. **PackedValues diagnostic audit COMPLETE; Coordinator
+   review pending.** All five isolated cell-size cases
+   and fast/fallback serialization checks passed.
+   The logical/physical sequence mismatch persists,
+   without reproduced current production failure.
+   **STOP runtime correction** pending independent review.
+   Real compiled-C/DB validation was not run.
+#. **Next owner: existing 00 Coordinator** for STOP/review
+   decision. ``11 Implementation — continuation`` remains
+   sole runtime owner, but must not start new runtime edits
+   or broad lint cleanup. Older tasks below are historical.
 
 #. **Coordinator independent Sphinx review: ACCEPT.**
    At tested branch SHA ``08f5a8048c14313107c5f635025776749598d402``,

@@ -518,12 +518,53 @@ Immediate next work
    Qt workflow jobs are SUCCESS.
    Retain accepted lint/Sphinx exceptions
    honestly as exceptions.
-#. **Next owner: existing 00 Coordinator**,
-   for bounded independent Windows
-   C-worker validation review. Do not
-   infer broad Windows parity or start
-   another runtime optimisation target
-   without a separate decision.
+#. **Coordinator independent review ACCEPTED**:
+   Windows compiled C-worker smoke on
+   workflow commit ``d7856544f6d80f6eb06da9b7818fd40382fe6198``
+   is a **narrow PASS**. Job ``126504663426``,
+   run ``41809431708``, built/installed
+   ``psycopg_c`` and verified
+   ``COMPILED_C_WORKER_VALIDATED`` with
+   compiled ``.pyd``, ``_workerPq`` and
+   both worker-module ``pq`` globals
+   equal to ``psycopg_c.pq``. The
+   existing full ``smoke_qt_thread.py``
+   finished ``qpsycopg qt-thread smoke test: OK``.
+   Evidence ZIP artifact ``13310819123``
+   was independently downloaded: CRC OK,
+   SHA256 ``679eb5ba320eff8bb25bb6f3e54911118b632cd066361cdbc725543a7ad4bea6``.
+   This does not certify all Windows
+   platforms, native variants or workloads.
+#. **Next bounded stage: Sphinx CI hygiene.**
+   The same Qt workflow is FAILED solely
+   in ``docs-validation``; its nine known
+   diagnostics are two inconsistent
+   literal-block errors in
+   ``qt-process-performance.rst``,
+   six unexpected-indent errors in
+   ``qt-process-project-map.rst``
+   and one not-in-toctree warning for
+   ``qt-process-coordination.rst``.
+   Existing ``10 Implementation — current``
+   owns one documentation-only cleanup
+   without semantic rewrites, production
+   runtime, benchmarks or CI masking.
+   Re-run the unchanged strict Sphinx
+   command ``sphinx-build -W -T -b html docs docs/_build/html``;
+   accept only a warning/error-free
+   build, with independent CI evidence.
+   If unrelated new errors appear,
+   stop and report rather than making
+   broad changes.
+#. Repository-wide lint baseline failures
+   remain separately accepted exceptions.
+   Do not start performance probes or
+   ``optimized02``. ``optimized01``
+   remains RETAIN; the native
+   PGresult-boundary screen remains
+   drift-gated REJECT. After Sphinx
+   cleanup, return a significant
+   checkpoint for Coordinator review.
 
 #. **No new performance series** or
    ``optimized02`` is authorised.
@@ -607,6 +648,63 @@ Immediate next work
    a significant CI/correctness blocker
    or new architectural decision to
    ``00 Coordinator`` for review.
+
+Coordinator C-worker acceptance and documentation CI direction
+--------------------------------------------------------------
+
+* **Role / observed head:** existing ``00 Coordinator``,
+  ``feature/qt-process-pq`` at
+  ``3b5477c88794746201801ff766e7965ac593d433``
+  after two documentation-only commits
+  beyond measured workflow SHA
+  ``d7856544f6d80f6eb06da9b7818fd40382fe6198``.
+* **Accepted evidence:** Windows Actions run
+  ``41809431708``, job ``126504663426``
+  SUCCESS. Native ``psycopg_c`` wheel built,
+  installed and resolved as compiled CPython
+  3.13 ``.pyd``; actual qt-thread
+  ``_workerPq`` and both worker module
+  ``pq`` globals matched ``psycopg_c.pq``.
+  Full existing qt-thread smoke finished
+  OK on real Windows PostgreSQL.
+  Independent ZIP check: artifact
+  ``13310819123``, CRC OK, SHA256
+  ``679eb5ba320eff8bb25bb6f3e54911118b632cd066361cdbc725543a7ad4bea6``.
+  The ZIP contains the C identity marker
+  and stage-by-stage smoke output.
+* **Scope of PASS:** closes the specific
+  Windows compiled-C-worker validation gap;
+  not general Windows native binding
+  certification or benchmark-v3 parity.
+  Whole Qt workflow remains FAILED due to
+  a separate strict Sphinx job; four other
+  Qt jobs including this one succeeded.
+* **Next owner / exact bounded action:**
+  existing ``10 Implementation — current``
+  remains the sole implementation/runtime
+  writer. Correct only the existing nine
+  Sphinx errors/warnings (2 literal blocks,
+  6 project-map indentations, 1 missing
+  toctree inclusion) without changing
+  history, API claims or benchmark data.
+  Run strict ``sphinx-build -W -T -b html
+  docs docs/_build/html`` and confirm
+  ``docs-validation`` independently
+  in GitHub CI. No new runtime experiment
+  or alternative implementation owner.
+* **Outstanding / recovery:** repository
+  lint still baseline red, pool/proxy
+  timeout cause remains unknown despite
+  accepted post-merge Tests 56/56 after
+  exactly one retry. ``optimized01``
+  RETAIN, native result-boundary A/B
+  REJECT, no ``optimized02``.
+  Coordinator made no uncommitted runtime
+  changes; the GitHub job and downloaded
+  ZIP are the evidence sources.
+  Current context risk CAUTION;
+  read live HEAD and five core docs
+  before further work.
 
 Coordinator acceptance -- post-merge Tests and next stabilization gate
 ----------------------------------------------------------------------

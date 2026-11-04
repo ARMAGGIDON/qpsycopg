@@ -11,29 +11,22 @@ import pytest
 def worker_module(request):
     from psycopg.pq import _qt_process_worker, _qt_process_worker_pool
 
-    return (
-        _qt_process_worker
-        if request.param == "plain"
-        else _qt_process_worker_pool
-    )
+    return _qt_process_worker if request.param == "plain" else _qt_process_worker_pool
 
 
 def _run_fake_worker(monkeypatch, module, startup, *, successful):
     from psycopg import pq
-    from psycopg.pq._qt_process_protocol import Operation, RemoteKind, RemoteRef, Request
+    from psycopg.pq._qt_process_protocol import Operation, RemoteKind, RemoteRef
+    from psycopg.pq._qt_process_protocol import Request
 
     requests = deque([Request(1, startup, args=(b"dbname=missing",))])
     if startup == Operation.CONNECT_START:
         requests.append(Request(2, Operation.CALL, 1, "connect_poll"))
-    requests.extend(
-        (
-            Request(3, Operation.CALL, 1, "send_query")
-            if successful
-            else Request(3, Operation.GET, 1, "error_message"),
-            Request(4, Operation.CALL, 1, "finish"),
-            Request(5, Operation.CLOSE),
-        )
-    )
+    if successful:
+        requests.append(Request(3, Operation.CALL, 1, "send_query"))
+    else:
+        requests.append(Request(3, Operation.GET, 1, "error_message"))
+    requests.extend((Request(4, Operation.CALL, 1, "finish"), Request(5, Operation.CLOSE)))
     responses = []
 
     class Conn:
@@ -46,30 +39,32 @@ def _run_fake_worker(monkeypatch, module, startup, *, successful):
 
     conn = Conn()
 
-    class Harness(module.Worker):
-        def _handle(self, request):
-            if request.operation in (Operation.CONNECT_START, Operation.CONNECT):
-                self.objects[1] = conn
-                return RemoteRef(RemoteKind.PGCONN, 1)
-            if request.member == "connect_poll":
-                return pq.PollingStatus.OK if successful else pq.PollingStatus.FAILED
-            if request.member == "send_query":
-                conn.status = pq.ConnStatus.BAD
-                return None
-            if request.operation == Operation.GET:
-                return conn.error_message
-            if request.member == "finish":
-                self.objects.pop(1).finish()
-                return None
-            if request.operation == Operation.CLOSE:
-                return None
-            raise AssertionError(request)
+    worker = module.Worker(None)
 
+    def handle(request):
+        if request.operation in (Operation.CONNECT_START, Operation.CONNECT):
+            worker.objects[1] = conn
+            return RemoteRef(RemoteKind.PGCONN, 1)
+        if request.member == "connect_poll":
+            return pq.PollingStatus.OK if successful else pq.PollingStatus.FAILED
+        if request.member == "send_query":
+            conn.status = pq.ConnStatus.BAD
+            return None
+        if request.operation == Operation.GET:
+            return conn.error_message
+        if request.member == "finish":
+            worker.objects.pop(1).finish()
+            return None
+        if request.operation == Operation.CLOSE:
+            return None
+        raise AssertionError(request)
+
+    monkeypatch.setattr(worker, "_handle", handle)
     monkeypatch.setattr(module, "recvFrame", lambda sock: requests.popleft())
     monkeypatch.setattr(
         module, "sendFrame", lambda sock, response, *args: responses.append(response)
     )
-    Harness(None).run()
+    worker.run()
     return responses, requests, conn
 
 

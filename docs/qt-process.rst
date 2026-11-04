@@ -30,7 +30,11 @@ Both Qt-oriented backends preserve the normal high-level Psycopg model:
 * the stateful libpq ``PGconn`` belongs only to the worker;
 * synchronous calls remain synchronous and block the calling thread;
 * ordinary SQL errors must not kill a healthy connection;
-* fatal ``ConnStatus.BAD`` handling still terminates/marks a broken session;
+* failed connection startup must preserve the PostgreSQL server's original
+  ``FATAL`` details: the process worker remains available for status/error
+  retrieval and ``finish()`` even while the initial connection is ``BAD``;
+* fatal ``ConnStatus.BAD`` handling terminates/marks a broken session after
+  connection establishment has succeeded;
 * the existing Psycopg connection lock remains authoritative when a connection
   is shared between caller threads.
 

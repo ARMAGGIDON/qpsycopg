@@ -368,23 +368,27 @@ Immediate next work
    That chat should sync its checkout and verify
    live target HEAD before writing. This docs
    checkpoint may be newer than the merge SHA.
-#. **Post-merge Tests matrix still unverified**
-   at this recovery checkpoint. Runs
-   ``41801325261`` and ``41801317209``
-   were queued against the merge SHA when
-   inspected; verify their final outcomes,
-   investigate any new failures, and document
-   final CI. Pre-merge synchronised matrix
-   ``41720955777`` attempt 2 was SUCCESS
-   56/56 after an isolated retry of one
-   ``test_refill_on_check[asyncio]`` timeout;
-   its root cause is unproven. Qt/Windows
-   focused checks passed. Repository-wide
-   lint and Sphinx baseline failures and the
-   unverified Windows compiled
-   ``worker_impl=c`` remain accepted,
-   documented integration exceptions, not
-   passing validation.
+#. **Post-merge Tests triaged; final matrix incomplete.**
+   PR-triggered ``41801325261`` finished
+   CANCELLED (all 30 available jobs cancelled).
+   Merge-push ``41801317209`` has 56 jobs:
+   at inspection 24 SUCCESS, 28 running, 3 queued,
+   **one failed** (``linux (python, 3.14t, postgres:16)``).
+   ``test_refill_on_check[asyncio]`` timed out
+   refilling the async pool after proxy restart;
+   its two automatic retries failed as well.
+   This **same test** needed an isolated retry
+   before merge (successful matrix
+   ``41720955777``, attempt 2, 56/56).
+   Cause and post-merge regression status
+   remain unproven; notify existing Coordinator.
+   A fresh docs-only-HEAD Tests run
+   ``41802212474`` was also incomplete.
+   Accepted lint/Sphinx baseline failures
+   (including identical nine Sphinx messages
+   on merge and docs-only heads) and the
+   Windows compiled ``worker_impl=c``
+   validation gap remain unchanged.
 #. **Performance direction: STOP / plateau.**
    The bounded native PGresult handoff
    ownership/Transformer preflight PASS
@@ -465,6 +469,91 @@ Coordinator post-merge closeout -- PR #2 and performance plateau
   merge/evidence and optimisation log are
   the authoritative recovery package.
   No measured token count is asserted.
+
+Implementation post-merge CI triage -- 2026-11-04
+-------------------------------------------------
+
+* **Repository:** ``ARMAGGIDON/qpsycopg``,
+  ``feature/qt-process-pq``, observed pre-checkpoint
+  HEAD ``c9aefa28da3ebbd448afb9721aafd32bd8f1dbab``.
+  It is the verified two-parent PR #2 merge
+  ``9126cddfb9db45b787ea7ea626c3e152f1d1ac24``
+  plus one Coordinator docs-only closeout commit.
+  GitHub compare shows only ``docs/qt-process-project-map.rst``
+  changed after merge; all eight merged config files,
+  production performance code and documented decisions
+  are intact. This chat could not inspect or synchronize
+  the user's Windows/local checkout: repository state
+  was verified using live GitHub branch and diff.
+* **Requested Tests runs at merge SHA:**
+  ``41801325261`` (``pull_request``) completed
+  ``cancelled``; 30/30 reported jobs cancelled.
+  ``41801317209`` (``push``) was still executing
+  at inspection, with 56 matrix jobs: 24 SUCCESS,
+  28 in progress, 3 queued and **one FAILURE**.
+  These are **observed in-progress statuses**, not
+  a claim about the eventual run conclusion.
+* **Failure triage:** job
+  ``126477485524``,
+  ``linux (python, 3.14t, postgres:16)``,
+  ``tests/pool/test_pool_async.py::test_refill_on_check[asyncio]``.
+  Full suite 5700 passed/1 failed/610 skipped/
+  39 xfailed; failure at the second
+  ``await p.wait(timeout=2)`` after
+  ``proxy.stop(); proxy.start(); await p.check()``.
+  Error ``psycopg_pool.PoolTimeout``;
+  proxy reported closed connections/refused TCP
+  and ``pproxy`` pending asyncio tasks. Both
+  automatic last-failure reruns failed identically.
+  The pre-merge matrix ``41720955777``,
+  attempt 2, had passed 56/56 following an
+  isolated retry of **the same test**. Thus this
+  is a recurring, previously documented
+  pool/proxy timing failure, not a newly
+  identified Qt failure. Actual root cause
+  remains unproven and post-merge Tests are
+  **not green**. The merge diff's eight files
+  exclude pool/proxy code and this test;
+  the failing job used Python libpq wrapper,
+  not qt-thread. Do not declare it a proven
+  runtime regression or silently waive the
+  failing CI check.
+* **Other post-merge signals:** docs-only
+  ``c9aefa28`` created fresh PR Tests
+  ``41802212474``, also unfinished at inspection.
+  Qt-process smoke/DLL jobs passed on
+  merge-triggered ``41801325345``, while
+  its docs-validation job failed with the same
+  **nine baseline Sphinx messages** observed
+  again in docs-only ``41802212499``
+  (two literal-block quoting, six unexpected
+  indentations, one missing-toctree warning).
+  Repository Lint still reports the
+  documented baseline mypy/cython-lint issues.
+  Do not change or mislabel accepted exceptions
+  as passing validation. Windows
+  ``worker_impl=c`` remains an unclosed
+  validation gap, not verified success.
+* **Ownership / next action:** write pause has
+  ended and current ``10 Implementation — current``
+  remains sole ordinary runtime owner.
+  No runtime, C extension, test, workflow,
+  benchmark-v3 or optimization change was
+  made for this checkpoint. ``optimized01``
+  RETAIN, native result-boundary screen
+  REJECT (predeclared drift gate),
+  no ``optimized02``.
+  Report the recurring failed post-merge
+  matrix job and incomplete status to the
+  **existing 00 Coordinator** for triage
+  decision. Avoid any new performance series
+  or speculative test changes; check
+  fresh CI state before further acceptance.
+* **Context risk: CAUTION.** Current evidence,
+  branch ownership and pending CI status are
+  recoverable from this checkpoint; do not
+  infer remaining tokens. No observed
+  HANDOFF NOW signal or ownership transfer.
 
 Coordinator review -- two independent short-query Scouts
 --------------------------------------------------------

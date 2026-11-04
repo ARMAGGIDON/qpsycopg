@@ -34,6 +34,16 @@ Documentation
     basic/index
     advanced/index
     api/index
+    qt-process
+    qt-backend-config
+    qt-process-project-map
+    qt-process-performance
+    qt-process-optimization-log
+
+.. toctree::
+    :hidden:
+
+    qt-process-coordination
 
 Release notes
 -------------

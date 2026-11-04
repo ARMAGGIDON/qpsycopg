@@ -1,0 +1,269 @@
+param(
+    [Parameter(Position = 0)]
+    [ValidateSet("smoke", "bench", "transport", "qt", "gui", "all")]
+    [string] $Mode = "smoke",
+
+    [string] $Dsn = $env:QPSYCOPG_DSN,
+    [ValidateSet("binary", "python", "c")]
+    [string] $Worker = "binary",
+    [int] $Iterations = 500,
+    [int] $Rows = 100000,
+    [int] $Threads = 8,
+    [ValidateRange(1, 20)]
+    [int] $Repeat = 7,
+    [string] $Tag = "",
+    [switch] $KeepResults
+)
+
+$ErrorActionPreference = "Stop"
+$workloadVersion = 1
+$repoRoot = Split-Path $PSScriptRoot -Parent
+$python = Join-Path $repoRoot ".venv\Scripts\python.exe"
+if (-not (Test-Path $python)) { throw "Virtual environment not found: $python" }
+if (-not $Dsn) { throw "QPSYCOPG_DSN is not set" }
+
+$resultsRoot = Join-Path $repoRoot "test-results"
+New-Item -ItemType Directory -Path $resultsRoot -Force | Out-Null
+if (-not $Tag -and $Mode -in @("bench", "all")) {
+    $lastOptimized = Get-ChildItem $resultsRoot -File -Filter "qpsycopg-*.zip" |
+        ForEach-Object { if ($_.BaseName -match '-optimized(\d+)$') { [int] $Matches[1] } } |
+        Sort-Object -Descending | Select-Object -First 1
+    $nextOptimized = if ($null -eq $lastOptimized) { 17 } else { [math]::Max(17, $lastOptimized + 1) }
+    $Tag = "optimized$nextOptimized"
+}
+
+$safeTag = $Tag -replace '[^\w.-]', '_'
+$timestamp = Get-Date -Format "yyyyMMdd-HHmmss-fff"
+$runId = if ($safeTag) { "$timestamp-$safeTag" } else { $timestamp }
+$runDir = Join-Path $resultsRoot $runId
+$archive = Join-Path $resultsRoot "qpsycopg-$Mode-$runId.zip"
+New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+$oldImpl = $env:PSYCOPG_IMPL
+$oldWorker = $env:QPSYCOPG_WORKER_IMPL
+$oldIpc = $env:QPSYCOPG_IPC
+$defaultIpc = if ($IsWindows) { "pipe" } else { "tcp" }
+
+function Set-Backend([string] $impl, [string] $worker = "", [string] $ipc = "") {
+    $env:PSYCOPG_IMPL = $impl
+    if ($worker) { $env:QPSYCOPG_WORKER_IMPL = $worker }
+    else { Remove-Item Env:QPSYCOPG_WORKER_IMPL -ErrorAction Ignore }
+    if ($impl -eq "qt-process") { $env:QPSYCOPG_IPC = if ($ipc) { $ipc } else { $defaultIpc } }
+    else { Remove-Item Env:QPSYCOPG_IPC -ErrorAction Ignore }
+}
+
+function Invoke-Python([string[]] $arguments, [string] $outFile = "") {
+    if ($outFile) { & $python @arguments > $outFile }
+    else { & $python @arguments }
+    if ($LASTEXITCODE -ne 0) { throw "Python exited with code $LASTEXITCODE" }
+}
+
+function Result([string] $name, [string] $extension = "json") {
+    return Join-Path $runDir "$name.$extension"
+}
+
+function Invoke-BackendTest(
+    [string] $label,
+    [string] $impl,
+    [string[]] $arguments,
+    [string] $outFile,
+    [string] $ipc = ""
+) {
+    Write-Host $label
+    if ($impl -eq "qt-process") { Set-Backend $impl $Worker $ipc }
+    else { Set-Backend $impl }
+    Invoke-Python $arguments $outFile
+}
+
+function Smoke {
+    Write-Host "[smoke] qt-process/$Worker/$defaultIpc"
+    Set-Backend "qt-process" $Worker
+    $outFile = Result "smoke" "log"
+    & $python (Join-Path $repoRoot "tools\smoke_qt_process.py") $Dsn 2>&1 | Tee-Object -FilePath $outFile
+    if ($LASTEXITCODE -ne 0) { throw "Python exited with code $LASTEXITCODE" }
+}
+
+function Bench {
+    $benchArgs = @(
+        (Join-Path $repoRoot "tools\bench_qt_process.py"), $Dsn,
+        "--iterations", $Iterations, "--rows", $Rows, "--threads", $Threads
+    )
+    $sentinelAt = [math]::Max(1, [math]::Ceiling($Repeat / 2))
+
+    for ($i = 1; $i -le $Repeat; $i++) {
+        $n = "{0:D2}" -f $i
+        if ($i -eq $sentinelAt -and $i % 2) {
+            Invoke-BackendTest "[sentinel] vanilla bench" $Worker $benchArgs (Result "bench-$n-vanilla")
+        }
+        Invoke-BackendTest "[$i/$Repeat] qpsycopg bench" "qt-process" $benchArgs (Result "bench-$n-qpsycopg")
+        if ($i -eq $sentinelAt -and -not ($i % 2)) {
+            Invoke-BackendTest "[sentinel] vanilla bench" $Worker $benchArgs (Result "bench-$n-vanilla")
+        }
+    }
+}
+
+function TransportBench {
+    $transportRepeat = [math]::Min(5, $Repeat)
+    $benchArgs = @(
+        (Join-Path $repoRoot "tools\bench_qt_process.py"), $Dsn,
+        "--iterations", $Iterations, "--rows", $Rows, "--threads", $Threads
+    )
+
+    Write-Host "[transport] named-pipe smoke"
+    Set-Backend "qt-process" $Worker "pipe"
+    & $python (Join-Path $repoRoot "tools\smoke_qt_process.py") $Dsn *> (Result "transport-pipe-smoke" "log")
+    if ($LASTEXITCODE -ne 0) { throw "named-pipe smoke failed with code $LASTEXITCODE" }
+
+    for ($i = 1; $i -le $transportRepeat; $i++) {
+        $n = "{0:D2}" -f $i
+        if ($i % 2) {
+            Invoke-BackendTest "[$i/$transportRepeat] qpsycopg TCP" "qt-process" $benchArgs (Result "transport-$n-tcp") "tcp"
+            Invoke-BackendTest "[$i/$transportRepeat] qpsycopg pipe" "qt-process" $benchArgs (Result "transport-$n-pipe") "pipe"
+        } else {
+            Invoke-BackendTest "[$i/$transportRepeat] qpsycopg pipe" "qt-process" $benchArgs (Result "transport-$n-pipe") "pipe"
+            Invoke-BackendTest "[$i/$transportRepeat] qpsycopg TCP" "qt-process" $benchArgs (Result "transport-$n-tcp") "tcp"
+        }
+    }
+}
+
+function QtBench {
+    $qtArgs = @((Join-Path $repoRoot "tools\bench_qt_responsiveness.py"), $Dsn, "--caller", "thread")
+    $sentinelAt = [math]::Max(1, [math]::Ceiling($Repeat / 2))
+
+    for ($i = 1; $i -le $Repeat; $i++) {
+        $n = "{0:D2}" -f $i
+        if ($i -eq $sentinelAt -and $i % 2) {
+            Invoke-BackendTest "[sentinel] vanilla Qt" $Worker $qtArgs (Result "qt-$n-vanilla")
+        }
+        Invoke-BackendTest "[$i/$Repeat] qpsycopg Qt" "qt-process" $qtArgs (Result "qt-$n-qpsycopg")
+        if ($i -eq $sentinelAt -and -not ($i % 2)) {
+            Invoke-BackendTest "[sentinel] vanilla Qt" $Worker $qtArgs (Result "qt-$n-vanilla")
+        }
+    }
+}
+
+function GuiBlock {
+    Write-Host "[gui] main-thread blocking control"
+    Set-Backend "qt-process" $Worker
+    Invoke-Python @(
+        (Join-Path $repoRoot "tools\bench_qt_responsiveness.py"), $Dsn, "--caller", "main"
+    ) (Result "guiBlocks")
+}
+
+function Median([double[]] $values) {
+    if (-not $values.Count) { return $null }
+    $sorted = @($values | Sort-Object)
+    $middle = [int] [math]::Floor($sorted.Count / 2)
+    if ($sorted.Count % 2) { return [double] $sorted[$middle] }
+    return ([double] $sorted[$middle - 1] + [double] $sorted[$middle]) / 2
+}
+
+function BenchSummary([string] $backend, [string] $prefix = "bench") {
+    $runs = @(Get-ChildItem $runDir -Filter "$prefix-*-$backend.json" | Sort-Object Name |
+        ForEach-Object { Get-Content $_.FullName -Raw | ConvertFrom-Json })
+    if (-not $runs.Count) { return $null }
+
+    return [ordered]@{
+        runs = $runs.Count
+        connect_median_ms = Median @($runs | ForEach-Object { $_.connect.median_ms })
+        select_1_median_ms = Median @($runs | ForEach-Object { $_.select_1.median_ms })
+        select_1_p95_ms = Median @($runs | ForEach-Object { $_.select_1.p95_ms })
+        select_cpu_us_per_call = Median @($runs | ForEach-Object { $_.select_1.resources.tree_cpu_us_per_call })
+        select_ctx_switches_per_call = Median @($runs | ForEach-Object { $_.select_1.resources.tree_ctx_switches_per_call })
+        select_rss_mb = Median @($runs | ForEach-Object { $_.select_1.resources.tree_rssmb_after })
+        select_private_mb = Median @($runs | ForEach-Object { $_.select_1.resources.tree_privatemb_after })
+        select_handles = Median @($runs | ForEach-Object { $_.select_1.resources.tree_handles_after })
+        select_threads = Median @($runs | ForEach-Object { $_.select_1.resources.tree_threads_after })
+        select_processes = Median @($runs | ForEach-Object { $_.select_1.resources.tree_process_count_after })
+        fetch_seconds = Median @($runs | ForEach-Object { $_.fetch.seconds })
+        fetch_execute_seconds = Median @($runs | ForEach-Object { $_.fetch.execute_seconds })
+        fetchall_seconds = Median @($runs | ForEach-Object { $_.fetch.fetchall_seconds })
+        fetch_rows_per_second = Median @($runs | ForEach-Object { $_.fetch.rows_per_second })
+        fetch_rss_before_mb = Median @($runs | ForEach-Object { $_.fetch.resources.tree_rssmb_before })
+        fetch_rss_after_mb = Median @($runs | ForEach-Object { $_.fetch.resources.tree_rssmb_after })
+        fetch_rss_delta_mb = Median @($runs | ForEach-Object { $_.fetch.resources.tree_rssmb_delta })
+        fetch_private_mb = Median @($runs | ForEach-Object { $_.fetch.resources.tree_privatemb_after })
+        fetch_cpu_seconds = Median @($runs | ForEach-Object { $_.fetch.resources.tree_cpu_total_seconds })
+        fetch_ctx_switches = Median @($runs | ForEach-Object { $_.fetch.resources.tree_ctx_total })
+        threads_seconds = Median @($runs | ForEach-Object { $_.threads.seconds })
+        cancel_call_seconds = Median @($runs | ForEach-Object { $_.cancel.call_seconds })
+    }
+}
+
+function QtSummary([string] $backend) {
+    $runs = @(Get-ChildItem $runDir -Filter "qt-*-$backend.json" | Sort-Object Name |
+        ForEach-Object { Get-Content $_.FullName -Raw | ConvertFrom-Json })
+    if (-not $runs.Count) { return $null }
+
+    return [ordered]@{
+        runs = $runs.Count
+        timer_median_ms = Median @($runs | ForEach-Object { $_.timer.median_ms })
+        timer_p95_ms = Median @($runs | ForEach-Object { $_.timer.p95_ms })
+        max_stall_ms = Median @($runs | ForEach-Object { $_.timer.max_stall_ms })
+    }
+}
+
+function Save-Results {
+    $manifest = [ordered]@{
+        timestamp = (Get-Date).ToString("o")
+        mode = $Mode
+        tag = $Tag
+        worker = $Worker
+        ipc_default = $defaultIpc
+        iterations = $Iterations
+        rows = $Rows
+        threads = $Threads
+        repeat = $Repeat
+        vanilla_sentinels = if ($Mode -in @("bench", "all")) { 1 } else { 0 }
+        benchmark_workload_version = $workloadVersion
+        branch = (& git -C $repoRoot branch --show-current).Trim()
+        commit = (& git -C $repoRoot rev-parse HEAD).Trim()
+    }
+    $manifest | ConvertTo-Json | Set-Content (Result "manifest") -Encoding utf8
+
+    $baseline = $null
+    if ($Mode -in @("bench", "all")) {
+        $baselineFile = Result "vanilla-baseline"
+        Invoke-Python @(
+            (Join-Path $repoRoot "tools\vanilla_baseline.py"), $resultsRoot,
+            "--worker", $Worker, "--iterations", $Iterations, "--rows", $Rows, "--threads", $Threads
+        ) $baselineFile
+        $baseline = Get-Content $baselineFile -Raw | ConvertFrom-Json
+    }
+
+    $summary = [ordered]@{
+        vanilla = BenchSummary "vanilla"
+        vanilla_baseline = $baseline
+        qpsycopg = BenchSummary "qpsycopg"
+        transport_tcp = BenchSummary "tcp" "transport"
+        transport_pipe = BenchSummary "pipe" "transport"
+        vanilla_qt = QtSummary "vanilla"
+        qpsycopg_qt = QtSummary "qpsycopg"
+    }
+    $summary | ConvertTo-Json -Depth 7 | Set-Content (Result "summary") -Encoding utf8
+
+    Compress-Archive -Path (Join-Path $runDir "*") -DestinationPath $archive -CompressionLevel Optimal -Force
+    if (-not $KeepResults) { Remove-Item $runDir -Recurse -Force }
+    Write-Host "Results archive: $archive"
+}
+
+try {
+    switch ($Mode) {
+        "smoke" { Smoke }
+        "bench" { Bench }
+        "transport" { TransportBench }
+        "qt" { QtBench }
+        "gui" { GuiBlock }
+        "all" { Smoke; Bench; QtBench; GuiBlock }
+    }
+    Save-Results
+} finally {
+    if ($null -eq $oldImpl) { Remove-Item Env:PSYCOPG_IMPL -ErrorAction Ignore }
+    else { $env:PSYCOPG_IMPL = $oldImpl }
+
+    if ($null -eq $oldWorker) { Remove-Item Env:QPSYCOPG_WORKER_IMPL -ErrorAction Ignore }
+    else { $env:QPSYCOPG_WORKER_IMPL = $oldWorker }
+
+    if ($null -eq $oldIpc) { Remove-Item Env:QPSYCOPG_IPC -ErrorAction Ignore }
+    else { $env:QPSYCOPG_IPC = $oldIpc }
+}

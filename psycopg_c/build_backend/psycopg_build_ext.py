@@ -1,5 +1,4 @@
-"""
-Build backend module for psycopg Cython components.
+"""Build backend module for psycopg Cython components.
 
 Convert Cython to C if required, compile the C modules adding build from the
 libpq and accounting for other platform differences.
@@ -17,7 +16,15 @@ log = logging.getLogger(__name__)
 
 
 def get_config(what: str) -> str:
-    pg_config = "pg_config"
+    if root := os.environ.get("PSYCOPG_PG_ROOT"):
+        subdir = {"includedir": "include", "libdir": "lib"}.get(what)
+        if subdir:
+            path = os.path.join(root, subdir)
+            if not os.path.isdir(path):
+                raise RuntimeError(f"PSYCOPG_PG_ROOT has no {subdir!r} directory: {root!r}")
+            return path
+
+    pg_config = os.environ.get("PG_CONFIG", "pg_config")
     try:
         out = sp.run([pg_config, f"--{what}"], stdout=sp.PIPE, check=True)
     except Exception as e:

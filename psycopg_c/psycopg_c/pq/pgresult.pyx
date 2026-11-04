@@ -5,7 +5,10 @@ psycopg_c.pq.PGresult object implementation.
 # Copyright (C) 2020 The Psycopg Team
 
 cimport cython
+from cpython.bytes cimport PyBytes_AS_STRING, PyBytes_FromStringAndSize
 from cpython.mem cimport PyMem_Free, PyMem_Malloc
+from libc.stdint cimport uint64_t
+from libc.string cimport memcpy, memset
 
 from psycopg.pq.misc import PGresAttDesc
 from psycopg.pq._enums import ExecStatus
@@ -111,6 +114,118 @@ cdef class PGresult:
                 return None
             else:
                 return b""
+
+    def _qpsycopg_pack_values(self) -> tuple[bytes, bytes, bytes, int]:
+        """Pack result cells into qpsycopg's data/offset/NULL wire layout."""
+        cdef int ntuples = libpq.PQntuples(self._pgresult_ptr)
+        cdef int nfields = libpq.PQnfields(self._pgresult_ptr)
+        cdef uint64_t cellCount = <uint64_t>ntuples * <uint64_t>nfields
+        cdef uint64_t maxPySize = (<uint64_t>1 << (sizeof(Py_ssize_t) * 8 - 1)) - 1
+        cdef uint64_t offsetsSize
+        cdef uint64_t nullsSize
+        cdef uint64_t dataSize = 0
+        cdef uint64_t cellIndex = 0
+        cdef int row
+        cdef int column
+        cdef int length
+        cdef char *value
+
+        if cellCount > maxPySize // sizeof(uint64_t) - 1:
+            raise OverflowError("PGresult has too many cells to pack")
+        offsetsSize = (cellCount + 1) * sizeof(uint64_t)
+        nullsSize = (cellCount + 7) // 8
+
+        cdef bytes offsets = PyBytes_FromStringAndSize(NULL, <Py_ssize_t>offsetsSize)
+        cdef bytes nulls = PyBytes_FromStringAndSize(NULL, <Py_ssize_t>nullsSize)
+        cdef char *offsetsPtr = PyBytes_AS_STRING(offsets)
+        cdef unsigned char *nullsPtr = <unsigned char *>PyBytes_AS_STRING(nulls)
+        if nullsSize:
+            memset(nullsPtr, 0, <size_t>nullsSize)
+
+        for row in range(ntuples):
+            for column in range(nfields):
+                memcpy(
+                    offsetsPtr + <Py_ssize_t>(cellIndex * sizeof(uint64_t)),
+                    &dataSize,
+                    sizeof(uint64_t),
+                )
+                length = libpq.PQgetlength(self._pgresult_ptr, row, column)
+                if length:
+                    dataSize += <uint64_t>length
+                    if dataSize > maxPySize:
+                        raise OverflowError("PGresult data is too large to pack")
+                elif libpq.PQgetisnull(self._pgresult_ptr, row, column):
+                    nullsPtr[cellIndex >> 3] |= <unsigned char>(1 << (cellIndex & 7))
+                cellIndex += 1
+
+        memcpy(
+            offsetsPtr + <Py_ssize_t>(cellIndex * sizeof(uint64_t)),
+            &dataSize,
+            sizeof(uint64_t),
+        )
+
+        cdef bytes data = PyBytes_FromStringAndSize(NULL, <Py_ssize_t>dataSize)
+        cdef char *dataPtr = PyBytes_AS_STRING(data)
+        cdef Py_ssize_t dataOffset = 0
+        for row in range(ntuples):
+            for column in range(nfields):
+                length = libpq.PQgetlength(self._pgresult_ptr, row, column)
+                if length:
+                    value = libpq.PQgetvalue(self._pgresult_ptr, row, column)
+                    memcpy(dataPtr + dataOffset, value, <size_t>length)
+                    dataOffset += length
+
+        return data, offsets, nulls, cellCount
+
+    def _qpsycopg_snapshot_meta(self) -> tuple:
+        """Collect PGresult metadata in one native call for qpsycopg snapshots."""
+        cdef int status = libpq.PQresultStatus(self._pgresult_ptr)
+        cdef int ntuples = libpq.PQntuples(self._pgresult_ptr)
+        cdef int nfields = libpq.PQnfields(self._pgresult_ptr)
+        cdef int nparams = libpq.PQnparams(self._pgresult_ptr)
+        cdef int i
+        cdef char *name
+        cdef char *cmdStatus = libpq.PQcmdStatus(self._pgresult_ptr)
+        cdef char *cmdTuples = libpq.PQcmdTuples(self._pgresult_ptr)
+        cdef bytes cmdTuplesBytes
+        cdef object commandStatus = None
+        cdef object commandTuples = None
+        cdef list columns = []
+        cdef list paramTypes = []
+
+        for i in range(nfields):
+            name = libpq.PQfname(self._pgresult_ptr, i)
+            columns.append((
+                None if name is NULL else name,
+                libpq.PQftable(self._pgresult_ptr, i),
+                libpq.PQftablecol(self._pgresult_ptr, i),
+                libpq.PQfformat(self._pgresult_ptr, i),
+                libpq.PQftype(self._pgresult_ptr, i),
+                libpq.PQfmod(self._pgresult_ptr, i),
+                libpq.PQfsize(self._pgresult_ptr, i),
+            ))
+
+        for i in range(nparams):
+            paramTypes.append(libpq.PQparamtype(self._pgresult_ptr, i))
+
+        if cmdStatus is not NULL:
+            commandStatus = cmdStatus
+        if cmdTuples is not NULL:
+            cmdTuplesBytes = cmdTuples
+            if cmdTuplesBytes:
+                commandTuples = int(cmdTuplesBytes)
+
+        return (
+            status,
+            ntuples,
+            nfields,
+            tuple(columns),
+            libpq.PQbinaryTuples(self._pgresult_ptr),
+            tuple(paramTypes),
+            commandStatus,
+            commandTuples,
+            libpq.PQoidValue(self._pgresult_ptr),
+        )
 
     @property
     def nparams(self) -> int:

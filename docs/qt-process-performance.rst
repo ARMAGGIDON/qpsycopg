@@ -1,0 +1,1020 @@
+Qt process performance notes
+============================
+
+This document records measured qpsycopg performance history, accepted/rejected
+experiments and the evidence which moved active work from process micro-tuning to
+the real ``qt-thread`` backend.
+
+For the live numbered optimisation sequence see
+:doc:`qt-process-optimization-log`. For current ownership and immediate next work
+see :doc:`qt-process-project-map`.
+
+Performance target
+------------------
+
+The target for frequent database operations is approximately normal upstream
+Psycopg behaviour while preserving the chosen Qt worker semantics. Performance
+claims must consider more than wall-clock median:
+
+* latency median and tails;
+* CPU per operation;
+* context switches;
+* bulk throughput;
+* process-tree RSS/private memory;
+* handles, threads and process count;
+* connection startup;
+* cancellation;
+* Qt p95/p99 responsiveness.
+
+Process-backed resource totals must use the whole parent+worker process tree.
+Parent-only memory/CPU is useful for attribution, not architecture comparison.
+
+Current canonical methodology
+-----------------------------
+
+The current acceptance benchmark is ``tools/benchmark_qpsycopg.ps1``.
+
+The upstream comparison revision is the merge-base with ``psycopg/psycopg``::
+
+    99356800e90aa0e7b604f652d714ef0f33422b47
+
+Upstream and fork are installed into isolated, non-editable benchmark venvs built
+from the same CPython and against the same local PostgreSQL/libpq installation.
+The benchmark reruns upstream in every checkpoint because Windows scheduler/load,
+CPU state and PostgreSQL/Docker state can move absolute timings.
+
+Benchmark v3 is the canonical methodology for numbered optimisations:
+
+* every fork mode has an immediately adjacent upstream run;
+* pair orientation is alternated;
+* short query timing uses 5000 measured iterations after 200 warm-ups;
+* warm connection timing uses 40 samples;
+* cancellation uses 20 attempts per SQL run;
+* concurrency uses 20 batches on an already warmed thread pool;
+* Qt uses five paired runs and treats p95/p99 as primary tail metrics;
+* maximum Qt stall is diagnostic only;
+* the primary ratio is the median of per-pair ``fork / upstream`` ratios;
+* paired-ratio MAD/range and upstream drift are reported separately;
+* discrete architecture resources are reported as deltas rather than ratios.
+
+The historical ``initial`` and ``baseline-v2`` checkpoints used older benchmark
+definitions and are diagnostic only. ``baseline-v3`` is the canonical before-state
+for the current numbered series.
+
+Canonical baseline -- baseline-v3
+---------------------------------
+
+The complete qt-thread smoke passed at ``baseline-v3``. Selected paired ratios
+were:
+
+=====================================  ===========  ============
+Metric                                 qt-thread    qt-process
+=====================================  ===========  ============
+cold connect                           1.366x       14.504x
+warm connect median                    1.409x       1.123x
+warm connect p95                       1.930x       1.166x
+SELECT 1 median                        1.273x       1.446x
+SELECT 1 p95                           1.249x       1.542x
+SELECT 1 p99                           1.395x       1.547x
+CPU / short query                      2.000x       3.163x
+context switches / query               3.032x       2.994x
+100k execute                           1.040x       1.067x
+100k fetch/decode                      1.013x       0.969x
+100k total                             1.027x       0.986x
+8-thread batch median                  1.341x       1.523x
+concurrent throughput                  0.746x       0.659x
+cancel call median                     1.048x       1.718x
+process-tree RSS                       1.320x       2.467x
+process-tree private memory            1.377x       2.384x
+Qt timer p95                           0.982x       1.005x
+Qt timer p99                           1.008x       1.005x
+=====================================  ===========  ============
+
+Connected-state architecture deltas were approximately:
+
+======================  ===========  ============
+Resource                qt-thread    qt-process
+======================  ===========  ============
+processes                +0           +2
+threads                  +2           +11
+handles                  +14          +306
+======================  ===========  ============
+
+The short-query median is sufficiently stable to drive normal optimisation:
+upstream median MAD was about ``0.72%`` and the qt-thread paired ratio MAD about
+``3.98%``. Context-switch and memory ratios were also stable. Cancellation
+latency remains scheduler-sensitive and is supporting evidence rather than a sole
+acceptance criterion.
+
+Qt p95/p99 are effectively at parity, so current work should not target Qt timer
+behaviour. Large-result decode is also near upstream and remains deprioritised.
+
+Historical performance milestones
+---------------------------------
+
+Native result packing -- optimized15
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The original process worker created packed values through a Python per-cell
+``PGresult.get_value()`` loop. For the 100k x 3 workload the value-packing phase
+moved roughly from::
+
+    Python snapshot values     ~108.9 ms
+    native snapshot values       ~5.1 ms
+
+This was about a ``21x`` phase improvement and removed the dominant early bulk
+bottleneck. Do not return to per-cell packing without new profiling evidence.
+
+Cancellation isolation and WAIT batching -- optimized16
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Cancellation originally shared the main transport lock with query WAITs. A
+separate authenticated cancellation channel removed that dependency. This allowed
+the worker readable-data drain to grow from ``1 ms`` to ``10 ms``; a representative
+100k profile dropped from roughly 67 remote WAIT operations to 11 and improved
+elapsed time by about 11%.
+
+The remaining WAIT wall time was mostly real libpq/socket waiting. Increasing the
+drain further merely to minimise request count is not an optimisation target.
+
+Compact process short-query path and worker reuse -- optimized17..29
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Measured retained changes included:
+
+* generic request/response simplification;
+* dedicated fast-execute framing;
+* compact payloads/marshal on the common path;
+* warmed worker-process reuse;
+* stable client-encoding caching;
+* removal/reuse of redundant status work;
+* native result metadata capability detection.
+
+Worker reuse removed the structural process-start cost from most normal connect
+operations. Old checkpoints which mixed worker cold-start and warm session setup
+must not be interpreted as one homogeneous connect distribution.
+
+Windows transport work -- optimized30..35
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``SIO_LOOPBACK_FAST_PATH`` improved the retained TCP fallback. A local transport
+microbenchmark then showed lower fixed latency for raw Windows named pipes,
+particularly for tiny request/response messages. The production Windows process
+path moved to a raw byte-stream named pipe with read-ahead preservation.
+
+A representative paired TCP-fast vs raw-pipe run measured approximately:
+
+====================  ============  ============
+Metric                TCP-fast      raw pipe
+====================  ============  ============
+SELECT median         0.813 ms      0.738 ms
+SELECT p95            1.191 ms      1.016 ms
+SELECT CPU            625 us        469 us
+connect               30.02 ms      28.77 ms
+100k total            0.2742 s      0.2730 s
+====================  ============  ============
+
+This established raw named pipe as the preferred Windows process transport while
+retaining TCP as a fallback.
+
+Process resource telemetry
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``optimized34`` exposed the real cost of process isolation once the whole process
+tree was measured. Representative figures were::
+
+    SELECT median          ~1.48x vanilla
+    SELECT CPU             ~3.80x
+    context switches       ~3.05x
+    process-tree RSS       ~2.34x
+    private memory         ~2.13x
+    100k total             ~1.11x
+
+This corrected earlier parent-only RSS interpretations.
+
+Native parent IPC
+-----------------
+
+A synthetic Python-vs-Cython named-pipe experiment showed a real opportunity to
+move the parent frame exchange below Python. For a small request/response class a
+representative result was roughly::
+
+    median       25.3 -> 19.0 us
+    p95          39.1 -> 25.7 us
+    CPU          14.06 -> 4.69 us
+
+The first integration regressed because it forced separate header/payload reads.
+After adding native read-ahead, a same-run process validation showed roughly:
+
+* SELECT median ``-4.1%``;
+* SELECT p95 ``-17.7%``;
+* parent CPU about ``-20%``;
+* process-tree CPU about ``-7.5%``;
+* bulk and Qt behaviour effectively neutral.
+
+The native parent named-pipe frame exchange is therefore retained.
+
+Worker-side native experiments
+------------------------------
+
+Worker hot-path profiling showed that result snapshot work was already tiny while
+worker wait/receive/dispatch dominated the process fixed cost. Native worker frame
+receive and native Winsock wait were therefore tested separately.
+
+A controlled three-way result was approximately:
+
+======================  =============  ============
+Mode                    SELECT median  SELECT p95
+======================  =============  ============
+base                    ~0.728 ms      ~0.960 ms
+native worker receive   ~0.731 ms      ~0.955 ms
+native receive + wait   ~0.757 ms      ~1.247 ms
+======================  =============  ============
+
+Native worker receive was neutral and native socket wait was worse. Both helpers
+remain experimental switches only; do not enable them by default or repeat the
+same experiment without new evidence.
+
+Architecture boundary result
+----------------------------
+
+After local process micro-optimisations stopped exposing a large missing win, the
+project compared direct Psycopg, the same work through a dedicated thread and the
+process backend. Representative short-query medians were::
+
+    direct       ~533 us
+    thread       ~567 us
+    process      ~724 us
+
+The dedicated thread was about ``+5%`` over direct in that synthetic architecture
+gate, while qt-process was roughly ``+38.6%``. Process CPU was about ``2.44x`` the
+dedicated-thread CPU. Both worker architectures were around three context switches
+per query versus about one direct, so context-switch count alone did not explain
+the process penalty.
+
+This result motivated the real ``PSYCOPG_IMPL=qt-thread`` backend instead of
+continuing random process-IPC micro-tuning.
+
+Real qt-thread validation
+-------------------------
+
+The real qt-thread implementation initially exposed several correctness/setup
+issues which are now resolved:
+
+* Python generator-layer selection;
+* shared-interpreter worker pq namespace consistency;
+* connection-handshake lifecycle/fatal-health checks;
+* dispatch deadlock after worker exit;
+* Windows libpq/DLL bootstrap for validation tooling;
+* native packed-decoder selection for qt-thread.
+
+The standalone semantic smoke now passes fully, including COPY, multiple result
+sets, cancellation, fatal backend termination, shared connection access and
+``AsyncConnection``.
+
+An important measurement correction was also made: an early qt-thread bulk
+regression came from accidentally using ``psycopg.adapt.Transformer`` without the
+native remote decoder. Enabling the same native packed decoder used by qt-process
+brought 100k fetch/decode back near direct/upstream. Do not treat the pre-fix bulk
+numbers as architectural evidence.
+
+Rejected / deprioritised experiments
+------------------------------------
+
+Protocol-5 out-of-band pickle buffers
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Slower in earlier measurements; rolled back.
+
+Speculative ``get_result()`` during WAIT
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Changed result-boundary timing and broke fatal/COPY semantics. Do not
+reintroduce without a new design argument.
+
+Longer WAIT drain as a goal by itself
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``10 ms`` drain already removed most avoidable WAIT crossings. Remaining wall
+time is largely real libpq/socket waiting.
+
+Unsafe one-read TCP receive
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Did not improve SELECT and risked consuming bytes from a following frame without
+preserving the over-read. The retained named-pipe adapter explicitly preserves
+read-ahead state.
+
+Windows AF_UNIX
+~~~~~~~~~~~~~~~
+
+Did not beat the retained Windows transport path and was removed.
+
+Direct ``SendSnapshot`` shortcut and small state-cache variants
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+No useful stable end-to-end improvement relative to added state-machine
+complexity; reverted/deprioritised.
+
+Native worker receive / native wait
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Receive was neutral; native wait was slower. Disabled by default.
+
+Generic serialization/snapshot micro-tuning
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Profiling no longer showed these phases as the dominant process cost. Do not
+resume them without fresh phase evidence.
+
+Bulk decoder tuning
+~~~~~~~~~~~~~~~~~~~
+
+Current qt-thread/process bulk decode is near upstream. Do not spend another
+iteration here while short-query CPU/latency remains materially higher.
+
+Current numbered optimisation -- optimized01 (retained)
+-------------------------------------------------------
+
+The first ``qt-thread`` change is a narrowly scoped cancellation-lifecycle
+optimisation. Instead of creating the cancellation-control server during
+``Connection.connect()``, it constructs the control channel immediately before
+the first normal query, with a fallback for ``cancel_safe()`` before that
+query. The ``qt-process`` code path is not modified.
+
+Implementation commits: ``4637ff9``, ``371bda8``. Measurement checkpoint:
+``optimized01`` at commit ``7c781a97``. All six SQL and five Qt rounds
+completed; the semantic smoke passed, including cancellation and
+``AsyncConnection``. The upstream base, benchmark hash/reference key and
+isolated C-worker environments are compatible with ``baseline-v3``.
+
+The intended result is observed::
+
+    qt-thread / upstream             baseline-v3   optimized01
+    warm connection median             1.409x       1.319x
+    warm connection p95                1.930x       1.291x
+    cold connection                    1.366x       1.053x (noisy)
+    extra connected-state threads         +2           +1
+    extra connected-state handles        +14           +8
+
+The warm median ratio improved about 6.4%; warm p95 improved about 33.1%.
+The thread/handle counts are exact architecture deltas at the pre-query
+connected-state snapshot. Cold-start figures are noisy and secondary.
+
+Short-query SELECT median stayed near ``1.27x`` upstream (1.273x before,
+1.262x after), as expected because the control channel still exists while
+queries execute. There is no measured RSS/private-memory win.
+
+**Watch items, not claimed regressions or improvements**:
+
+* CPU/short query ratio: ``2.000x -> 2.429x``. Baseline and current per-round
+  ranges overlap (``1.556-2.649x`` and ``1.955-3.000x``) and both are
+  variable. This merits a focused CPU-path check before claiming the change
+  neutral outside connection setup.
+* Cancel call median: ``1.048x -> 1.553x``, but current paired ratio MAD
+  about 19% and a ``0.979-3.201x`` range prevent a reliable latency
+  conclusion; semantic cancellation still passed.
+* Qt timer p95/p99 and bulk ratios fluctuate modestly across runs and do not
+  establish a causal regression. Maximum timer stall is diagnostic only.
+
+Decision: **retain optimized01** for the confirmed connection/resource benefit
+and preserved semantic smoke. Do not stack another unrelated runtime change
+before a bounded short-query profiling hypothesis is chosen. Full numbers,
+method and historical drift are in :doc:`qt-process-optimization-log`.
+
+Qt-thread short-query CPU profiling checkpoint
+----------------------------------------------
+
+The corrected diagnostic archive ``qt-thread-cpu-profile-20261103-192809-646.zip``
+was captured at ``9b0f7108`` with two rounds each of pristine upstream,
+fork direct C and qt-thread. There is no production runtime change and
+no new numbered optimisation benchmark. Clean (pre-instrumentation)
+process CPU/query in the two runs was::
+
+    upstream C             88.5 / 130.2 us
+    fork direct C          125.0 / 145.8 us
+    qt-thread              255.2 / 250.0 us
+
+The qt-thread CPU excess versus fork direct is ~104-130 us/query.
+Its clean caller CPU is ~115-135 us/query and other-thread CPU
+~115-141 us/query. Context switches are ~3.0-3.1/query in qt-thread
+versus ~1.0/query in direct. Windows CPU timers are quantised and
+cannot support a claim about isolated sub-microsecond function costs.
+
+A no-SQL forced status GET exercises one full qt-thread request/response
+round trip without a libpq wait: it costs 40.02-45.13 us wall,
+36.46-46.88 us process CPU and 2.01-2.04 context switches.
+The corresponding direct status read is only ~0.17 us wall.
+In the instrumented status control, ``_dispatch`` occupies
+~35.2-39.2 us inclusive wall and the worker GET handler ~5.8-6.4 us.
+Thus the **synchronous queue/wakeup round trip** is the largest
+measured fixed non-SQL overhead. Its cost is roughly one third of
+the SELECT CPU gap in magnitude, but it is *not* an exact additive
+component of fast-execute query CPU.
+
+The query's worker ``_wait`` call uses ~539-581 us inclusive wall and
+~73-83 us inclusive thread CPU. Its wall time predominantly reflects
+PostgreSQL socket readiness. Nested worker phase timings overlap;
+they cannot be summed or used as avoidable CPU savings.
+Importantly upstream on Windows also uses Python ``select.select()``:
+``waiting.py`` intentionally avoids native ``wait_c`` owing to
+reported CPU issues. The old worker-native wait, native receive,
+speculative WAIT result prefetch and snapshot micro-tuning
+experiments remain rejected.
+
+The earlier ``cProfile`` attribution was invalid on Python 3.13
+because it captured cross-thread frames and reported negative self CPU.
+The corrected profiler uses thread-local function clocks and exposes
+only inclusive phase measurements; it is diagnostic rather than an
+acceptance benchmark. Full raw rationale is recorded in
+:doc:`qt-process-optimization-log`.
+
+**Bounded conclusion:** cpu profiling is completed and identifies the
+thread request/response handoff as the clearest *fixed, non-libpq*
+target for a falsifiable diagnostic A/B. There is not yet evidence for
+a safe runtime performance change.
+
+The proposed single local hypothesis is that the timed
+``SimpleQueue.get(timeout=0.1)`` path in ``_ThreadTransport._dispatch``
+adds >=10 us to the ~35-39 us fixed handoff wall. Compare timed
+and untimed waits in a **diagnostic-only** paired no-SQL control first.
+Reject if not repeatable or if worker liveness/error handling cannot
+be preserved. Never replace the production timed wait with a
+potentially indefinite block without satisfying fatal worker,
+close and cancellation semantics. Request independent
+``00 Coordinator`` review before beginning a new optimisation
+direction; retain ``optimized01`` in the meantime.
+
+Performance rules for future work
+---------------------------------
+
+#. Use compatible adjacent paired upstream/fork measurements for optimisation
+   claims.
+#. Keep upstream code fixed while rerunning its measurements in every checkpoint.
+#. Treat historical upstream runs as drift evidence, not the sole denominator.
+#. Measure process-backed resources across the whole process tree.
+#. Keep raw named pipe + native parent exchange as the measured process default.
+#. Keep native worker receive/wait disabled by default.
+#. Do not infer GUI responsiveness from worker topology.
+#. Do not optimise bulk decode or Qt p95/p99 while they remain near upstream.
+#. Change one bounded runtime hypothesis at a time and measure before stacking the
+   next optimisation.
+
+Timed/untimed queue-wait A/B -- rejected
+----------------------------------------
+
+The Coordinator-authorised diagnostic at fork commit ``516ccc8c``
+completed with eight interleaved pairs and 4000 no-SQL GET status
+requests per mode/pair. Artifact:
+``qt-thread-queue-wait-ab-20261103-195939-054.zip``.
+
+The untimed wait produced **no meaningful improvement** over timed
+``SimpleQueue.get(timeout=0.1)``: median paired wall delta
+(timed minus untimed) was +0.01546 us, paired MAD 1.08491 us,
+range -4.403 to +2.119 us, and only 4/8 pairs favored untimed.
+Median process CPU delta was 0 us and context-switch delta
+-0.001125 per request. This fails all predeclared performance
+gates (>=10 us median, >3x MAD, >=7/8 positive pairs).
+
+Remote error propagation, ordinary close and post-close rejection
+passed in both modes. When a worker exited without responding, the
+timed mode returned an ``OperationalError``; the untimed mode
+indefinitely blocked until a subprocess watchdog terminated it
+after 8 seconds. The diagnostic's ``failure_checks_pass=true``
+means expected outcomes were observed, **not** that untimed waiting
+is safe: ``untimed_detects_worker_exit=false``.
+
+**Decision: REJECT** raw untimed SimpleQueue response waiting.
+There is no measured latency/CPU advantage and worker-exit
+liveness semantics are worse. Production runtime, accepted
+``optimized01`` and canonical benchmark v3 remain unchanged.
+The approximately 40-45 us fixed no-SQL queue handoff remains
+a valid measured cost, but the 100 ms timed poll does **not**
+explain it. Do not retest this same variant without new evidence.
+Full evidence is recorded in :doc:`qt-process-optimization-log`.
+
+Minimal SimpleQueue echo baseline -- measured diagnostic
+--------------------------------------------------------
+
+The Windows diagnostic archive ``qt-thread-echo-baseline-20261103-202519-685.zip``
+was collected at branch commit ``5dcdbd51`` (Python 3.13.5,
+qt-thread with C worker). It contains eight alternating paired
+comparisons of minimal token echo versus warmed qpsycopg no-SQL
+``GET status``, 4000 calls per mode per pair and 300 block
+warmups. The same original timed response wait is used in
+both. The archive's error log is empty; the subprocess watchdog
+did not fire.
+
+Measured medians per call (microseconds unless noted)::
+
+    metric                        echo      qpsycopg GET    paired GET-echo
+    wall                          18.407        36.367          +18.957
+    process CPU                   13.672        35.156          +19.531
+    caller CPU                     9.766        21.484          +11.719
+    context switches               2.011         2.014           +0.0066
+
+Wall paired delta MAD was 5.764 us, range +13.025 to +37.552 us,
+and positive in 8/8 pairs. CPU delta MAD was 5.859 us (7/8
+positive). Caller CPU and context-switch delta are noisier, subject
+to Windows CPU clock quantization. Both paths require approximately
+two context switches; extra qpsycopg **context switches are not
+demonstrated**. Minimal echo represents ~50.6% of the GET wall
+median (ratio of medians); median within-pair ratio is ~47.9%.
+
+A substantial **temporal drift** matters: the first four pairs
+have median GET-echo excess ~31.81 us and the last four ~13.66 us.
+Both absolute modes become faster across the run. Pairwise
+alternation reduces order bias but does not establish a
+stationary benchmark. The ~19 us median residual is therefore
+descriptive, **not** a reliable saving target.
+
+The minimal echo includes two SimpleQueue exchanges with the
+same timed get; the full qpsycopg GET adds real Request/Response
+objects, transport lock, liveness checks, status validation,
+cache/worker bookkeeping and exception handling. The measured
+difference **does not identify which component dominates or
+whether it is removable**; no SQL-workload gain may be inferred.
+Prior timed-vs-untimed response wait remains REJECT due to zero
+speed signal and unsafe worker-exit behavior.
+
+**Decision: diagnostic COMPLETE; no production optimisation
+accepted.** No runtime code or canonical v3 workload changed.
+No numbered ``optimized02`` experiment is warranted. One
+possible next narrowly scoped diagnostic for Coordinator review
+is to compare a richer echo with matched Request/Response
+and validation costs against the minimal echo, without
+modifying production, before attempting any local tuning.
+
+Enriched echo protocol/bookkeeping isolation -- measured
+--------------------------------------------------------
+
+The independently repeated diagnostic archive
+``qt-thread-enriched-echo-20261103-205855-365.zip``
+was captured at branch HEAD ``d1b6a5a`` using four fresh
+Windows Python 3.13.5 subprocesses, each with a warmed
+qt-thread/C connection and one synthetic worker. Each
+repeat has 16 cycles with 600 calls in each of six
+short blocks. Balanced ordering places the four
+enriched/real modes between timestamp-interpolated
+bare echo controls. All 64 cycles completed without
+reported error or watchdog activation.
+
+Wall overhead above interpolated bare echo (us/call,
+median across **four independent per-repeat medians**)
+was approximately::
+
+    stage                                  wall delta     repeat range
+    Request/Response envelope               +4.031        3.209..4.722
+    envelope + validation                   +5.174        4.084..5.316
+    synthetic bookkeeping                   +9.420        8.731..9.673
+    real qt-thread GET status              +14.172       13.505..14.537
+
+The directly paired incremental-stage wall deltas,
+summarized separately per repeat, were +0.855 us
+validation over envelope (positive in 44/64 cycles),
++4.184 us synthetic bookkeeping over validation
+(61/64), and +5.016 us actual GET over synthetic
+bookkeeping (59/64). Envelope over bare was positive
+in 60/64 cycles. The small validation increment
+is not stable at the within-cycle level, whereas
+synthetic representation and bookkeeping are more
+consistently measurable.
+
+**Drift caution:** repeat 1's bare baseline rose
+131.8% from first to last control (15.486 to
+35.892 us/call). The other repeats changed
++6.5%, +3.5% and +6.7%; transient cycle-level
+spikes still occurred. Linear interpolation by
+actual block midpoints reduces local drift, not
+all nonlinear scheduling and thermal variation.
+The earlier ~18.96 us GET-minus-bare observation
+and this ~14.17 us repeat-median result cannot
+be interpreted as a runtime speedup or stable
+reduction in production work.
+
+Windows CPU measurements across 600-call blocks
+are coarsely quantized and not reliable at the
+individual few-microsecond stage level; inferred
+other-thread increments sometimes become
+negative. Context-switch deltas near zero do
+not establish new scheduling boundaries.
+Representation/validation/bookkeeping stages
+are **synthetic approximations**. The worker
+uses a fake PGconn and simplified object,
+status, notices, lock, cache and error paths.
+They cannot isolate one real qpsycopg function
+as dominant or show that removing an operation
+would preserve semantics. No SQL query
+latency claim follows.
+
+**Decision: diagnostic COMPLETE, no runtime
+candidate accepted.** ``optimized01`` stays
+RETAIN; timed-vs-untimed SimpleQueue wait
+stays REJECT. No code outside docs changed
+and canonical benchmark v3 is untouched.
+No ``optimized02`` or acceptance benchmark
+is justified by this synthetic result.
+Detailed per-repeat results, drift and SHA
+of the locally supplied ZIP are in
+:doc:`qt-process-optimization-log`.
+
+Real qt-thread no-SQL GET path attribution -- complete
+------------------------------------------------------
+
+The Coordinator-authorised real-path diagnostic
+``qt-thread-real-get-profile-20261103-213627-044.zip``
+was captured on Windows Python 3.13.5,
+``feature/qt-process-pq`` at
+``1c11f6525bfc75e3db27aeeae65c0498a56df4cd``.
+It contains 4 independent subprocess repeats,
+12 short five-block cycles/repeat, 1200 real
+no-SQL GET status calls per block and an
+empty stderr log. All 48 cycles and twelve
+expected phase-call invariants passed:
+115,200 profiled and 172,800 unwrapped
+control GETs, excluding warmups.
+No production runtime or canonical v3
+benchmark code was changed.
+
+In each cycle two instrumented GET blocks
+were bracketed by three clean GET controls
+on a separate real qt-thread connection.
+The target connection used temporary
+local method clocks and queue observers
+with the original worker ``_run`` logic.
+Control-to-profiled differences therefore
+include **instrumentation and connection
+differences**, not removable runtime work.
+
+Clean, profiled and paired wall-time
+(above local interpolated clean controls)
+across independent repeats, us/GET::
+
+    repeat                         1       2       3       4
+    clean block median          30.999  30.266  30.079  29.878
+    profiled block median       50.752  49.063  49.178  48.248
+    paired profiled - clean     18.082  18.348  18.740  18.270
+    clean start/end drift       +2.51%  -4.25% +61.18%  -5.04%
+
+All 96 paired profiled blocks were positive.
+The independent-repeat median instrumentation
+difference is +18.309 us/GET (MAD 0.133 us).
+Repeat 3 had a severe +61.18% clean baseline
+drift, and multiple repeats had transient
+within-cycle spikes. Bracketing reduces
+linear drift but cannot eliminate
+nonstationary system scheduling effects.
+
+Inclusive wall-time medians across
+four pooled independent repeats, us/GET::
+
+    caller request                    50.906
+      _perform                        48.311
+        _dispatch                     38.412
+      _responseValue                   3.504
+        _restore                       0.991
+      _wire                            1.820
+    active worker _run turn           14.137
+      worker pool _handle              6.264
+        worker base _handle            3.965
+          worker _normalize           1.298
+      worker _connectionReady          0.816
+      worker _connectionBroken         1.018
+
+These durations overlap and include
+profiling overhead; the indentation
+does not imply an additive wall budget.
+In particular, dispatch includes
+waiting for the worker, while active
+_run-turn excludes idle waiting and
+response queue publication. The
+instrumented request's ~51 us wall
+exceeds the ~30 us unwrapped control,
+so attributing 38 us dispatch wall
+to production overhead would be wrong.
+
+**Windows CPU attribution is inadequate
+at individual method scale.** Across
+all four pooled repeats, worker
+handle/normalize/health-check methods
+and caller wire/restore/response-value
+recorded 0 us inclusive thread CPU
+despite nonzero wall-time. The
+worker turn yielded 0 or ~0.543 us CPU
+per GET, demonstrating coarse
+thread-clock quantization. The
+profiled-clean process CPU excess
+is about 13-20 us/GET but also
+includes instrumentation. Context
+switches differed by only ~0.007
+per call; no additional queue
+handoff was demonstrated.
+
+**Decision: diagnostic COMPLETE, NO
+ACTIONABLE RUNTIME TARGET.** The
+experiment correctly captured
+actual-code phase counts and
+nested wall intervals but found
+no defensible exclusive, avoidable
+operation whose removal preserves
+worker exit, close, errors,
+cancellation and public Psycopg
+semantics. The previously rejected
+timed/untimed response wait,
+worker-native wait, speculative
+WAIT prefetch and serialization/
+snapshot approaches remain rejected.
+``optimized01`` stays **RETAIN**.
+No speculative ``optimized02``, smoke
+or v3 acceptance benchmark should
+be initiated on this evidence.
+The optimization log records
+the local-only ZIP SHA256 and
+details of all repeats.
+
+Native PGresult result-boundary feasibility -- preflight pending
+----------------------------------------------------------------
+
+Independent Scouts led the Coordinator to select **INVESTIGATE** at
+``98a6ad178d03ff0ad94f1b28c6d3ddac6cd164a1``: a distinct,
+diagnostic-only, whole-boundary hypothesis. In the current
+qt-thread C-worker implementation, completed native PGresults are
+converted to ``ResultSnapshot``/``PackedValues``, transferred through
+two SimpleQueues, restored into synthetic PGresults, and decoded
+by a hybrid Python/native Transformer. A safe native-result handoff
+might avoid this *entire* boundary, but the effect is **unmeasured**.
+
+The source audit confirms that C native PGresult owns its
+``PGresult*`` and clears it through ``PQclear``, and that native
+C Transformer requires the C PGresult type. PostgreSQL's
+current libpq threading contract allows completed immutable
+results to transfer across threads, but not shared PGconn
+use. Borrowed notice callback results are specifically
+unsafe to transfer; preserve their immediate snapshots.
+The worker's completion-state/parameter checks depend on
+``ResultSnapshot``, so changing only the snapshot function
+would violate semantics. Native Transformer acceptance of
+the current synthetic-connection adaptation context remains
+an empirical gate, not a source-level assumption.
+
+Before performance work, the separate Windows preflight
+``tools/preflight_qt_thread_native_pgresult.ps1``
+runs ``tools/preflight_qt_thread_native_pgresult.py`` in
+a watchdog-isolated subprocess. It tests PGresult ownership
+across two queues, finished-connection lifetime,
+clear/destructor behavior, native-vs-hybrid Transformer
+decoding using one qt-thread cursor context, metadata,
+NULL/error/SQLSTATE and borrowed notice handling.
+The production runtime and benchmark v3 are unchanged.
+
+**Status: native access violation in first Windows preflight;
+performance A/B BLOCKED.** The archive
+``qt-thread-native-result-preflight-20261103-223124-116.zip``
+at HEAD ``dc25abe6`` reports the Python diagnostic's
+exit 2 because its child died with Windows status
+``3221225477`` (``0xC0000005``). It was not a
+watchdog timeout. Child stdout/stderr were empty,
+so no case or C operation can yet be identified.
+Neither native lifetime nor Transformer parity
+has been established. A native crash is a
+**hard safety gate**, not a performance result.
+
+The diagnostic script was subsequently amended
+**only for forensic observability**, adding
+``faulthandler``, flushed checkpoints before
+potentially dangerous native operations and
+capture of the last stage/extended stderr.
+No native operation, production runtime or v3
+benchmark changed.
+
+One watchdog-isolated forensic rerun is justified
+to discriminate a defect in the probe from an
+actual unsafe pointer/ownership operation.
+If the trace shows a real native blocker,
+**STOP** and document. If it reveals a probe
+defect, a minimal correction must be justified
+before reconsidering feasibility; absent a
+localized, safe explanation, do not repeat
+native crash exploration. The predeclared
+>=15 us process CPU/SELECT material-benefit
+screen is **not activated**; there are no
+valid speed/CPU observations.
+
+Second forensic preflight: diagnostic FATAL_ERROR decoder misuse
+------------------------------------------------------------------
+
+The second Windows ZIP
+``qt-thread-native-result-preflight-20261103-224615-903.zip``
+(SHA256
+``b476c81827bccc0d93e0b445ce2128290d9f7168b3834aaf5e66a92119fb4fcc``)
+was captured at HEAD ``9e5ddb54``. The 40-second
+watchdog did not fire, but the child exited with
+``0xC0000005``. Its ``results.json`` retained
+flushed stage markers and a Windows
+``faulthandler`` traceback, unlike the original
+unlocalized crash.
+
+The normal SELECT case **passed** the two-queue
+native C PGresult handoff, metadata parity,
+native/hybrid row decoding, double clear
+and garbage collection. The subsequent
+``SELECT 1 / 0`` case passed native/snapshot
+metadata and error SQLSTATE parity; then the
+**diagnostic probe** called
+``hybrid Transformer.load_rows(0, 0)``
+on the FATAL_ERROR result. The crash stack
+ended in ``psycopg/_transformer.py:84``
+via ``_bulkLoadRows``. The ordinary
+``BaseCursor._check_results()`` would have
+raised the SQL error **before** decoding rows.
+
+**Classification: preflight misuse, not
+demonstrated unsafe cross-thread ownership.**
+This is also **not** full native feasibility:
+notice callbacks, result lifetime after
+``PGconn.finish()`` and final-case cleanup
+did not complete. No performance data exist.
+
+A narrowly scoped correction in
+``tools/preflight_qt_thread_native_pgresult.py``
+(commit ``54bccf73``) now decodes only
+tuple-bearing ``TUPLES_OK`` results and
+checks error/command results without row
+decoding. End-of-run invariants explicitly
+require SELECT and finished-connection
+native/hybrid row parity, error SQLSTATE
+parity, and no row decoding of DO notices.
+Production runtime, C extensions and
+canonical benchmark v3 remain unchanged.
+
+**Status: corrected preflight Windows result
+PENDING; full SELECT A/B still BLOCKED.**
+If the corrected standalone feasibility
+checks pass, a separate same-SQL
+whole-boundary performance A/B remains
+necessary and still has a >=15 us paired
+process CPU/SELECT materiality screen.
+
+Native PGresult result-boundary A/B -- drift-gated REJECT
+---------------------------------------------------------
+
+The corrected standalone native C PGresult safety
+preflight remains **PASS** for the bounded ownership,
+NULL/error/notice and C/hybrid Transformer cases
+(see :doc:`qt-process-optimization-log`).
+That result is **not** full production semantic
+parity. The subsequent whole-result-boundary A/B
+was measured at HEAD
+``f19aafcee7d07441e704d22567f0e4abae780c74``.
+Evidence ZIP:
+``qt-thread-native-boundary-ab-20261103-230648-799.zip``
+(SHA256
+``997eb072dbaf3a148ef886fe3a353e1ddd16c6ca0a028605d7eb04855109f6c3``).
+ZIP CRC passes; manifest/results are valid;
+``stderr.log`` is empty. No watchdog,
+SQL mismatch or per-block failure was
+reported.
+
+All four fresh Windows Python 3.13.5
+subprocesses completed 12 balanced
+five-block cycles/repeat, 1000 queries
+per block. This is **240,000 actual
+SELECT 1 operations** (plus warmup)
+and 96 locally paired comparisons.
+The control and native paths share
+the same single worker-owned C PGconn,
+``exec_params(b"SELECT 1", ())``
+without parameters, two SimpleQueue
+handoffs, caller qt-thread cursor
+AdaptContext, fresh Transformer and
+verified decoded output ``(1,)``.
+The difference is completed result
+snapshot/``PackedValues``/synthetic
+PGresult/hybrid decoding versus owned
+C PGresult/native Transformer.
+
+**Paired repeat medians**, snapshot
+minus native (positive favors native),
+in microseconds per query::
+
+    repeat        process CPU      wall-time       CPU positive pairs
+       1             +31.276        +35.380                16/24
+       2             +54.671        +51.540                20/24
+       3             +29.817        +77.012                17/24
+       4             +38.567        +25.192                18/24
+
+Median of the four independently
+replicated CPU differences:
+**+34.921 us/query**,
+between-repeat MAD 4.375 us,
+range +29.817..+54.671.
+For wall difference:
+**+43.460 us/query**,
+MAD 13.174 us,
+range +25.192..+77.012.
+The per-pair CPU difference was
+positive in **71/96**, wall in
+**72/96**. Within-repeat paired
+process CPU MAD was 43.569,
+34.974, 30.117, 42.770 us/query;
+thus substantial cycle-level
+variation is hidden by the
+positive repeat medians.
+Context-switch difference was
+near zero (+0.0091 median
+switches/call across repeats).
+
+**Temporal drift violates the
+predeclared material-benefit gate.**
+First-to-last three-cycle median
+wall changes by mode::
+
+    repeat          snapshot         native
+       1             -19.59%          -17.06%
+       2              -2.08%           +3.41%
+       3             +52.64%          +33.87%
+       4             +55.18%          +16.29%
+
+Three of four repeats breach
+the 15% mode-specific drift
+ceiling. Alternating
+``S-N-S-N-S`` / ``N-S-N-S-N``
+blocks and timestamp-interpolated
+opposite-mode controls handle
+approximately linear local drift;
+they cannot eliminate strong
+time-varying contention.
+Windows process CPU clock
+quantization adds uncertainty.
+
+**Predeclared screen result:
+FAIL; decision: REJECT.**
+The four independent CPU median
+differences are positive,
+three or more exceed +15 us,
+and their median exceeds
+3x between-repeat MAD. However,
+the simultaneous **no >15% wall
+drift** requirement fails.
+The machine-reported
+``predeclared_screen.passes=false``
+agrees with this decision.
+Do not revise that condition
+after seeing a promising median.
+
+This **does not** disprove native
+result handoff feasibility,
+which passed earlier. It says
+this one result-boundary run
+does not establish a sufficiently
+stable, material production
+optimization target. Moreover,
+the benchmark performs shared
+**synchronous native PQexecParams**
+and omits the complete asynchronous
+production qt-thread worker
+health/cache, notices/errors,
+COPY/pipeline and cancellation
+semantics. It is not an estimate
+of end-to-end SQL speedup and
+does not replace canonical
+paired benchmark v3.
+
+**No production runtime, C
+extension, benchmark v3 or
+``optimized01`` changes were made.**
+``optimized01`` remains RETAIN,
+and no ``optimized02``
+candidate is authorised.
+
+Next work
+---------
+
+#. Send the **completed negative
+   diagnostic checkpoint** to
+   existing ``00 Coordinator``
+   for independent review.
+#. Keep the positive paired
+   CPU direction and the
+   failing drift/noise evidence
+   together. No repeated native
+   boundary A/B solely to
+   obtain more favorable
+   timings, and no relaxations
+   of the original gate.
+#. Do not silently pivot to
+   snapshot micro-optimisations,
+   untimed queue waits,
+   native worker socket
+   waiting, GET/echo or
+   speculative WAIT prefetch.
+#. Any later evidence-based
+   runtime architecture
+   candidate must preserve
+   worker lifetime/error,
+   close, cancellation, COPY,
+   pipeline, multi-result,
+   notices and parameter cache
+   semantics, and pass
+   unchanged v3 and qt-thread
+   acceptance guardrails.

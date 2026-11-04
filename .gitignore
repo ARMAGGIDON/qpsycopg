@@ -12,6 +12,10 @@ __pycache__/
 .coverage
 htmlcov
 .idea
+/test-results/
+/.env
+/.env.*
+!/.env.example
 
 .eggs/
 dist/

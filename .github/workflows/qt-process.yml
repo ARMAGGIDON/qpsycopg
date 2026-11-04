@@ -1,0 +1,230 @@
+name: Qt process backend
+
+on:
+  pull_request:
+    paths:
+      - "psycopg/**"
+      - "tools/smoke_qt_process.py"
+      - "tools/validate_qt_backend_config_windows.py"
+      - ".github/workflows/qt-process.yml"
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install libpq and qpsycopg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpq5
+          python -m pip install --upgrade pip
+          python -m pip install -e './psycopg[qt]'
+
+      - name: Test import-time backend configuration
+        run: |
+          python -m pip install pytest
+          PYTHONPATH="$PWD/psycopg" python -m pytest tests/test_backend_config.py -q
+
+      - name: Smoke test qt-thread backend
+        env:
+          PSYCOPG_IMPL: qt-thread
+          QPSYCOPG_WORKER_IMPL: python
+        run: >-
+          python tools/smoke_qt_thread.py
+          'postgresql://postgres:postgres@127.0.0.1:5432/postgres'
+
+      - name: Smoke test qt-process backend
+        env:
+          PSYCOPG_IMPL: qt-process
+          QPSYCOPG_WORKER_IMPL: python
+        run: >-
+          python tools/smoke_qt_process.py
+          'postgresql://postgres:postgres@127.0.0.1:5432/postgres'
+
+      - name: Verify startup FATAL preservation (upstream and Qt Python workers)
+        env:
+          QPSYCOPG_CONNECT_ERROR_DSN: "postgresql://postgres:postgres@127.0.0.1:5432/postgres"
+          QPSYCOPG_WORKER_IMPL: python
+        run: |
+          for impl in python qt-thread qt-process; do
+            echo "Startup-error contract: $impl"
+            PYTHONPATH="$PWD/psycopg" PSYCOPG_IMPL="$impl" python -m pytest -q tests/test_qt_failed_connection.py
+          done
+
+      - name: Guard worker startup and established-session fatal state
+        run: PYTHONPATH="$PWD/psycopg" python -m pytest -q tests/pq/test_qt_worker_startup.py
+
+  windows-dll-bootstrap:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Verify Windows DLL bootstrap
+        run: python tools/validate_qt_backend_config_windows.py
+
+  docs-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install Sphinx and documentation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgeos-dev libpq5
+          python -m pip install -e './psycopg[docs,qt]' ./psycopg_pool
+      - name: Build documentation as warnings-as-errors
+        env:
+          QPSYCOPG_WORKER_IMPL: python
+        run: sphinx-build -W -T -b html docs docs/_build/html
+
+  windows-libpq-connection:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install qpsycopg with Qt support
+        run: python -m pip install -e "./psycopg[qt]"
+      - name: Connect to Windows PostgreSQL with native libpq
+        shell: pwsh
+        run: |
+          $service = Get-CimInstance Win32_Service |
+            Where-Object { $_.Name -like 'postgresql*' } |
+            Select-Object -First 1
+          if (-not $service) { throw 'No PostgreSQL Windows service found' }
+          Set-Service -Name $service.Name -StartupType Manual
+          if ((Get-Service -Name $service.Name).Status -ne 'Running') {
+            Start-Service -Name $service.Name
+          }
+          $exe = [regex]::Match($service.PathName, '^"([^"]+)"|^(\S+)')
+          if (-not $exe.Success) { throw "Unknown PostgreSQL service path" }
+          $executable = if ($exe.Groups[1].Success) {
+            $exe.Groups[1].Value
+          } else {
+            $exe.Groups[2].Value
+          }
+          $env:PSYCOPG_PG_ROOT = Split-Path (Split-Path $executable -Parent) -Parent
+          $env:QPSYCOPG_ENV_FILE = Join-Path $env:RUNNER_TEMP 'absent-qpsycopg.env'
+          $env:PYTHONPATH = Join-Path (Get-Location).Path 'psycopg'
+          $env:PSYCOPG_IMPL = 'python'
+          python -c "import psycopg; assert psycopg.pq.__impl__ == 'python'; c = psycopg.connect('host=127.0.0.1 dbname=postgres'); assert c.execute('select 1').fetchone() == (1,); c.close()"
+          if ($LASTEXITCODE -ne 0) { throw "native libpq Python backend failed" }
+          $env:PSYCOPG_IMPL = 'qt-thread'
+          $env:QPSYCOPG_WORKER_IMPL = 'python'
+          python -c "import psycopg; assert psycopg.pq.__impl__ == 'qt-thread'; c = psycopg.connect('host=127.0.0.1 dbname=postgres'); assert c.execute('select 1').fetchone() == (1,); c.close()"
+          if ($LASTEXITCODE -ne 0) { throw "Windows qt-thread native libpq worker failed" }
+
+  # Independent of the existing Python-worker Windows connection smoke:
+  # build the same C wheel as the upstream Windows c-matrix, then run
+  # the actual qt-thread semantic smoke with its native worker selected.
+  windows-c-worker-smoke:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Expose vcpkg build paths and cache settings
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const path = require('path')
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+            core.addPath(path.join(process.env.VCPKG_INSTALLATION_ROOT, 'installed/x64-windows-release/lib'));
+            core.addPath(path.join(process.env.VCPKG_INSTALLATION_ROOT, 'installed/x64-windows-release/bin'));
+
+      - name: Provision libpq and pg_config for C wheel
+        shell: pwsh
+        env:
+          VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+        run: .\tools\ci\wheel_win32_before_build.bat
+
+      - name: Build and repair compiled psycopg_c wheel
+        shell: bash
+        run: |
+          python -m pip wheel -v -w ./psycopg_c/dist/ ./psycopg_c/
+          delvewheel repair --no-mangle "libiconv-2.dll;libwinpthread-1.dll" \
+            -w ./wheelhouse/ psycopg_c/dist/psycopg*.whl
+
+      - name: Install qpsycopg Qt and compiled C wheel
+        shell: bash
+        run: python -m pip install -e './psycopg[qt]' ./wheelhouse/psycopg_c*.whl pytest
+
+      - name: Verify compiled worker and run full qt-thread smoke
+        shell: pwsh
+        env:
+          PSYCOPG_IMPL: qt-thread
+          QPSYCOPG_WORKER_IMPL: c
+        run: |
+          $service = Get-CimInstance Win32_Service |
+            Where-Object { $_.Name -like 'postgresql*' } |
+            Select-Object -First 1
+          if (-not $service) { throw 'No PostgreSQL Windows service found' }
+          Set-Service -Name $service.Name -StartupType Manual
+          if ((Get-Service -Name $service.Name).Status -ne 'Running') {
+            Start-Service -Name $service.Name
+          }
+          $env:QPSYCOPG_ENV_FILE = Join-Path $env:RUNNER_TEMP 'absent-qpsycopg.env'
+          $env:PYTHONPATH = Join-Path (Get-Location).Path 'psycopg'
+          $evidence = Join-Path $env:RUNNER_TEMP 'qt-thread-c-worker-evidence.log'
+          python -c 'import os, pathlib, psycopg, psycopg_c.pq as c_pq; from psycopg.pq import pq_qt_thread as qt, _qt_process_worker as worker, _qt_process_worker_pool as pool; assert psycopg.pq.__impl__ == "qt-thread"; assert os.environ["QPSYCOPG_WORKER_IMPL"] == "c"; assert qt._workerPq is c_pq and worker.pq is c_pq and pool.pq is c_pq; assert pathlib.Path(c_pq.__file__).suffix.lower() == ".pyd", c_pq.__file__; print("COMPILED_C_WORKER_VALIDATED", c_pq.__file__, flush=True)' 2>&1 | Tee-Object -FilePath $evidence
+          if ($LASTEXITCODE -ne 0) { throw 'Native C worker assertion failed' }
+          python tools/smoke_qt_thread.py 'host=127.0.0.1 dbname=postgres' 2>&1 |
+            Tee-Object -FilePath $evidence -Append
+          if ($LASTEXITCODE -ne 0) { throw 'Windows C-worker qt-thread smoke failed' }
+
+      - name: Verify failed-connect PostgreSQL FATAL with Windows C process worker
+        shell: pwsh
+        env:
+          PSYCOPG_IMPL: qt-process
+          QPSYCOPG_WORKER_IMPL: c
+          QPSYCOPG_CONNECT_ERROR_DSN: "host=127.0.0.1 dbname=postgres"
+        run: |
+          $env:QPSYCOPG_ENV_FILE = Join-Path $env:RUNNER_TEMP 'absent-qpsycopg.env'
+          $env:PYTHONPATH = Join-Path (Get-Location).Path 'psycopg'
+          $evidence = Join-Path $env:RUNNER_TEMP 'qt-thread-c-worker-evidence.log'
+          python -m pytest -q tests/test_qt_failed_connection.py 2>&1 |
+            Tee-Object -FilePath $evidence -Append
+          if ($LASTEXITCODE -ne 0) { throw 'Windows C-worker startup FATAL regression failed' }
+
+      - name: Preserve Windows C-worker smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-qt-thread-c-worker-smoke
+          path: ${{ runner.temp }}/qt-thread-c-worker-evidence.log
+          if-no-files-found: warn

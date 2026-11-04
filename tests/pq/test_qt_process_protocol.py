@@ -9,22 +9,6 @@ from datetime import date
 
 import pytest
 
-from psycopg.pq._qt_process_protocol import (
-    FastExecuteFrame,
-    Operation,
-    PackedValues,
-    Request,
-    Response,
-    ResultSnapshot,
-    SendSnapshot,
-    _FAST_REQUEST_FLAG,
-    _FAST_RESPONSE_FLAG,
-    _serialize,
-    _wireValue,
-    recvFrame,
-    sendFrame,
-)
-
 _CASES = (
     (),
     (b"\x00\xff",),
@@ -34,7 +18,15 @@ _CASES = (
 )
 
 
-def _pack(cells):
+@pytest.fixture
+def protocol():
+    # Import only when selected: pool-compatibility jobs install older Psycopg.
+    from psycopg.pq import _qt_process_protocol
+
+    return _qt_process_protocol
+
+
+def _pack(cells, protocol):
     data = bytearray()
     offsets = [0]
     nulls = bytearray((len(cells) + 7) // 8)
@@ -44,7 +36,7 @@ def _pack(cells):
         else:
             data.extend(value)
         offsets.append(len(data))
-    return PackedValues(
+    return protocol.PackedValues(
         bytes(data),
         struct.pack(f"={len(offsets)}Q", *offsets),
         bytes(nulls),
@@ -52,8 +44,8 @@ def _pack(cells):
     )
 
 
-def _snapshot(values):
-    return ResultSnapshot(
+def _snapshot(values, protocol):
+    return protocol.ResultSnapshot(
         status=2,
         errorMessage=b"",
         errorFields=(),
@@ -70,8 +62,8 @@ def _snapshot(values):
 
 
 @pytest.mark.parametrize("cells", _CASES, ids=("zero", "one", "four", "six", "nine"))
-def test_packed_values_logical_access(cells):
-    values = _pack(cells)
+def test_packed_values_logical_access(cells, protocol):
+    values = _pack(cells, protocol)
     assert len(values) == len(cells)
     assert bool(values) == bool(cells)
     assert tuple(values[i] for i in range(len(cells))) == cells
@@ -89,41 +81,40 @@ def test_packed_values_logical_access(cells):
 
 
 @pytest.mark.parametrize("cells", _CASES, ids=("zero", "one", "four", "six", "nine"))
-def test_packed_values_physical_fields(cells):
-    values = _pack(cells)
+def test_packed_values_physical_fields(cells, protocol):
+    values = _pack(cells, protocol)
     physical = (values.data, values.offsets, values.nulls, values.count)
     assert tuple(values) == physical
     assert list(values) == list(physical)
     assert len(tuple(values)) == 4  # Even when there are no logical cells.
     restored = pickle.loads(pickle.dumps(values))
-    assert isinstance(restored, PackedValues)
+    assert isinstance(restored, protocol.PackedValues)
     assert tuple(restored) == physical
     assert restored[:] == cells
 
 
 @pytest.mark.parametrize("cells", _CASES, ids=("zero", "one", "four", "six", "nine"))
-def test_packed_fast_response_round_trip(cells):
-    values = _pack(cells)
-    response = Response(
-        0, SendSnapshot(("done", (_snapshot(values),), ()), 0, 0, 1, 0, b"UTF8")
-    )
-    wire, flags = _wireValue(response)
-    assert flags == _FAST_RESPONSE_FLAG
+def test_packed_fast_response_round_trip(cells, protocol):
+    values = _pack(cells, protocol)
+    payload = ("done", (_snapshot(values, protocol),), ())
+    response = protocol.Response(0, protocol.SendSnapshot(payload, 0, 0, 1, 0, b"UTF8"))
+    wire, flags = protocol._wireValue(response)
+    assert flags == protocol._FAST_RESPONSE_FLAG
     assert wire[0][5] == tuple(values)  # Four fields, not the logical cells.
-    assert _serialize(wire, flags).startswith(b"M")
+    assert protocol._serialize(wire, flags).startswith(b"M")
 
     sender, receiver = socket.socketpair()
     with sender, receiver:
-        sendFrame(sender, response)
-        decoded = recvFrame(receiver)
+        protocol.sendFrame(sender, response)
+        decoded = protocol.recvFrame(receiver)
 
-    assert isinstance(decoded, SendSnapshot)
+    assert isinstance(decoded, protocol.SendSnapshot)
     assert decoded.status == 1
     assert decoded.clientEncoding == b"UTF8"
     state, results, notices = decoded.value
     assert state == "done" and notices == () and len(results) == 1
     result = results[0]
-    assert isinstance(result.values, PackedValues)
+    assert isinstance(result.values, protocol.PackedValues)
     assert result.rowCount == len(cells)
     assert tuple(result.values[index] for index in range(len(cells))) == cells
     assert result.values[:] == cells
@@ -134,19 +125,19 @@ def test_packed_fast_response_round_trip(cells):
     [(b"select 1", b"M"), (date(2026, 11, 4), b"P")],
     ids=("marshal", "pickle-fallback"),
 )
-def test_fast_request_serialization(argument, marker):
+def test_fast_request_serialization(argument, marker, protocol):
     # A picklable date forces the non-marshal fast-frame fallback.
-    frame = FastExecuteFrame(1.0, "send_query", (argument,), ())
-    wire, flags = _wireValue(frame)
-    assert flags == _FAST_REQUEST_FLAG
-    assert _serialize(wire, flags).startswith(marker)
+    frame = protocol.FastExecuteFrame(1.0, "send_query", (argument,), ())
+    wire, flags = protocol._wireValue(frame)
+    assert flags == protocol._FAST_REQUEST_FLAG
+    assert protocol._serialize(wire, flags).startswith(marker)
 
     sender, receiver = socket.socketpair()
     with sender, receiver:
-        sendFrame(sender, frame)
-        decoded = recvFrame(receiver)
+        protocol.sendFrame(sender, frame)
+        decoded = protocol.recvFrame(receiver)
 
-    assert isinstance(decoded, Request)
-    assert decoded.operation == Operation.CALL
+    assert isinstance(decoded, protocol.Request)
+    assert decoded.operation == protocol.Operation.CALL
     assert decoded.member == "qpsycopg_execute_pending"
     assert decoded.args == (1.0, "send_query", (argument,), ())

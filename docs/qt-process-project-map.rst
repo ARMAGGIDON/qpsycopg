@@ -257,8 +257,8 @@ Validation and benchmark map
     Produces paired ratios, MAD/range, host drift, architecture deltas and process
     inventory.
 
-``tools/profile_qt_thread_short_query.py`` and
-``tools/profile_qt_thread_short_query.ps1``
+``tools/profile_qt_thread_short_query.py``
+    Companion runner: ``tools/profile_qt_thread_short_query.ps1``.
     Diagnostic CPU attribution: upstream/fork direct/qt-thread warm SELECT
     controls; separate process/caller CPU; worker dispatch/wait phase timers;
     synthetic no-SQL status request as a control for handoff cost. The earlier
@@ -268,8 +268,8 @@ Validation and benchmark map
     thread request/response handoff as the largest fixed non-SQL phase.
     Production runtime and canonical paired v3 workload are unchanged.
 
-``tools/bench_qt_thread_echo_baseline.py`` and
-``tools/bench_qt_thread_echo_baseline.ps1``
+``tools/bench_qt_thread_echo_baseline.py``
+    Companion runner: ``tools/bench_qt_thread_echo_baseline.ps1``.
     Diagnostic-only paired comparison of a minimal two-SimpleQueue echo
     against the existing no-SQL qt-thread PGconn status GET path. Uses timed
     response waits in both cases, interleaved blocks, wall/CPU/context-switch
@@ -280,8 +280,8 @@ Validation and benchmark map
     specific allocation is proven removable. Runtime and benchmark v3
     are unchanged.
 
-``tools/bench_qt_thread_enriched_echo.py`` and
-``tools/bench_qt_thread_enriched_echo.ps1``
+``tools/bench_qt_thread_enriched_echo.py``
+    Companion runner: ``tools/bench_qt_thread_enriched_echo.ps1``.
     Coordinator-approved diagnostic-only progressively enriched queue echo:
     bare token, real Request/Response NamedTuple, validation, synthetic worker
     bookkeeping, and real qt-thread no-SQL GET. Independent subprocess runs,
@@ -291,8 +291,8 @@ Validation and benchmark map
     but one repeat has severe drift and no removable real production
     bottleneck was isolated. Runtime and benchmark v3 remain unchanged.
 
-``tools/profile_qt_thread_get_real_path.py`` and
-``tools/profile_qt_thread_get_real_path.ps1``
+``tools/profile_qt_thread_get_real_path.py``
+    Companion runner: ``tools/profile_qt_thread_get_real_path.ps1``.
     Coordinator-approved real qt-thread no-SQL GET status diagnostic.
     One untouched control connection and one instrumented connection per
     independent subprocess; short clean-profiled-clean-profiled-clean
@@ -303,8 +303,8 @@ Validation and benchmark map
     all phase counts valid, but probe overhead was ~18 us per GET and
     no real semantically removable bottleneck was identified.
 
-``tools/preflight_qt_thread_native_pgresult.py`` and
-``tools/preflight_qt_thread_native_pgresult.ps1``
+``tools/preflight_qt_thread_native_pgresult.py``
+    Companion runner: ``tools/preflight_qt_thread_native_pgresult.ps1``.
     Diagnostic-only, watchdog-protected owned native C PGresult
     cross-thread SimpleQueue preflight. Compares metadata, NULLs,
     SQLSTATE and native C versus current hybrid Transformer using
@@ -312,8 +312,8 @@ Validation and benchmark map
     PGresult.clear/destructor and borrowed notice safeguards.
     Windows pass/fail results are pending. Does not change runtime or v3.
 
-``tools/bench_qt_thread_native_result_boundary.py`` and
-``tools/bench_qt_thread_native_result_boundary.ps1``
+``tools/bench_qt_thread_native_result_boundary.py``
+    Companion runner: ``tools/bench_qt_thread_native_result_boundary.ps1``.
     Post-preflight diagnostic-only same-SQL warmed SELECT 1 complete
     result-boundary A/B. One native worker/PGconn and the same PQexecParams
     work and two SimpleQueues for both paths: current snapshot/synthetic/

@@ -74,6 +74,9 @@ jobs:
             PYTHONPATH="$PWD/psycopg" PSYCOPG_IMPL="$impl" python -m pytest -q tests/test_qt_failed_connection.py
           done
 
+      - name: Guard worker startup and established-session fatal state
+        run: PYTHONPATH="$PWD/psycopg" python -m pytest -q tests/pq/test_qt_worker_startup.py
+
   windows-dll-bootstrap:
     runs-on: windows-latest
     timeout-minutes: 10
@@ -179,7 +182,7 @@ jobs:
 
       - name: Install qpsycopg Qt and compiled C wheel
         shell: bash
-        run: python -m pip install -e './psycopg[qt]' ./wheelhouse/psycopg_c*.whl
+        run: python -m pip install -e './psycopg[qt]' ./wheelhouse/psycopg_c*.whl pytest
 
       - name: Verify compiled worker and run full qt-thread smoke
         shell: pwsh
@@ -203,6 +206,20 @@ jobs:
           python tools/smoke_qt_thread.py 'host=127.0.0.1 dbname=postgres' 2>&1 |
             Tee-Object -FilePath $evidence -Append
           if ($LASTEXITCODE -ne 0) { throw 'Windows C-worker qt-thread smoke failed' }
+
+      - name: Verify failed-connect PostgreSQL FATAL with Windows C process worker
+        shell: pwsh
+        env:
+          PSYCOPG_IMPL: qt-process
+          QPSYCOPG_WORKER_IMPL: c
+          QPSYCOPG_CONNECT_ERROR_DSN: "host=127.0.0.1 dbname=postgres"
+        run: |
+          $env:QPSYCOPG_ENV_FILE = Join-Path $env:RUNNER_TEMP 'absent-qpsycopg.env'
+          $env:PYTHONPATH = Join-Path (Get-Location).Path 'psycopg'
+          $evidence = Join-Path $env:RUNNER_TEMP 'qt-thread-c-worker-evidence.log'
+          python -m pytest -q tests/test_qt_failed_connection.py 2>&1 |
+            Tee-Object -FilePath $evidence -Append
+          if ($LASTEXITCODE -ne 0) { throw 'Windows C-worker startup FATAL regression failed' }
 
       - name: Preserve Windows C-worker smoke evidence
         if: always()

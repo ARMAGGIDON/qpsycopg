@@ -80,7 +80,8 @@ def test_failed_startup_keeps_error_readable(monkeypatch, worker_module, startup
     responses, remaining, conn = _run_fake_worker(
         monkeypatch, worker_module, getattr(Operation, startup), successful=False
     )
-    assert [response.requestId for response in responses] == [1, 2, 3, 4, 5] if startup == "CONNECT_START" else [1, 3, 4, 5]
+    expected = [1, 2, 3, 4, 5] if startup == "CONNECT_START" else [1, 3, 4, 5]
+    assert [response.requestId for response in responses] == expected
     assert responses[-3].value == conn.error_message
     assert not remaining
     assert conn.finished

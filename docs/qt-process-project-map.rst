@@ -817,8 +817,139 @@ Coordinator independent lint triage and PackedValues decision
   ``optimized02``. Coordinator context:
   CAUTION; handoff snapshot remains recoverable.
 
+Coordinator emergency decision -- failed database connection error propagation
+------------------------------------------------------------------------------
+
+* **User-reported correctness regression / observed state:** user tried
+  to connect to a PostgreSQL server using a nonexistent database and got
+  ``qpsycopg worker process disconnected`` rather than the underlying
+  PostgreSQL ``FATAL: database ... does not exist`` message.
+  This is a **user reproduction**, not yet a standalone CI reproduction.
+  Existing ``feature/qt-process-pq`` HEAD observed at
+  ``7f57b932f0424f223225b794a6b2bca652883bb5``.
+  No credentials, live server trace or local worktree were inspected.
+* **Source-level hypothesis, HIGH PRIORITY:** upstream
+  ``generators.connect()`` needs to retrieve
+  ``PGconn.get_error_message()`` after
+  ``connect_poll()`` returns FAILED (or initial
+  status is BAD). In ``_qt_process_worker.Worker.run()``
+  and ``_qt_process_worker_pool.Worker.run()``,
+  ``_connectionBroken()`` unconditionally stops
+  the worker after detecting ``ConnStatus.BAD``.
+  The reply to the failing poll can arrive, but
+  the next parent ``error_message`` GET encounters
+  a closed worker and ``pq_qt_process._Transport.request()``
+  replaces the database/server failure with
+  ``qpsycopg worker process disconnected``.
+  Contrast ``pq_qt_thread._Transport._connectionReady()``:
+  it intentionally defers fatal-BAD worker shutdown
+  until connection establishment has succeeded.
+  The exact failing Qt mode and all variants must
+  still be confirmed by a bounded reproduction.
+* **Coordinator decision: PREEMPT / critical correctness.**
+  The immediately preceding permission for a narrow
+  PyPy ``PackedValues`` fix is **PAUSED, NOT REVOKED**
+  until this connect-error loss is resolved. The user
+  has not forwarded the preceding PyPy work order.
+  No second implementation owner or new Scout.
+  Existing ``11 Implementation — continuation``
+  exclusively owns the next bounded stage.
+* **Next action: reproducer first, then narrow fix.**
+  Use an accessible real PostgreSQL server (GitHub
+  CI/local test DB), a deliberately nonexistent
+  database name, ``PSYCOPG_IMPL=python`` as upstream
+  comparison, and ``qt-process`` with worker
+  ``python`` plus ``c`` where available.
+  Exercise sync ``Connection.connect`` and
+  async ``AsyncConnection.connect``; add
+  ``qt-thread`` as a control. Capture exception
+  type, exact PostgreSQL message, cause chain,
+  worker state and reconnect/cleanup behavior.
+  Do not leak credentials in test/log output.
+* **Fix scope / hard invariants:** preserve normal
+  ``psycopg.OperationalError`` and server-derived
+  ``FATAL`` details on startup failure. Keep
+  failed-startup ``PGconn`` inspectable long enough
+  to read status and error message and finish it,
+  without permitting stale connections, hangs,
+  or accidental reuse. Preserve fatal disconnect
+  handling **after a successfully established**
+  connection, worker lifetime/recycle and healthy
+  worker recovery. Prefer a minimal connection-ready
+  lifecycle gate aligned with already retained
+  ``qt-thread`` semantics, not protocol
+  redesign, error-string replacement or
+  broad worker shutdown changes.
+* **Validation:** failing-before/fixed-after
+  regression test for nonexistent database;
+  at least one other bad-startup scenario
+  if practical; ordinary success and
+  fatal-after-connect guardrails; targeted
+  Qt process/thread smoke and Windows C-worker
+  smoke where applicable. Inspect triggered
+  CI and separate known PyPy ``PackedValues``
+  red jobs / free-threaded pool-proxy timeout
+  from new regressions. No changes to
+  benchmark v3, performance algorithms or
+  ``optimized01``; no ``optimized02``.
+  If evidence contradicts the hypothesis,
+  diagnose from captured first exception
+  and worker logs before broadening scope.
+* **Process / routing:** finish the complete
+  test/fix/CI cycle within ``11 Implementation —
+  continuation`` without intermediary
+  Coordinator ping-pong. Escalate only if
+  a genuinely broader lifecycle redesign
+  is necessary or after the completed
+  correctness milestone. Resume PyPy task
+  only after this issue's decision/review.
+  Coordinator wrote no production source.
+
 Immediate next work
 -------------------
+
+#. **URGENT USER-REPORTED CORRECTNESS REGRESSION:
+   startup failure hides PostgreSQL error.**
+   User connected to a nonexistent database
+   and saw ``qpsycopg worker process disconnected``,
+   not the server's ``database ... does not exist``
+   detail. Treat as **P0 investigation priority**
+   (reported, source-supported, reproduction
+   still required). Parent
+   ``generators.connect()`` needs to read
+   failed-startup ``PGconn.error_message``
+   after ``connect_poll`` returns FAILED;
+   the process worker's unconditional
+   BAD-status shutdown likely cuts off
+   that second request. ``qt-thread``
+   already gates BAD handling on successful
+   connection establishment.
+#. **NEXT OWNER: existing ``11 Implementation —
+   continuation``, sole implementation writer.**
+   Verify with a real PostgreSQL server and a
+   deliberately missing database; compare
+   upstream Python and ``qt-process``,
+   sync/async, worker Python/C where supported,
+   with ``qt-thread`` as control. Add
+   failing regression coverage, make the
+   **smallest lifecycle correction** and
+   validate server error propagation and
+   established-session fatal handling.
+   Own normal test/CI iterations; no
+   premature Coordinator handoff or Scout.
+#. **PREEMPT prior PyPy PackedValues task.**
+   The approved narrow PyPy field-access fix
+   is **PAUSED**, not cancelled, until the
+   user-reported connect-error blocker is
+   handled. Do not silently implement both
+   corrections in one stage. Preserve existing
+   PyPy failures as known test evidence.
+   Other historical actions below are
+   superseded. No wire/protocol rewrite,
+   runtime optimization, ``optimized02``,
+   benchmark-v3 or unrelated lint/pool changes.
+   ``optimized01`` RETAIN; native-result
+   boundary diagnostic REJECT.
 
 #. **Coordinator PyPy correctness review COMPLETE:
    INVESTIGATE / one narrow runtime correction AUTHORIZED.**

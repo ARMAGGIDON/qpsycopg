@@ -905,51 +905,99 @@ Coordinator emergency decision -- failed database connection error propagation
   only after this issue's decision/review.
   Coordinator wrote no production source.
 
+Implementation failed-connect FATAL preservation -- correctness checkpoint
+--------------------------------------------------------------------------
+
+* **Owner/base:** sole Implementation owner: existing
+  ``11 Implementation — continuation``. Branch
+  ``feature/qt-process-pq``, Coordinator base
+  ``a7b14e2511148b9f4371b928d3f55609cd54ed78``.
+* **Pre-fix real PostgreSQL reproduction:** PostgreSQL 18,
+  Qt workflow ``41867614797``, job ``126705837271``:
+  upstream Python and qt-thread Python controls
+  both passed 2/2 sync/async missing-database tests.
+  qt-process Python worker failed both: returned
+  ``qpsycopg worker process disconnected`` although
+  server logs contained the missing-database
+  ``FATAL`` detail. Initial pytest monorepo path
+  issue was corrected before the real comparison.
+* **Root cause:** plain ``_qt_process_worker.Worker.run``
+  and pooled ``_qt_process_worker_pool.Worker.run``
+  shut down on ``ConnStatus.BAD`` before a successful
+  connection. Parent ``generators._connect`` needed
+  to send a subsequent ``GET error_message`` and
+  ``finish``; premature worker shutdown caused EOF.
+* **Correction:** ``64affa2736a95a60d0df2cf2dc685f61de9769e6``
+  adds a connection-ready lifecycle gate for start,
+  blocking connect, connect_poll and finish.
+  ``26f4327e3f9195f5a07d6e168c456454319ab7a0``
+  applies it in the pooled worker loop. Failed
+  startup remains readable through cleanup.
+  After successful connect, fatal BAD still
+  terminates the worker. Genuine worker crashes
+  still propagate transport errors. No new wire
+  representation or replacement error text.
+* **Tests:** ``tests/test_qt_failed_connection.py``
+  tests sync/async PostgreSQL FATAL and reconnect;
+  ``tests/pq/test_qt_worker_startup.py`` has six
+  plain/pooled state-machine cases (failed
+  CONNECT_START/direct CONNECT; fatal after ready).
+  CI checks upstream Python, qt-thread Python,
+  qt-process Python and Windows compiled C worker.
+* **Acceptance evidence:** GitHub Qt workflow
+  ``41868553820`` on ``69b863eb`` SUCCESS:
+  Linux actual-server tests 2/2 per backend,
+  lifecycle unit tests 6/6, both full Qt smoke
+  scripts PASS, Windows Python/libpq and DLL PASS,
+  strict Sphinx PASS, compiled C .pyd verified,
+  Windows qt-thread C smoke PASS, and Windows
+  qt-process C-worker missing-db tests 2/2 PASS.
+  Independent Qt workflow ``41869281083`` on
+  ``67e75674`` also SUCCESS, including C job
+  ``126711595662``. Latest test-only line-wrap
+  revision ``2003c537`` had four Qt jobs SUCCESS;
+  its Windows compiled-C job remained in progress
+  when this checkpoint was drafted.
+* **Baseline/limits:** general 56-job Tests matrix
+  retains separate known PyPy PackedValues failures
+  and possible pool/proxy timing noise. Repo lint
+  remains red on six baseline hooks; no new
+  diagnostics in introduced tests at ``2003c537``.
+  No local checkout or local Windows DB artifacts;
+  GitHub jobs and commits are authoritative.
+* **Decision proposal:** ACCEPT narrow startup
+  correctness repair. Updated docs/qt-process.rst
+  public semantics. No benchmark v3, PGresult,
+  PackedValues runtime, cancellation, protocol,
+  native-boundary experiment or optimized02 changes.
+  optimized01 RETAIN; native handoff A/B REJECT.
+  Separate PyPy PackedValues runtime correction
+  remains PAUSED until Coordinator decision.
+  Existing 11 Implementation owner remains sole
+  writer; no parallel owner or Scout.
+
 Immediate next work
 -------------------
 
-#. **URGENT USER-REPORTED CORRECTNESS REGRESSION:
-   startup failure hides PostgreSQL error.**
-   User connected to a nonexistent database
-   and saw ``qpsycopg worker process disconnected``,
-   not the server's ``database ... does not exist``
-   detail. Treat as **P0 investigation priority**
-   (reported, source-supported, reproduction
-   still required). Parent
-   ``generators.connect()`` needs to read
-   failed-startup ``PGconn.error_message``
-   after ``connect_poll`` returns FAILED;
-   the process worker's unconditional
-   BAD-status shutdown likely cuts off
-   that second request. ``qt-thread``
-   already gates BAD handling on successful
-   connection establishment.
-#. **NEXT OWNER: existing ``11 Implementation —
-   continuation``, sole implementation writer.**
-   Verify with a real PostgreSQL server and a
-   deliberately missing database; compare
-   upstream Python and ``qt-process``,
-   sync/async, worker Python/C where supported,
-   with ``qt-thread`` as control. Add
-   failing regression coverage, make the
-   **smallest lifecycle correction** and
-   validate server error propagation and
-   established-session fatal handling.
-   Own normal test/CI iterations; no
-   premature Coordinator handoff or Scout.
-#. **PREEMPT prior PyPy PackedValues task.**
-   The approved narrow PyPy field-access fix
-   is **PAUSED**, not cancelled, until the
-   user-reported connect-error blocker is
-   handled. Do not silently implement both
-   corrections in one stage. Preserve existing
-   PyPy failures as known test evidence.
-   Other historical actions below are
-   superseded. No wire/protocol rewrite,
-   runtime optimization, ``optimized02``,
-   benchmark-v3 or unrelated lint/pool changes.
-   ``optimized01`` RETAIN; native-result
-   boundary diagnostic REJECT.
+#. **Startup connection FATAL: implementation COMPLETE.**
+   Verified baseline loss of PostgreSQL server
+   detail in qt-process and successful controls.
+   Plain/pooled process workers now defer fatal
+   BAD shutdown until successful establishment.
+   Sync/async failed connect, reconnect, worker
+   lifecycle and fatal-after-connect tests pass.
+   Qt workflows 41868553820 and 41869281083
+   SUCCESS, including Windows compiled C-worker.
+   Last line-wrap-only test revision 2003c537
+   had four Qt jobs SUCCESS and Windows-C
+   job pending at documentation draft time.
+#. **Next owner: existing 00 Coordinator** for
+   independent correctness checkpoint review.
+   Current 11 Implementation chat remains sole
+   runtime owner, no new runtime direction yet.
+   PyPy PackedValues correction stays PAUSED.
+   optimized01 RETAIN, native A/B REJECT,
+   no optimized02; historical items follow.
 
 #. **Coordinator PyPy correctness review COMPLETE:
    INVESTIGATE / one narrow runtime correction AUTHORIZED.**

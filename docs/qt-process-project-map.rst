@@ -349,82 +349,122 @@ Established decisions / do not repeat blindly
 Immediate next work
 -------------------
 
-#. ``optimized01`` remains **RETAIN**. Prior rejected
-   queue-wait, native worker wait, speculative
-   WAIT prefetch, GET/echo and generic snapshot
-   microtuning paths remain closed to blind repeats.
-#. Coordinator decision at
-   ``98a6ad178d03ff0ad94f1b28c6d3ddac6cd164a1``
-   authorised one **diagnostic-only** native
-   completed-PGresult handoff investigation
-   for C worker. The bounded standalone
-   ownership/Transformer preflight was **PASS**
-   at ``c303749b6b1551901eb5fc7bf4c2bcaeb2f2ae56``:
-   four cases (NULL/rows, SQLSTATE,
-   borrowed notice snapshot, native
-   lifetime beyond PGconn.finish and clear).
-   This did not prove full production parity.
-#. **The subsequent complete result-boundary
-   SELECT 1 A/B is COMPLETE.** Artifact
-   ``qt-thread-native-boundary-ab-20261103-230648-799.zip``,
-   captured at ``f19aafcee7d07441e704d22567f0e4abae780c74``,
-   SHA256 ``997eb072dbaf3a148ef886fe3a353e1ddd16c6ca0a028605d7eb04855109f6c3``.
-   All four independent subprocesses, 48
-   balanced five-block cycles, 240,000
-   SQL calls, 96 paired comparisons and
-   output parity checks completed.
-   Original ZIP is Windows-local/
-   chat-uploaded, **not in GitHub**.
-#. Worker uses the same one native
-   PGconn and ``exec_params(b"SELECT 1", ())``
-   in both arms, with identical two
-   queue handoffs and cursor AdaptContext.
-   Snapshot/synthetic/hybrid result
-   versus owned native C PGresult/C
-   Transformer differ at the completed
-   result boundary only. This is **not**
-   the full production async SELECT path.
-#. Repeat-median paired process CPU
-   differences (snapshot minus native):
-   +31.276, +54.671, +29.817,
-   +38.567 us/SELECT; median of repeat
-   medians **+34.921 us**, MAD 4.375,
-   71/96 positive pairs. Wall difference
-   repeat-median **+43.460 us**, 72/96
-   positive pairs. These are promising
-   *directional* diagnostic observations,
-   not accepted production savings.
-#. **Predeclared screen FAILED.** CPU
-   median, sign consistency, >=15 us
-   materiality and >3x inter-repeat MAD
-   checks passed, but the required
-   **no mode/repeat >15% wall drift**
-   failed: mode-specific drift was
-   -19.6%/-17.1%, -2.1%/+3.4%,
-   +52.6%/+33.9%, +55.2%/+16.3%
-   (snapshot/native). **3/4 repeats**
-   breach 15%; per-repeat paired
-   CPU MAD is 30-44 us, comparable
-   to effect size. Correct decision:
-   **REJECT this native boundary
-   material-benefit screen.**
-#. No production runtime/C extension/
-   benchmark v3 changes or
-   ``optimized02`` were created.
-   Do not repeat this experiment
-   to shop for favorable numbers,
-   or change acceptance conditions
-   post hoc. Do not infer full
-   qt-thread SQL savings.
-#. **Next owner: existing 00 Coordinator**,
-   for mandatory independent review of
-   this significant completed
-   REJECT checkpoint. Coordinator must
-   decide STOP/plateau or a **different**
-   evidence-backed bounded direction.
-   No Scout, second implementation
-   owner or new runtime experiment
-   is automatically required.
+#. **PR #2 merged and verified.** Import-time backend
+   configuration via application ``.env`` and the
+   Windows DLL bootstrap entered
+   ``feature/qt-process-pq`` at two-parent merge
+   ``9126cddfb9db45b787ea7ea626c3e152f1d1ac24``
+   (feature ``b82ca223``, target ``5c1c4c35``,
+   Coordinator review ``5765518048``). Exactly
+   eight configuration-owned files were integrated;
+   earlier performance runtime and evidence remain.
+   See merged GitHub PR #2 and
+   :doc:`qt-backend-config` for import semantics.
+#. **Integration write pause ENDED** following
+   independent Coordinator post-merge verification.
+   Existing ``10 Implementation — current``
+   remains sole ordinary runtime writer; no
+   competing implementation owner was created.
+   That chat should sync its checkout and verify
+   live target HEAD before writing. This docs
+   checkpoint may be newer than the merge SHA.
+#. **Post-merge Tests matrix still unverified**
+   at this recovery checkpoint. Runs
+   ``41801325261`` and ``41801317209``
+   were queued against the merge SHA when
+   inspected; verify their final outcomes,
+   investigate any new failures, and document
+   final CI. Pre-merge synchronised matrix
+   ``41720955777`` attempt 2 was SUCCESS
+   56/56 after an isolated retry of one
+   ``test_refill_on_check[asyncio]`` timeout;
+   its root cause is unproven. Qt/Windows
+   focused checks passed. Repository-wide
+   lint and Sphinx baseline failures and the
+   unverified Windows compiled
+   ``worker_impl=c`` remain accepted,
+   documented integration exceptions, not
+   passing validation.
+#. **Performance direction: STOP / plateau.**
+   The bounded native PGresult handoff
+   ownership/Transformer preflight PASS
+   stands, but the complete SELECT 1
+   result-boundary A/B failed its
+   predeclared material-benefit screen
+   because 3/4 independent repeats
+   exceeded the 15% wall drift ceiling.
+   Paired process CPU difference
+   +34.921 us/SELECT (snapshot minus
+   native) was directional only; no
+   stable end-to-end gain is established.
+   Do not repeat this A/B just to obtain
+   a favourable sample or modify its
+   predeclared gate after capture.
+#. ``optimized01`` remains RETAIN,
+   ``optimized02`` was not created.
+   No new runtime performance experiment
+   is authorised until an independently
+   supported, falsifiable next target is
+   proposed and reviewed. Existing
+   GET/echo, queue-wait, native-wait,
+   speculative prefetch and generic
+   snapshot micro-tuning rejections
+   remain in effect.
+#. **Next action:** existing Implementation
+   owner verifies live HEAD and post-merge
+   Tests outcomes, then performs a bounded
+   repository/state and semantic validation
+   checkpoint. Do not start a new
+   optimisation series by default. Return
+   a significant CI/correctness blocker
+   or new architectural decision to
+   ``00 Coordinator`` for review.
+
+Coordinator post-merge closeout -- PR #2 and performance plateau
+----------------------------------------------------------------
+
+* **Coordinator role and observed base:** existing
+  ``00 Coordinator``; target ``feature/qt-process-pq``
+  at verified two-parent merge SHA ``9126cddfb9db45b787ea7ea626c3e152f1d1ac24``.
+  This snapshot is a docs-only follow-up commit;
+  read the live HEAD when resuming.
+* **Completed bounded configuration milestone:**
+  PR #2 merged after exact SHA/CI/diff
+  verification, with eight configuration-owned
+  files, no SQL hot-path changes, and unchanged
+  performance runtime/docs.
+  The PR description was updated post-merge;
+  accepted lint/Sphinx and Windows C-worker
+  validation exceptions are recorded there.
+* **Completed independent performance decision:**
+  native PGresult result-boundary A/B is
+  drift-gated REJECT; no real production
+  result handoff was implemented. Native
+  standalone feasibility PASS is narrower
+  than correctness of a new runtime path.
+  ``optimized01`` RETAIN, no ``optimized02``.
+* **Unfinished validation:** post-merge Tests
+  runs ``41801325261`` and ``41801317209``
+  were queued at inspection; outcome unknown.
+  Review their final results on GitHub.
+  No new ZIP, uncommitted runtime changes,
+  or local Windows worktree state was inspected
+  by Coordinator. Older local-only benchmark
+  ZIP hashes remain in the optimisation log.
+* **Ownership and exact next action:** lift
+  integration write pause; existing
+  ``10 Implementation — current``
+  resumes sole runtime ownership, verifies
+  branch HEAD/CI, and records a bounded
+  verification checkpoint. Configuration
+  feature owner is closed and should not
+  continue editing the active runtime.
+  No Scout or second Implementation owner.
+* **Context:** Coordinator context risk
+  ``CAUTION``; this snapshot plus PR #2
+  merge/evidence and optimisation log are
+  the authoritative recovery package.
+  No measured token count is asserted.
 
 Coordinator review -- two independent short-query Scouts
 --------------------------------------------------------
@@ -687,9 +727,11 @@ When resuming in a new chat/session
    CPU screen **REJECT** on prespecified
    drift gate. No runtime candidate
    or further Windows A/B is pending.
-#. Next owner is existing
-   ``00 Coordinator`` for
-   independent milestone review.
-   Runtime ownership remains
-   with this Implementation chat
-   until any explicit transfer.
+#. Coordinator review of the native-boundary
+   REJECT and PR #2 post-merge verification
+   are complete. Integration write pause
+   has ended; existing ``10 Implementation — current``
+   retains sole runtime ownership. Verify
+   the post-merge Tests CI before choosing
+   any further work. No new optimisation
+   direction is authorised by this closeout.

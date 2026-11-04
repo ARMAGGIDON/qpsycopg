@@ -480,6 +480,61 @@ Immediate next work
    or new architectural decision to
    ``00 Coordinator`` for review.
 
+Implementation isolated job retry -- triggered
+----------------------------------------------
+
+* **Verified original-run final state (2026-11-04):**
+  merge-push Tests ``41801317209`` completed
+  ``failure`` with **55 success / one failure**
+  among its full **56-job** matrix;
+  no queued, in-progress or cancelled jobs.
+  The only failed job was
+  ``126477485524``,
+  ``linux (python, 3.14t, postgres:16)``,
+  ``test_refill_on_check[asyncio]`` after proxy
+  restart, ``PoolTimeout``; both automatic
+  pytest last-failure retries had failed.
+* **Action already executed:** the Coordinator's
+  gate was met, and the exact GitHub Actions
+  **single-job rerun endpoint** was called **ONCE**
+  for job ``126477485524``. GitHub confirmed
+  ``success: true``. **Do NOT re-trigger that job
+  or retry any others**; the one authorised
+  action has already been consumed. A subsequent
+  fresh GitHub status read timed out, so the
+  **isolated retry result is still unknown**
+  at this checkpoint. The original
+  ``55/56`` is not acceptance.
+* **Next recovery action:** inspect the latest
+  run attempt, its 56-job latest-state
+  matrix and the one rerun job result.
+  If all 56 are ultimately SUCCESS, record
+  ``56/56 after isolated retry`` with the
+  original proxy/timing failure and unknown
+  root cause. If the retry fails or another
+  failure emerges, STOP retries and send
+  narrow pool/proxy lifecycle diagnostics
+  to existing ``00 Coordinator``.
+  An automated **read-only** condition watch
+  is configured for the retry outcome;
+  it is forbidden to issue further retry calls
+  and should be disabled when the final
+  checkpoint is documented.
+* **Scope:** docs-only state record.
+  No production code, pool/tests/timeouts,
+  workflows, benchmark v3 or performance
+  experiments changed. Baseline lint/Sphinx
+  exceptions and Windows compiled C-worker
+  gap persist. ``optimized01`` RETAIN;
+  native result-boundary REJECT;
+  no ``optimized02``.
+* **Context risk: CAUTION.** Sole
+  Implementation ownership remains here.
+  This section supersedes the earlier
+  in-progress snapshot below for retry
+  action/status, and prevents accidental
+  duplicate GitHub Actions execution.
+
 Implementation targeted CI retry -- in-progress checkpoint
 ----------------------------------------------------------
 

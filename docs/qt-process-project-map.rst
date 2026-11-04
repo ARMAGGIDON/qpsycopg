@@ -377,13 +377,45 @@ Immediate next work
    were made. ``optimized01`` RETAIN;
    native result boundary REJECT;
    ``optimized02`` absent.
-#. Existing ``00 Coordinator`` is the
-   next independent checkpoint reviewer;
-   current ``10 Implementation — current``
-   retains sole implementation ownership.
-   No new performance series or
-   alternative architecture target is
-   authorised by the CI acceptance.
+#. **Independent Coordinator review COMPLETE**:
+   merge-push Tests ``41801317209`` is
+   **ACCEPTED 56/56 success after one
+   isolated job retry** (original
+   ``126477485524`` FAIL; retry
+   ``126492158840`` PASS). The
+   prior pool/proxy timeout cause remains
+   unknown; no more CI retries, waiver,
+   or test changes are justified.
+#. **Next bounded stage: Windows compiled
+   C-worker validation coverage.**
+   Existing ``10 Implementation — current``
+   remains sole runtime owner and should
+   first verify how to install/build
+   ``psycopg_c`` on the Windows Actions
+   runner already exercising real libpq,
+   then run existing qt-thread semantic
+   smoke with ``QPSYCOPG_WORKER_IMPL=c``
+   and check the actual C binding was
+   selected. Use the smallest CI/tooling
+   change; no production runtime, pool,
+   benchmark v3 or performance algorithm
+   change. If provisioning is not
+   practical, STOP and record the blocker
+   rather than silently falling back to
+   Python worker.
+#. Correct the stale ``Status`` text in
+   ``docs/qt-backend-config.rst``:
+   PR #2 has merged, contrary to its
+   old feature-branch / merge-pending
+   wording. Keep accepted lint/Sphinx
+   exceptions as exceptions, not successes.
+#. **No new performance series** or
+   ``optimized02`` is authorised.
+   ``optimized01`` remains RETAIN;
+   native result-boundary A/B remains
+   drift-gated REJECT. Return a
+   completed C-worker validation
+   checkpoint to Coordinator for review.
 
 #. **PR #2 merged and verified.** Import-time backend
    configuration via application ``.env`` and the
@@ -459,6 +491,64 @@ Immediate next work
    a significant CI/correctness blocker
    or new architectural decision to
    ``00 Coordinator`` for review.
+
+Coordinator acceptance -- post-merge Tests and next stabilization gate
+----------------------------------------------------------------------
+
+* **Role and observed state:** existing ``00 Coordinator``
+  independently checked branch ``feature/qt-process-pq``
+  at HEAD ``d9257a43741e05c3a1022c42dd0d353270de8b16``
+  (a documentation-only descendant of
+  PR #2 merge ``9126cddfb9db45b787ea7ea626c3e152f1d1ac24``).
+  No local/uncommitted Windows state was inspected.
+* **Acceptance evidence:** GitHub Tests push run
+  ``41801317209``, attempt 2, ``completed/success``,
+  verified all 56 latest jobs successful.
+  Attempt 1 failed only job ``126477485524``
+  on ``test_refill_on_check[asyncio]``, with
+  ``PoolTimeout`` after proxy restart.
+  Exactly one isolated retry, job
+  ``126492158840``, completed successfully
+  including its Run tests step.
+  This is an accepted **56/56 latest state
+  after isolated retry**, not 56 fresh
+  reruns or proof that the transient
+  pool/proxy problem is fixed.
+  PR-triggered matrix ``41801325261``
+  and docs-only matrix ``41802212474``
+  were cancelled, not accepted green.
+* **Next bounded action:** existing Implementation
+  owner (sole runtime writer) assesses
+  Windows runner compilation/install of
+  ``psycopg_c``, then runs the current
+  ``tools/smoke_qt_thread.py`` against
+  real Windows PostgreSQL with
+  ``PSYCOPG_IMPL=qt-thread`` and
+  ``QPSYCOPG_WORKER_IMPL=c``.
+  Verify genuine C worker selection.
+  Scope may touch narrow CI/validation
+  tooling and the outdated status text
+  in ``docs/qt-backend-config.rst``,
+  not runtime code or benchmark v3.
+  If CI provisioning is nontrivial,
+  stop and report evidence/blocker
+  before broadening the work.
+* **Guardrails:** accepted repository lint
+  and strict Sphinx baseline exceptions
+  remain red; Windows C-worker CI gap
+  remains open until demonstrated.
+  No new performance optimization,
+  native handoff reruns, or additional
+  pool CI retries. ``optimized01``
+  RETAIN; native boundary A/B REJECT;
+  no ``optimized02``.
+* **Recovery:** no new local ZIP or
+  uncommitted source is claimed. This
+  documentation snapshot plus GitHub
+  Actions run/job IDs above is the
+  recovery source. Return after the
+  next bounded validation checkpoint
+  for independent Coordinator review.
 
 Implementation post-merge Tests closure -- 56/56 after isolated retry
 ---------------------------------------------------------------------

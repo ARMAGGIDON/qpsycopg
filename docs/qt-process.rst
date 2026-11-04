@@ -185,6 +185,14 @@ The canonical before-state is ``baseline-v3``. Do not compare numbered runtime
 optimisations against the older ``initial`` or ``baseline-v2`` checkpoints; those
 used earlier benchmark definitions.
 
+Backend configuration at import
+-------------------------------
+
+An application can now select the backend from its own ``.env`` on ordinary
+``import psycopg``. Process environment values take precedence. The backend
+still freezes during import; see :doc:`qt-backend-config` for precise startup
+semantics, Windows DLL setup and the assessed ``configure()`` limitation.
+
 Local development on Windows
 ----------------------------
 

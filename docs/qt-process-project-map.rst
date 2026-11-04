@@ -444,8 +444,61 @@ Implementation Windows compiled C-worker smoke -- PASS checkpoint
   sections are historical. No same-role
   HANDOFF NOW signal.
 
+Implementation strict Sphinx CI cleanup -- PASS checkpoint
+----------------------------------------------------------
+
+* **Outcome (2026-11-04): PASS.** Unchanged strict command
+  ``sphinx-build -W -T -b html docs docs/_build/html``
+  ran successfully in GitHub Qt workflow
+  ``41812369735``, ``docs-validation`` job
+  ``126514518889``, on tested revision
+  ``8530783052d6b3defec11bec90fc7e7f3217c22b``.
+  Log ends with ``build succeeded.``;
+  no Sphinx diagnostics remain.
+* **Original nine diagnostics closed without semantic edits:**
+  two performance-table ``::`` literal-block
+  errors; six two-line diagnostic tool labels
+  misparsed as definition lists; and one
+  coordination-page missing-toctree warning.
+  ``docs/index.rst`` now registers
+  ``qt-process-coordination`` in a
+  hidden toctree, preserving visible navigation.
+  The first strict CI retry (run ``41812172233``,
+  job ``126513854494``) exposed one further
+  malformed table header width at performance
+  line 227; that table's column spacing
+  was corrected and the next strict job passed.
+* **Scope / invariants:** Only
+  ``docs/qt-process-performance.rst``,
+  ``docs/qt-process-project-map.rst`` and
+  ``docs/index.rst`` were edited for cleanup;
+  measured numeric tokens in performance
+  and project map are identical to pre-cleanup
+  ``c9eec4fddbd47f3d9f71f9435f9c596d3ba51ffe``.
+  Technical decisions, ownership and
+  historical evidence remain unchanged.
+  Runtime, pool/tests, performance algorithms,
+  benchmark v3, workflow and lint were not edited.
+* **Next owner:** existing ``00 Coordinator``
+  for independent bounded Sphinx PASS review.
+  ``10 Implementation — current`` retains
+  sole ordinary runtime ownership; no new
+  performance experiments authorised.
+  ``optimized01`` RETAIN; native PGresult
+  result-boundary REJECT; no ``optimized02``.
+  Earlier **Sphinx cleanup pending** instructions
+  below are historical and superseded.
+
 Immediate next work
 -------------------
+
+#. **Current Sphinx stage completed:** strict CI
+   ``docs-validation`` PASS on run ``41812369735``,
+   job ``126514518889``; next review owner is
+   existing ``00 Coordinator``. Historical
+   earlier cleanup instructions below are
+   superseded. Repository lint remains outside
+   this stage.
 
 #. **Post-merge Tests ACCEPTED — 56/56 SUCCESS after
    exactly one isolated job retry.** Merge-push

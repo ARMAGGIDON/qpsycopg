@@ -74,6 +74,7 @@ class Worker:
         return value
 
     def run(self) -> None:
+        connectionReady = False
         while True:
             request = recvFrame(self.sock)
             if not isinstance(request, Request):
@@ -82,14 +83,15 @@ class Worker:
             stop = request.operation == Operation.CLOSE
             try:
                 value = self._handle(request)
-                stop |= self._connectionBroken()
+                connectionReady = self._connectionReady(request, value, connectionReady)
+                stop |= connectionReady and self._connectionBroken()
                 response = Response(
                     requestId=request.requestId,
                     value=value,
                     notices=tuple(self.notices),
                 )
             except BaseException as error:
-                stop |= self._connectionBroken()
+                stop |= connectionReady and self._connectionBroken()
                 response = Response(
                     requestId=request.requestId,
                     error=RemoteError(
@@ -106,6 +108,21 @@ class Worker:
             if stop:
                 self._closeObjects()
                 return
+
+    def _connectionReady(self, request: Request, value: Any, ready: bool) -> bool:
+        # A failed startup must remain readable until the parent fetches the
+        # server's error_message and finishes the connection.
+        if request.operation == Operation.CONNECT_START:
+            return False
+        if request.operation == Operation.CONNECT:
+            conn = self.objects.get(1)
+            return conn is not None and int(conn.status) == int(pq.ConnStatus.OK)
+        if request.operation == Operation.CALL and request.objectId == 1:
+            if request.member == "connect_poll":
+                return int(value) == int(pq.PollingStatus.OK)
+            if request.member == "finish":
+                return False
+        return ready
 
     def _connectionBroken(self) -> bool:
         conn = self.objects.get(1)

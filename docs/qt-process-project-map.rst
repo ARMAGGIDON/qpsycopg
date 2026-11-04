@@ -480,6 +480,59 @@ Immediate next work
    or new architectural decision to
    ``00 Coordinator`` for review.
 
+Implementation targeted CI retry -- in-progress checkpoint
+----------------------------------------------------------
+
+* **Owner / scope:** existing ``10 Implementation — current``,
+  ``feature/qt-process-pq``, observed HEAD
+  ``030367248027d27d8ee2a75c1885ca1371529c81``.
+  Coordinator approved **one isolated GitHub Actions job retry**
+  only after the merge-push Tests matrix is fully completed
+  and all 56 latest jobs have been inspected.
+* **Observed CI state:** merge-push Tests
+  ``41801317209`` (merge SHA ``9126cddf``)
+  was **still in progress** on 2026-11-04.
+  Latest complete 56-job inventory:
+  **43 success, 12 in progress, one failure**,
+  no other completed failures or cancelled jobs.
+  The failed job is exactly ``126477485524``,
+  ``linux (python, 3.14t, postgres:16)``,
+  ``test_refill_on_check[asyncio]``, known
+  proxy-restart ``PoolTimeout`` (two pytest
+  last-failure retries already failed).
+  **No isolated GitHub Actions retry has been
+  triggered at this checkpoint**, because the
+  required completion gate is not met.
+* **Conditional execution gate:** once the
+  original run is terminal, fetch **all 56 jobs**
+  including pagination and confirm that the sole
+  unsuccessful one remains job ``126477485524``.
+  Only then invoke the *single-job* rerun endpoint
+  once, never rerun all failures or the workflow.
+  On a second failure or any new failed job,
+  STOP further retries and provide focused
+  pool/proxy lifecycle logs and environment
+  evidence to existing ``00 Coordinator``.
+  On 56/56 latest-job success after the isolated
+  retry, preserve the original failure and unknown
+  cause in this map. Do not declare acceptance
+  until those checks are complete.
+* **Unchanged decisions:** PR #2 merged;
+  accepted baseline lint/Sphinx exceptions
+  and Windows compiled ``worker_impl=c``
+  validation gap are preserved.
+  ``optimized01`` RETAIN; native result
+  boundary diagnostic REJECT; no ``optimized02``.
+  No production, tests, timeout, CI workflow,
+  benchmark-v3 or performance change.
+* **Recovery / context:** this is an in-progress
+  snapshot; the original run has **not yet
+  reached the retry gate**. Recheck live GitHub
+  HEAD and jobs before any action, and enforce
+  at-most-one retry. Context risk CAUTION;
+  no independent second runtime owner or
+  speculative implementation is authorised.
+
 Coordinator post-merge CI decision -- targeted retry
 ----------------------------------------------------
 

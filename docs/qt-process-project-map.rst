@@ -553,8 +553,106 @@ Implementation strict Sphinx CI cleanup -- PASS checkpoint
   Earlier **Sphinx cleanup pending** instructions
   below are historical and superseded.
 
+Coordinator independent lint triage and PackedValues decision
+-------------------------------------------------------------
+
+* **Observed state / ownership:** existing ``00 Coordinator`` reviewed
+  ``feature/qt-process-pq`` at
+  ``2e49eacc6207179c4a55d9ca2d357d0fa175a960``.
+  Existing ``11 Implementation — continuation`` remains
+  the **sole** implementation/runtime owner; retired
+  ``10 Implementation — current`` must not resume writing.
+  No additional Scout or runtime owner is needed.
+* **Accepted read-only lint triage:** jobs
+  ``126515748852``, ``126514527737`` and
+  ``126519466741`` have identical six failed-hook
+  fingerprints: isort, black, codespell, flake8,
+  mypy and cython-lint. Counts in Implementation
+  report: 37, 33, 1, 291, 158 (27 files)
+  and 21 respectively. No new lint regression
+  is established. **STOP broad lint cleanup**,
+  mass formatting, blanket ignores and CI masking.
+* **New bounded correctness question:** in
+  ``_qt_process_protocol.PackedValues`` the
+  ``NamedTuple`` stores four physical fields
+  ``data/offsets/nulls/count`` while
+  ``__len__`` and ``__getitem__`` expose
+  logical packed result cells. Inherited tuple
+  iteration still returns the four physical
+  fields. This breaks conventional sequence
+  equivalence; it is not yet a demonstrated
+  production bug. The process fast-frame
+  ``_packFastResult()`` intentionally
+  uses ``tuple(values)`` for physical
+  serialization and ``PackedValues(*packed)``
+  for restoration, so adding ``__iter__``
+  without a transport audit is unsafe.
+* **Decision: INVESTIGATE -- diagnostic only.**
+  ``11 Implementation — continuation`` should
+  audit all production uses of ``PackedValues``,
+  including iteration, tuple/list conversion,
+  truthiness, logical indexing/slicing, fast
+  request/response serialization, ``PGresult``
+  access, and Python/Cython transformer paths.
+  Use a small isolated reproducible contract
+  check and real packed results including
+  zero/one/four/more-than-four cells, NULL,
+  binary and fast-frame round trips.
+  **No production code, benchmark-v3,
+  protocol/wire-format or CI changes**
+  are authorised in this stage. Tests or
+  diagnostic harnesses must not silently
+  normalize away the physical-wire contract.
+* **Decision gate:** return one of
+  (a) a concrete, reproducible consumer
+  failure with exact call site, data shape
+  and minimal safe remedy **for Coordinator
+  approval before runtime edits**, or
+  (b) evidence that all current uses
+  deliberately respect the two representations,
+  with recommendation to document and STOP.
+  Do not call this merely a mypy false positive
+  before checking actual behavior.
+* **Recovery:** no runtime writes, tests,
+  benchmarks or local artifacts were produced
+  by Coordinator. GitHub source and lint
+  job logs are authoritative; unrelated
+  accepted smoke/Tests/Sphinx results stand.
+  ``optimized01`` RETAIN, native
+  PGresult handoff A/B REJECT, no
+  ``optimized02``. Coordinator context:
+  CAUTION; handoff snapshot remains recoverable.
+
 Immediate next work
 -------------------
+
+#. **Coordinator lint triage review COMPLETE.**
+   Repository-wide lint remains red
+   with six unchanged failed-hook
+   fingerprints across three CI jobs.
+   Broad lint cleanup is STOP.
+   New bounded target: **diagnostic-only
+   ``PackedValues`` sequence-contract
+   audit**. The object combines a
+   four-field ``NamedTuple`` wire
+   representation with logical cell
+   ``__len__``/``__getitem__``;
+   physical tuple iteration is
+   intentional in fast-frame packing.
+   Confirm call-site correctness and
+   actual behavior before proposing
+   any redesign or runtime patch.
+#. **Next owner:** existing
+   ``11 Implementation — continuation``,
+   sole implementation writer. No
+   runtime, wire-protocol, test-suite,
+   benchmark-v3 or CI changes
+   authorised during initial read-only
+   audit. Return reproducible defect
+   evidence or justified STOP to
+   ``00 Coordinator`` for decision.
+   ``optimized01`` RETAIN, native
+   boundary REJECT, no ``optimized02``.
 
 #. **Coordinator independent Sphinx review: ACCEPT.**
    At tested branch SHA ``08f5a8048c14313107c5f635025776749598d402``,

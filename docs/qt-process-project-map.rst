@@ -349,6 +349,62 @@ Established decisions / do not repeat blindly
 Immediate next work
 -------------------
 
+#. **Coordinator independent post-merge CI review**
+   at observed HEAD ``38e71e2c``: **TARGETED
+   RETRY — post-merge matrix NOT YET ACCEPTED**.
+   The merge-push Tests ``41801317209``
+   had 35 success, 18 in progress,
+   2 queued and one failure in
+   ``linux (python, 3.14t, postgres:16)``
+   (job ``126477485524``) when checked.
+   The sibling PR run ``41801325261``
+   cancelled all 56 jobs; docs-only run
+   ``41802212474`` also cancelled
+   (55 cancelled, one success). These
+   cancelled runs cannot certify a green
+   post-merge matrix.
+#. **Next action:** existing ``10 Implementation — current``
+   monitors ``41801317209`` through
+   completion, checks every latest job,
+   and, if this remains the only failure,
+   performs **one isolated GitHub Actions
+   retry of the specific failed job**, not
+   a blanket rerun or a code change.
+   The exact failing test is
+   ``tests/pool/test_pool_async.py::test_refill_on_check[asyncio]``;
+   ``PoolTimeout`` follows ``proxy.stop()``,
+   ``proxy.start()`` and a second
+   ``wait(timeout=2)``. Both automatic
+   pytest reruns failed. Its pre-merge
+   failure was in the same test but a
+   **different C worker/PG matrix job**;
+   recurrence is not a proven root cause.
+#. **Acceptance gate:** if the isolated
+   job passes and all 55 other jobs
+   pass, accept a **56/56 latest-state
+   matrix after isolated retry** with
+   its initial failure and unknown
+   proxy/timing cause documented.
+   If the job fails again or any
+   additional job fails, HOLD acceptance
+   and return a narrow pool/proxy
+   lifecycle and environment diagnosis
+   to Coordinator. Do not silently
+   keep rerunning, change the 2 s test
+   timeout or patch runtime/tests
+   without evidence. No new performance
+   optimisation series is authorised.
+#. Repository state and unrelated
+   exceptions are unchanged: PR #2
+   merged at ``9126cddf``; docs-only
+   HEAD above; baseline lint/Sphinx
+   and Windows ``worker_impl=c``
+   validation gap remain conditional.
+   ``optimized01`` RETAIN,
+   native PGresult boundary REJECT,
+   no ``optimized02``. Implementation
+   remains sole runtime owner.
+
 #. **PR #2 merged and verified.** Import-time backend
    configuration via application ``.env`` and the
    Windows DLL bootstrap entered
@@ -423,6 +479,56 @@ Immediate next work
    a significant CI/correctness blocker
    or new architectural decision to
    ``00 Coordinator`` for review.
+
+Coordinator post-merge CI decision -- targeted retry
+----------------------------------------------------
+
+* **Owner/review:** existing ``00 Coordinator``, observed ``feature/qt-process-pq``
+  at ``38e71e2ccadd40c8181056d59a489a7a291c3c73``.
+  GitHub merge verification ``9126cddf`` stands; follow-up
+  changes are project-map docs only. No local Windows
+  tree, uncommitted changes or new test artifacts
+  were inspected by Coordinator.
+* **Evidence:** ``41801317209`` merge-push matrix
+  partially executed with job ``126477485524``
+  failed on ``test_refill_on_check[asyncio]``
+  with two internal retries also failing.
+  Pool proxy refused connections after restart,
+  with pending ``pproxy`` asyncio tasks;
+  the exact cause remains unproven.
+  ``41801325261`` and ``41802212474``
+  were cancelled. Earlier synchronized
+  matrix ``41720955777`` succeeded
+  56/56 after one isolated job retry
+  of the *same test* in a different
+  C/postgres matrix configuration.
+* **Decision/unfinished:** no automatic
+  waiver for this failed CI. After
+  ``41801317209`` completes,
+  allow **one fresh isolated retry**
+  of only the failed job if other
+  jobs pass; inspect 56 latest-job results.
+  If 56 successes result, accept with
+  a documented transient-failure
+  limitation, not a proved flake.
+  If failure recurs or new failures
+  appear, STOP retries and investigate
+  the proxy restart/refill lifecycle
+  with a bounded evidence-based plan.
+* **Ownership/next action:** existing
+  ``10 Implementation — current``
+  remains sole runtime writer and
+  owns CI monitoring / single retry.
+  No performance experiment, ``optimized02``,
+  or pool/test source changes are
+  approved. Return a completed CI
+  acceptance/failure checkpoint
+  to Coordinator, with exact run,
+  attempt and job IDs.
+* **Context:** Coordinator CAUTION,
+  with this GitHub recovery snapshot.
+  This is an operational heuristic,
+  not a context-window measurement.
 
 Coordinator post-merge closeout -- PR #2 and performance plateau
 ----------------------------------------------------------------

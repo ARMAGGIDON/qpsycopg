@@ -370,7 +370,7 @@ Immediate next work
    checkpoint may be newer than the merge SHA.
 #. **Post-merge Tests triaged; final matrix incomplete.**
    PR-triggered ``41801325261`` finished
-   CANCELLED (all 30 available jobs cancelled).
+   CANCELLED (all 56 matrix jobs cancelled).
    Merge-push ``41801317209`` has 56 jobs:
    at inspection 24 SUCCESS, 28 running, 3 queued,
    **one failed** (``linux (python, 3.14t, postgres:16)``).
@@ -487,7 +487,7 @@ Implementation post-merge CI triage -- 2026-11-04
   was verified using live GitHub branch and diff.
 * **Requested Tests runs at merge SHA:**
   ``41801325261`` (``pull_request``) completed
-  ``cancelled``; 30/30 reported jobs cancelled.
+  ``cancelled``; 56/56 matrix jobs cancelled.
   ``41801317209`` (``push``) was still executing
   at inspection, with 56 matrix jobs: 24 SUCCESS,
   28 in progress, 3 queued and **one FAILURE**.

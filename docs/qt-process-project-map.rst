@@ -349,61 +349,41 @@ Established decisions / do not repeat blindly
 Immediate next work
 -------------------
 
-#. **Coordinator independent post-merge CI review**
-   at observed HEAD ``38e71e2c``: **TARGETED
-   RETRY — post-merge matrix NOT YET ACCEPTED**.
-   The merge-push Tests ``41801317209``
-   had 35 success, 18 in progress,
-   2 queued and one failure in
-   ``linux (python, 3.14t, postgres:16)``
-   (job ``126477485524``) when checked.
-   The sibling PR run ``41801325261``
-   cancelled all 56 jobs; docs-only run
-   ``41802212474`` also cancelled
-   (55 cancelled, one success). These
-   cancelled runs cannot certify a green
-   post-merge matrix.
-#. **Next action:** existing ``10 Implementation — current``
-   monitors ``41801317209`` through
-   completion, checks every latest job,
-   and, if this remains the only failure,
-   performs **one isolated GitHub Actions
-   retry of the specific failed job**, not
-   a blanket rerun or a code change.
-   The exact failing test is
-   ``tests/pool/test_pool_async.py::test_refill_on_check[asyncio]``;
-   ``PoolTimeout`` follows ``proxy.stop()``,
-   ``proxy.start()`` and a second
-   ``wait(timeout=2)``. Both automatic
-   pytest reruns failed. Its pre-merge
-   failure was in the same test but a
-   **different C worker/PG matrix job**;
-   recurrence is not a proven root cause.
-#. **Acceptance gate:** if the isolated
-   job passes and all 55 other jobs
-   pass, accept a **56/56 latest-state
-   matrix after isolated retry** with
-   its initial failure and unknown
-   proxy/timing cause documented.
-   If the job fails again or any
-   additional job fails, HOLD acceptance
-   and return a narrow pool/proxy
-   lifecycle and environment diagnosis
-   to Coordinator. Do not silently
-   keep rerunning, change the 2 s test
-   timeout or patch runtime/tests
-   without evidence. No new performance
-   optimisation series is authorised.
-#. Repository state and unrelated
-   exceptions are unchanged: PR #2
-   merged at ``9126cddf``; docs-only
-   HEAD above; baseline lint/Sphinx
-   and Windows ``worker_impl=c``
-   validation gap remain conditional.
-   ``optimized01`` RETAIN,
-   native PGresult boundary REJECT,
-   no ``optimized02``. Implementation
-   remains sole runtime owner.
+#. **Post-merge Tests ACCEPTED — 56/56 SUCCESS after
+   exactly one isolated job retry.** Merge-push
+   ``41801317209`` (merge commit ``9126cddf``)
+   completed attempt 2 with conclusion SUCCESS;
+   full paginated/latest job inventory had 56
+   completed success, zero failures, zero running.
+   Original attempt 1 had 55 success / one failure:
+   ``126477485524``, ``linux (python, 3.14t,
+   postgres:16)``, ``test_refill_on_check[asyncio]``,
+   ``PoolTimeout`` after proxy restart.
+   Two pytest internal retries failed;
+   Coordinator allowed exactly one GitHub job rerun.
+   Only that job was retried as ``126492158840``
+   and passed. Root cause remains **unproven**.
+   PR-triggered ``41801325261`` was
+   CANCELLED (56/56); it is not the green run.
+   This **supersedes earlier CI-in-progress /
+   targeted-retry instructions** below.
+#. **No further CI retry is authorised.**
+   The accepted 56/56 matrix does not
+   change documented baseline lint/Sphinx
+   exceptions or close the Windows
+   compiled ``worker_impl=c`` validation
+   gap. No pool, tests, timeouts, runtime,
+   workflows, v3 or performance changes
+   were made. ``optimized01`` RETAIN;
+   native result boundary REJECT;
+   ``optimized02`` absent.
+#. Existing ``00 Coordinator`` is the
+   next independent checkpoint reviewer;
+   current ``10 Implementation — current``
+   retains sole implementation ownership.
+   No new performance series or
+   alternative architecture target is
+   authorised by the CI acceptance.
 
 #. **PR #2 merged and verified.** Import-time backend
    configuration via application ``.env`` and the
@@ -479,6 +459,69 @@ Immediate next work
    a significant CI/correctness blocker
    or new architectural decision to
    ``00 Coordinator`` for review.
+
+Implementation post-merge Tests closure -- 56/56 after isolated retry
+---------------------------------------------------------------------
+
+* **Completed on 2026-11-04:** merge-push GitHub Actions
+  Tests run ``41801317209``, attempt 2,
+  ``completed / success``, SHA
+  ``9126cddfb9db45b787ea7ea626c3e152f1d1ac24``.
+  Full latest-attempt 56-job inventory checked:
+  **56 success / 0 failure / 0 cancelled / 0 running**.
+* **Original negative evidence:** attempt 1
+  completed failure (55 success / 1 failure),
+  job ``126477485524`` on Linux CPython
+  3.14t/PostgreSQL 16; async pool test
+  ``test_refill_on_check[asyncio]`` raised
+  ``psycopg_pool.PoolTimeout`` after proxy
+  stop/start at second ``p.wait(timeout=2)``.
+  Two internal pytest last-failure retries
+  failed. Same test failed in a pre-merge
+  matrix (different job/environment) and
+  later passed its isolated retry.
+  **Pool/proxy lifetime/timing root cause
+  remains unknown**; green CI is not
+  proof that its intermittency is fixed.
+* **Exactly one isolated GitHub Actions
+  rerun authorised and performed:** original
+  job ``126477485524`` was retried
+  only once, resulting in new attempt-2
+  job ``126492158840``, now PASS.
+  No additional retry or whole-workflow
+  rerun is permitted or necessary.
+  Original PR-triggered Tests
+  ``41801325261`` finished CANCELLED
+  (all 56), not a success source.
+* **Repository and constraints:** this
+  closure is docs-only. No changes
+  to CI workflow, pool/test code,
+  timeouts, qt-thread runtime, C
+  extension, benchmark v3 or
+  optimized01. Accepted baseline
+  lint/Sphinx exceptions and Windows
+  compiled C-worker validation gap
+  persist, not relabelled as passing.
+  Native PGresult boundary REJECT
+  under predeclared drift gate;
+  optimized01 RETAIN, no optimized02.
+* **Ownership / next stage:** send the
+  accepted post-merge Tests checkpoint
+  to existing ``00 Coordinator``
+  for final independent acknowledgment.
+  Current ``10 Implementation — current``
+  remains sole normal runtime owner.
+  No new performance experiment or
+  architecture target starts by default.
+  The previously configured condition
+  watch for this CI run should be
+  disabled after this checkpoint.
+* **Context risk: CAUTION.** This is the
+  authoritative latest CI status and
+  supersedes earlier below-the-line
+  in-progress/retry instructions.
+  No HANDOFF NOW signal or unverified
+  remaining-token estimate.
 
 Implementation isolated job retry -- triggered
 ----------------------------------------------

@@ -553,6 +553,85 @@ Implementation strict Sphinx CI cleanup -- PASS checkpoint
   Earlier **Sphinx cleanup pending** instructions
   below are historical and superseded.
 
+Coordinator PyPy PackedValues correctness decision
+--------------------------------------------------
+
+* **Repository / observed HEAD:** ``feature/qt-process-pq``
+  at ``e2e865fc27848d4e4551243edddee5a443fd53b7``.
+  Previous audit was diagnostic-only at
+  ``b630261b``; test-only commits
+  ``78d4869`` and ``ef7bab1``
+  added 17 contract regression tests.
+  The current HEAD includes a documentation
+  recovery snapshot, not runtime correction.
+* **Evidence:** GitHub Tests
+  ``41828533577`` (latest) has two
+  reproducible PyPy failures:
+  jobs ``126570119799`` (PyPy 3.11)
+  and ``126570119810`` (PyPy 3.10),
+  each with 15 ``RecursionError``
+  cases in the 17-test suite; both
+  fast-request tests pass.
+  An earlier attempt in cancelled run
+  ``41826964492`` independently
+  reproduced the same on both PyPys.
+  Tracebacks repeat ``__getitem__``
+  accessing ``self.count`` and
+  physical ``data`` field access.
+  CPython 3.14t passed all 17 new tests.
+* **Support scope / decision:** PyPy is
+  explicitly exercised by upstream Tests
+  workflow, so do not mask this
+  correctness failure with skip/xfail
+  or declare it outside scope without
+  separate policy decision. Preserve
+  PyPy compatibility of the pure Python
+  protocol component. This does not
+  certify PySide6/Qt worker support
+  on all PyPy configurations.
+  Authorize **one minimal physical-access
+  runtime correction** for
+  ``PackedValues``, not general
+  NamedTuple redesign.
+* **Nonnegotiable invariants:** the
+  four underlying tuple fields and
+  ``tuple(values)`` stay the physical
+  wire payload; existing logical
+  ``len`` / index / slice,
+  truthiness, NULL/empty/binary, fast
+  marshal/pickle, ``PGresult.get_value``,
+  Python/Cython loaders, class identity
+  and pickle reconstruction remain
+  correct. No ``__iter__``,
+  frame format, transformer, worker
+  scheduling or benchmark-v3 change.
+* **Gate / owner:** existing
+  ``11 Implementation — continuation``
+  is the sole implementation writer.
+  Complete normal small-commit test/CI
+  iterations without repeated Coordinator
+  routing: all 17 targeted regression
+  tests must pass on CPython and
+  PyPy 3.10/3.11; relevant Qt smoke and
+  Windows compiled C-worker check
+  must remain valid. If minimal fix
+  fails or architecture broadens,
+  STOP and report before rewriting.
+  A separate recurring 3.14t
+  pool/proxy failure in Tests run
+  ``41828533577`` remains unproven
+  and unrelated to this new fix.
+* **Recovery / context:** no
+  runtime change was made by
+  Coordinator. Source, tests and
+  CI tracebacks are in GitHub.
+  ``optimized01`` RETAIN, native
+  PGresult handoff screen REJECT,
+  no ``optimized02``; Coordinator
+  context CAUTION, this committed
+  snapshot makes the handoff
+  recoverable.
+
 Implementation PackedValues contract audit -- diagnostic-only checkpoint
 ------------------------------------------------------------------------
 
@@ -741,25 +820,67 @@ Coordinator independent lint triage and PackedValues decision
 Immediate next work
 -------------------
 
-#. **PackedValues contract regression test stage: BLOCKED.**
-   Test-only commits ``78d4869`` and ``ef7bab1`` add
-   17 invariant cases. Two PyPy CI jobs reproduce a
-   ``RecursionError`` on ``PackedValues.count``/``data``
-   through recursive ``__getitem__`` field access.
-   The bug is in existing internal runtime semantics
-   on PyPy, not test collection or a style warning.
-   Do not hide it with skip/xfail or patch production
-   code without a new Coordinator authorization.
-#. **Next owner: existing 00 Coordinator** for a
-   correctness/support-scope decision based on GitHub
-   Tests workflow ``41826964492``, PyPy jobs
-   ``126564060105`` and ``126564060403``.
-   Sole Implementation owner ``11 Implementation —
-   continuation`` pauses runtime/test changes until
-   that decision. No new Scout/parallel owner.
-   ``optimized01`` RETAIN; native handoff REJECT;
-   no ``optimized02``. Older instructions below
-   are historical.
+#. **Coordinator PyPy correctness review COMPLETE:
+   INVESTIGATE / one narrow runtime correction AUTHORIZED.**
+   The 17 new invariant tests expose repeatable
+   ``RecursionError`` on PyPy 3.10 and 3.11:
+   ``PackedValues`` ``NamedTuple`` physical
+   field access (``count``, ``data``) can
+   invoke overridden logical ``__getitem__``,
+   which reads those physical fields again.
+   CPython 3.14t: all 17 pass. This is
+   reproducible interpreter-specific internal
+   correctness failure, **not** just mypy
+   disagreement. Previous runtime STOP is
+   superseded **only for the minimal fix**.
+#. **Next owner: ``11 Implementation — continuation``**
+   remains the sole runtime writer. Repair
+   physical ``data/offsets/nulls/count``
+   access so it cannot recurse on PyPy,
+   while retaining ``PackedValues`` four-field
+   physical tuple, class identity,
+   ``_fields`` / pickling, logical
+   ``len`` / index / slice / truthiness,
+   compact marshal/pickle frame structure
+   and Python/Cython decoding semantics.
+   First test the smallest accessor-level
+   approach, including explicit base
+   ``tuple.__getitem__`` if appropriate;
+   do not presume it works on PyPy
+   without executing both PyPy CI jobs.
+   Avoid ``__iter__`` changes, alternate
+   wire layout, serialization rewrites
+   or adding per-cell copies/allocations.
+#. **Validation / stop gates:** targeted
+   ``tests/pq/test_qt_process_protocol.py``
+   17/17 on CPython and both PyPy 3.10,
+   3.11; physical field and fast-frame
+   marshal/pickle round trips unchanged;
+   applicable Qt smoke including Windows
+   compiled C-worker; inspect triggered CI.
+   One separate recurring 3.14t
+   ``test_refill_on_check[asyncio]``
+   PoolTimeout may remain baseline flaky;
+   it is **not** evidence of this defect.
+   No blanket skip/xfail/ignore or
+   weakening the tests. If the smallest
+   correction cannot preserve wire/type/
+   semantics, STOP and return the blocker
+   before any structural redesign.
+#. **Ordinary iteration belongs to Implementation.**
+   Allow narrow runtime/test commits and
+   CI validation on this exact issue
+   without pinging Coordinator after
+   each change. No unrelated pool,
+   test-timeout, CI workflow, broad
+   lint or performance changes.
+   ``optimized01`` RETAIN; native
+   handoff A/B REJECT; no ``optimized02``.
+   Return a completed correction
+   checkpoint or an explicit blocker
+   for independent Coordinator review.
+   Historical pre-review instructions
+   below are superseded.
 
 #. **Coordinator independent Sphinx review: ACCEPT.**
    At tested branch SHA ``08f5a8048c14313107c5f635025776749598d402``,

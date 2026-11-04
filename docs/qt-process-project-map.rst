@@ -444,6 +444,70 @@ Implementation Windows compiled C-worker smoke -- PASS checkpoint
   sections are historical. No same-role
   HANDOFF NOW signal.
 
+Coordinator Sphinx acceptance and same-role Implementation handoff
+------------------------------------------------------------------
+
+* **Decision:** strict Sphinx docs-validation ACCEPT
+  at ``08f5a8048c14313107c5f635025776749598d402``;
+  workflow ``41812732913``, job ``126515748491``
+  SUCCESS, zero Sphinx warnings/errors.
+  Three RST files changed; historical
+  decisions, benchmark data and
+  production runtime remain untouched.
+* **Ownership emergency:** user reports
+  ``10 Implementation — current``
+  context exhausted. Mark it RETIRED
+  (no future edits). Bootstrap precisely
+  one new same-role owner:
+  ``11 Implementation — continuation``.
+  The owner begins with a fresh GitHub
+  HEAD/document check and takes exclusive
+  ownership only once the old role has
+  stopped. No second implementation
+  path or new Scout.
+* **Next reproducible action:** read
+  ``qt-process.rst``,
+  ``qt-process-project-map.rst``,
+  ``qt-process-performance.rst``,
+  ``qt-process-coordination.rst``,
+  ``qt-process-optimization-log.rst``,
+  check live HEAD and lint run
+  ``41812732905`` job ``126515748852``,
+  gather the existing failed isort/black/
+  mypy/cython-lint diagnostics, compare
+  historical baseline, and return a
+  scoped lint-risk report with at most
+  one proposed correction group or STOP.
+  **Read-only** until Coordinator
+  chooses the bounded change.
+* **Unfinished work and evidence locality:**
+  no runtime candidate or lint fix
+  is authorised by this acceptance.
+  Sphinx logs are in GitHub Actions.
+  The Windows-native profiling ZIPs
+  remain external/local-only as
+  documented in the optimisation log.
+  Coordinator has not seen the retired
+  Implementation chat's uncommitted
+  Windows/local worktree and cannot
+  attest it is clean.
+* **Open limitations:** overall Qt
+  workflow status was in-progress
+  when reviewed, even though the
+  Sphinx job succeeded; repository
+  lint is independently red.
+  The post-merge Tests 56/56 after
+  retry and Windows compiled C-worker
+  narrow PASS remain accepted.
+  ``optimized01`` RETAIN,
+  native-result A/B REJECT,
+  no ``optimized02``.
+* **Context:** Coordinator CAUTION
+  but recoverable; the **Implementation**
+  handoff is mandatory because the
+  user has reported its window ended.
+  This is not a speculative token count.
+
 Implementation strict Sphinx CI cleanup -- PASS checkpoint
 ----------------------------------------------------------
 
@@ -491,6 +555,86 @@ Implementation strict Sphinx CI cleanup -- PASS checkpoint
 
 Immediate next work
 -------------------
+
+#. **Coordinator independent Sphinx review: ACCEPT.**
+   At tested branch SHA ``08f5a8048c14313107c5f635025776749598d402``,
+   GitHub Qt workflow ``41812732913``,
+   ``docs-validation`` job ``126515748491``
+   succeeded under unchanged strict
+   ``sphinx-build -W -T -b html docs docs/_build/html``;
+   the Sphinx log ends ``build succeeded.``
+   with zero Sphinx diagnostics. All nine
+   original markup diagnostics and one
+   newly exposed table-width issue were
+   corrected in RST only. Compared with
+   checkpoint ``c9eec4fd``, exactly
+   ``docs/index.rst``,
+   ``docs/qt-process-performance.rst`` and
+   this project map changed. This accepts
+   the **docs-validation job**, not an
+   unverified full workflow conclusion.
+#. **Implementation same-role replacement REQUIRED.**
+   User reports the context window in
+   ``10 Implementation — current`` has
+   ended. That old chat is **RETIRED
+   / NO FURTHER WRITES**. The **only**
+   next normal implementation owner
+   will be a newly created
+   ``11 Implementation — continuation``
+   chat, after it verifies current
+   repository state and explicitly
+   takes ownership. Do not let both
+   chats edit the active branch.
+   Coordinator remains independent
+   reviewer; other Scout/configuration
+   chats remain read-only or closed.
+#. **Next bounded stage: lint failure inventory
+   and classification, READ-ONLY first.**
+   The existing repository-wide lint
+   on run ``41812732905``, job
+   ``126515748852``, failed across
+   isort, black, mypy and cython-lint.
+   The new Implementation owner must
+   compare baseline vs current diagnostics,
+   group by file/tool, distinguish
+   real correctness concerns from
+   styling, diagnostic-only scripts,
+   optional native imports and
+   tooling/env variability; propose
+   **one narrowly bounded fix group**
+   or justified STOP. Do not perform
+   sweeping format/type edits, blanket
+   ignore rules, CI masking or
+   any production/runtime changes
+   without Coordinator's approval.
+#. **Existing performance decisions persist:**
+   ``optimized01`` RETAIN; native
+   PGresult handoff result-boundary
+   A/B REJECT by predeclared drift gate;
+   no ``optimized02``; no new
+   benchmark series. Post-merge Tests
+   ``41801317209``, attempt 2,
+   accepted 56/56 after one isolated
+   retry; the original pool/proxy
+   timeout remains unexplained.
+   Windows compiled C-worker job
+   ``126504663426`` remains narrow
+   PASS. No new test reruns required
+   by this docs-only change.
+#. **Recovery:** authoritative GitHub
+   branch ``feature/qt-process-pq``,
+   observed pre-handoff SHA
+   ``08f5a8048c14313107c5f635025776749598d402``.
+   This Coordinator documentation
+   checkpoint will advance the HEAD.
+   The old chat's local/uncommitted
+   state is **unknown**, not assumed
+   empty; the new chat must inspect
+   its own available checkout before
+   editing. On any unexplained
+   mismatch, stop and consult
+   Coordinator before claiming
+   runtime ownership.
 
 #. **Current Sphinx stage completed:** strict CI
    ``docs-validation`` PASS on run ``41812369735``,

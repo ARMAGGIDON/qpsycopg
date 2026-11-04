@@ -123,6 +123,7 @@ class Worker(_worker.Worker):
         self._snapshotStatus: int | None = None
 
     def run(self) -> None:
+        connectionReady = False
         while True:
             started = thread_time_ns() if self.profile is not None else 0
             request = recvFrame(self.sock)
@@ -135,12 +136,13 @@ class Worker(_worker.Worker):
                 started = thread_time_ns() if self.profile is not None else 0
                 try:
                     value = self._handle(request)
+                    connectionReady = self._connectionReady(request, value, connectionReady)
                 finally:
                     _addCpu(self.profile, "worker_handle", started)
 
                 started = thread_time_ns() if self.profile is not None else 0
                 try:
-                    stop |= self._connectionBroken()
+                    stop |= connectionReady and self._connectionBroken()
                 finally:
                     _addCpu(self.profile, "worker_connection_check", started)
 
@@ -148,7 +150,7 @@ class Worker(_worker.Worker):
             except BaseException as error:
                 started = thread_time_ns() if self.profile is not None else 0
                 try:
-                    stop |= self._connectionBroken()
+                    stop |= connectionReady and self._connectionBroken()
                 finally:
                     _addCpu(self.profile, "worker_connection_check", started)
                 response = Response(

@@ -71,7 +71,7 @@ jobs:
         run: |
           for impl in python qt-thread qt-process; do
             echo "Startup-error contract: $impl"
-            PSYCOPG_IMPL="$impl" python -m pytest -q tests/test_qt_failed_connection.py
+            PYTHONPATH="$PWD/psycopg" PSYCOPG_IMPL="$impl" python -m pytest -q tests/test_qt_failed_connection.py
           done
 
   windows-dll-bootstrap:

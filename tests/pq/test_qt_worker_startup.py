@@ -26,7 +26,9 @@ def _run_fake_worker(monkeypatch, module, startup, *, successful):
         requests.append(Request(3, Operation.CALL, 1, "send_query"))
     else:
         requests.append(Request(3, Operation.GET, 1, "error_message"))
-    requests.extend((Request(4, Operation.CALL, 1, "finish"), Request(5, Operation.CLOSE)))
+    requests.extend(
+        (Request(4, Operation.CALL, 1, "finish"), Request(5, Operation.CLOSE))
+    )
     responses = []
 
     class Conn:

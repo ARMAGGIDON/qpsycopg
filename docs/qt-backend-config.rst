@@ -17,9 +17,20 @@ Post-merge Tests run ``41801317209``, attempt 2, was
 accepted **56/56 SUCCESS after exactly one isolated retry**
 of a previously observed async pool/proxy timeout. Its root
 cause remains unproven. Baseline lint/Sphinx failures are
-accepted exceptions, **not** passing checks. Validation of
-a Windows ``qt-thread`` worker using compiled
-``psycopg_c`` is a separate pending follow-up.
+accepted exceptions, **not** passing checks. The subsequent bounded Windows compiled
+``worker_impl=c`` follow-up **PASSED** in Qt
+workflow run ``41809431708``, job
+``126504663426``, on Windows 2025/Python
+3.13. The explicit ``COMPILED_C_WORKER_VALIDATED``
+assertions verified the compiled ``.pyd``
+and C worker-module bindings, and the full
+``tools/smoke_qt_thread.py`` ended with
+``qpsycopg qt-thread smoke test: OK``.
+This is bounded C-worker smoke evidence,
+not broad Windows/native parity. The
+overall Qt workflow remains FAILURE
+because of accepted baseline Sphinx
+documentation problems.
 
 Application ``.env``
 --------------------
@@ -178,15 +189,41 @@ review. Per-connection switching remains outside scope.
 Integration-readiness checks
 ----------------------------
 
-In addition to the focused Qt smoke jobs, ``.github/workflows/qt-process.yml``
-now runs a separate warnings-as-errors Sphinx build and a Windows native
-``libpq.dll`` connection smoke using a real PostgreSQL service. The Windows
-connection smoke covers the Python ctypes backend and a Qt thread with its
-Python worker; it does not, by itself, validate the separately compiled
-``psycopg_c`` implementation or a Qt worker configured as ``c``.
+The dedicated ``.github/workflows/qt-process.yml``
+retains warnings-as-errors Sphinx build,
+Windows native ``libpq.dll`` connection
+validation with Python worker, and now
+contains a separate ``windows-c-worker-smoke``
+job. Unlike the earlier Python-worker
+connection smoke, the new job uses
+Windows ``psycopg_c`` wheel provisioning
+already exercised by the upstream Tests
+C matrix, asserts that the actual
+``qt-thread`` worker modules use
+``psycopg_c.pq`` without fallback,
+and runs the full existing semantic smoke
+against local Windows PostgreSQL.
+
+**Validation PASS (C worker only):**
+GitHub run ``41809431708``, job
+``126504663426``, with evidence
+artifact ``windows-qt-thread-c-worker-smoke``
+(ID ``13310819123``). The artifact's
+``qt-thread-c-worker-evidence.log``
+contains the native ``.pyd`` identity
+and all smoke stages ending ``OK``.
+Downloaded ZIP SHA256:
+``679eb5ba320eff8bb25bb6f3e54911118b632cd066361cdbc725543a7ad4bea6``.
+No production runtime, benchmark or
+performance algorithm changed.
 
 The full Tests matrix was accepted post-merge (run ``41801317209``,
 attempt 2, 56/56 after one isolated job retry). Repository lint/Sphinx
 baseline exceptions remain documented rather than treated as passing,
-and the separately compiled Windows ``worker_impl=c`` smoke is
-still an explicit validation gap until its own evidence is recorded.
+and the separately compiled Windows
+``worker_impl=c`` smoke gap is now
+closed by the **narrow PASS** above.
+The Qt workflow's separate documentation
+failure remains an accepted baseline
+exception; this C-worker result does
+not make the entire workflow green.

@@ -223,13 +223,13 @@ receive and native Winsock wait were therefore tested separately.
 
 A controlled three-way result was approximately:
 
-======================  ============  ============
-Mode                    SELECT median SELECT p95
-======================  ============  ============
-base                    ~0.728 ms     ~0.960 ms
-native worker receive   ~0.731 ms     ~0.955 ms
-native receive + wait   ~0.757 ms     ~1.247 ms
-======================  ============  ============
+======================  =============  ============
+Mode                    SELECT median  SELECT p95
+======================  =============  ============
+base                    ~0.728 ms      ~0.960 ms
+native worker receive   ~0.731 ms      ~0.955 ms
+native receive + wait   ~0.757 ms      ~1.247 ms
+======================  =============  ============
 
 Native worker receive was neutral and native socket wait was worse. Both helpers
 remain experimental switches only; do not enable them by default or repeat the

@@ -4,10 +4,22 @@ Qt backend import-time configuration
 Status
 ------
 
-This is a bounded configuration feature on ``feature/qt-backend-config``,
-separate from ``feature/qt-process-pq`` performance experiments.
-Coordinator review of PR #2 accepted the import-time architecture
-(review ID 5758449221); merge remains blocked pending integration checks.
+**MERGED:** configuration PR #2 was integrated into
+``feature/qt-process-pq`` at merge commit
+``9126cddfb9db45b787ea7ea626c3e152f1d1ac24``.
+The original implementation was developed separately on
+``feature/qt-backend-config`` and approved by Coordinator
+(review ``5765518048``) before integration. The merged change
+adds import-time backend configuration and Windows libpq DLL
+bootstrap without altering the SQL hot path.
+
+Post-merge Tests run ``41801317209``, attempt 2, was
+accepted **56/56 SUCCESS after exactly one isolated retry**
+of a previously observed async pool/proxy timeout. Its root
+cause remains unproven. Baseline lint/Sphinx failures are
+accepted exceptions, **not** passing checks. Validation of
+a Windows ``qt-thread`` worker using compiled
+``psycopg_c`` is a separate pending follow-up.
 
 Application ``.env``
 --------------------
@@ -152,15 +164,16 @@ connection through every native binding.
 
 The repository-wide lint workflow still reports many existing errors in
 other Qt/profiling files. Feature-owned formatting diagnostics were corrected
-separately. Record the final-head CI outcome in the PR review evidence before
-integration; do not treat a failed repository-wide lint run as feature-clean
-without checking its diagnostics. The full upstream test matrix is a separate
-CI gate, and no SQL performance ratios have been claimed.
+separately. At integration, repository-wide lint errors were accepted as documented
+baseline exceptions after review; they were not reported as clean checks.
+The full post-merge Tests matrix was subsequently accepted at 56/56
+after one isolated retry. No SQL performance ratios were claimed for
+this bounded configuration feature.
 
 Coordinator review #5758449221 accepted the bounded import-time alternative
 and explicitly deferred ``psycopg.configure()`` to a separate architectural
-decision. PR #2 is not authorised for merging until the final integration
-checkpoint. Per-connection switching remains outside scope.
+decision. PR #2 was subsequently merged following independent integration
+review. Per-connection switching remains outside scope.
 
 Integration-readiness checks
 ----------------------------
@@ -172,8 +185,8 @@ connection smoke covers the Python ctypes backend and a Qt thread with its
 Python worker; it does not, by itself, validate the separately compiled
 ``psycopg_c`` implementation or a Qt worker configured as ``c``.
 
-The complete upstream Tests matrix is a required integration gate. Lint
-baseline must be compared to the same base revision: pre-existing repository
-errors must not be treated as new feature failures, and all feature-owned
-files must be free of new lint diagnostics. Keep this change as a draft PR
-until final-head CI results and the Coordinator merge review are recorded.
+The full Tests matrix was accepted post-merge (run ``41801317209``,
+attempt 2, 56/56 after one isolated job retry). Repository lint/Sphinx
+baseline exceptions remain documented rather than treated as passing,
+and the separately compiled Windows ``worker_impl=c`` smoke is
+still an explicit validation gap until its own evidence is recorded.

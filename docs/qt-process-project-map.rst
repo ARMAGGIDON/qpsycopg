@@ -956,8 +956,11 @@ Implementation failed-connect FATAL preservation -- correctness checkpoint
   ``67e75674`` also SUCCESS, including C job
   ``126711595662``. Latest test-only line-wrap
   revision ``2003c537`` had four Qt jobs SUCCESS;
-  its Windows compiled-C job remained in progress
-  when this checkpoint was drafted.
+  Qt workflow ``41869413631`` on
+  ``2003c537`` also completed SUCCESS (5/5 jobs):
+  compiled ``psycopg_c`` .pyd validated, full
+  Windows qt-thread C smoke PASS and qt-process
+  C-worker missing-db tests 2/2 PASS.
 * **Baseline/limits:** general 56-job Tests matrix
   retains separate known PyPy PackedValues failures
   and possible pool/proxy timing noise. Repo lint
@@ -988,9 +991,9 @@ Immediate next work
    lifecycle and fatal-after-connect tests pass.
    Qt workflows 41868553820 and 41869281083
    SUCCESS, including Windows compiled C-worker.
-   Last line-wrap-only test revision 2003c537
-   had four Qt jobs SUCCESS and Windows-C
-   job pending at documentation draft time.
+   Last test-only revision 2003c537
+   passed Qt workflow 41869413631 (5/5 jobs),
+   including Windows C-worker 2/2 tests.
 #. **Next owner: existing 00 Coordinator** for
    independent correctness checkpoint review.
    Current 11 Implementation chat remains sole

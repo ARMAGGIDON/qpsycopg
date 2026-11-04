@@ -346,6 +346,104 @@ Established decisions / do not repeat blindly
 * Do not infer GUI responsiveness from worker topology; synchronous calls block
   the invoking thread in every architecture.
 
+Implementation Windows compiled C-worker smoke -- PASS checkpoint
+-----------------------------------------------------------------
+
+* **Repository / scope:** ``ARMAGGIDON/qpsycopg``,
+  branch ``feature/qt-process-pq``; workflow
+  implementation at commit
+  ``d7856544f6d80f6eb06da9b7818fd40382fe6198``.
+  Changes in this bounded stage: only
+  ``.github/workflows/qt-process.yml``
+  plus ``docs/qt-backend-config.rst``
+  and recovery documentation. No
+  production, C extension, pool/test
+  code, benchmark v3 or performance
+  algorithm changes.
+* **CI PASS evidence:** GitHub Actions
+  Qt process backend pull_request run
+  ``41809431708``, attempt 1, job
+  ``126504663426``
+  (``windows-c-worker-smoke``) on
+  ``windows-2025``, CPython 3.13.17
+  completed **SUCCESS**. Provisioning
+  with ``vcpkg libpq:x64-windows-release``,
+  ``pg_config`` stub, Cython/setuptools,
+  MSVC and ``delvewheel`` succeeded;
+  compiled wheel
+  ``psycopg_c-3.3.7.dev1-cp313-cp313-win_amd64.whl``
+  installed with ``psycopg[qt]``.
+* **Explicit native-worker identity:** CI ran
+  ``PSYCOPG_IMPL=qt-thread``,
+  ``QPSYCOPG_WORKER_IMPL=c`` and asserted
+  ``psycopg.pq.__impl__ == "qt-thread"``,
+  ``pq_qt_thread._workerPq is psycopg_c.pq``,
+  ``_qt_process_worker.pq is psycopg_c.pq``,
+  ``_qt_process_worker_pool.pq is psycopg_c.pq``,
+  and imported binary suffix ``.pyd``.
+  Log marker:
+  ``COMPILED_C_WORKER_VALIDATED``
+  from
+  ``.../psycopg_c/pq.cp313-win_amd64.pyd``.
+  All these assertions completed before
+  the smoke; **no Python worker fallback**.
+* **Full semantic smoke result:** actual
+  ``tools/smoke_qt_thread.py`` passed
+  ``basic adaptation``, ``NULL/empty``,
+  multi-results, COPY, SQL error survival,
+  shared connection/per-thread cursors,
+  cancellation, caller fileno boundary,
+  fatal backend termination and
+  ``AsyncConnection`` against
+  Windows local PostgreSQL.
+  Terminal marker:
+  ``qpsycopg qt-thread smoke test: OK``.
+* **Artifact evidence:** GitHub Actions
+  artifact ``windows-qt-thread-c-worker-smoke``,
+  ID ``13310819123``, from this
+  run. Downloaded and CRC-checked ZIP
+  ``qt-thread-c-worker-evidence-run41809431708.zip``
+  SHA256
+  ``679eb5ba320eff8bb25bb6f3e54911118b632cd066361cdbc725543a7ad4bea6``;
+  contains one 927-byte
+  ``qt-thread-c-worker-evidence.log``
+  with identity and all semantic stages
+  ending in OK. Original artifact
+  remains hosted on GitHub Actions,
+  not newly committed to the repo.
+* **Important distinction:** the *whole*
+  Qt workflow run ``41809431708``
+  has conclusion ``failure`` because
+  ``docs-validation`` failed with
+  the same nine documented **baseline**
+  Sphinx warnings/errors (literal block
+  quote x2, unexpected indentation x6,
+  missing toctree x1).
+  The C-worker job plus other
+  ``smoke``, ``windows-libpq-connection``
+  and ``windows-dll-bootstrap``
+  jobs all succeeded. This narrowly
+  **closes the Windows compiled C-worker
+  smoke validation gap**; it does NOT
+  certify the overall workflow, broader
+  Windows parity, or remove lint/Sphinx
+  exceptions.
+* **Next action / owner:** existing
+  ``00 Coordinator`` reviews the
+  completed narrow PASS checkpoint.
+  Current ``10 Implementation — current``
+  retains sole ordinary runtime ownership.
+  ``optimized01`` RETAIN,
+  native boundary diagnostic REJECT,
+  no ``optimized02``.
+  No additional performance experiments
+  or runtime changes are authorised.
+* **Context: CAUTION.** Evidence,
+  ownership and limitations recorded;
+  earlier in-progress project map
+  sections are historical. No same-role
+  HANDOFF NOW signal.
+
 Immediate next work
 -------------------
 
@@ -386,29 +484,47 @@ Immediate next work
    prior pool/proxy timeout cause remains
    unknown; no more CI retries, waiver,
    or test changes are justified.
-#. **Next bounded stage: Windows compiled
-   C-worker validation coverage.**
-   Existing ``10 Implementation — current``
-   remains sole runtime owner and should
-   first verify how to install/build
-   ``psycopg_c`` on the Windows Actions
-   runner already exercising real libpq,
-   then run existing qt-thread semantic
-   smoke with ``QPSYCOPG_WORKER_IMPL=c``
-   and check the actual C binding was
-   selected. Use the smallest CI/tooling
-   change; no production runtime, pool,
-   benchmark v3 or performance algorithm
-   change. If provisioning is not
-   practical, STOP and record the blocker
-   rather than silently falling back to
-   Python worker.
-#. Correct the stale ``Status`` text in
-   ``docs/qt-backend-config.rst``:
-   PR #2 has merged, contrary to its
-   old feature-branch / merge-pending
-   wording. Keep accepted lint/Sphinx
-   exceptions as exceptions, not successes.
+#. **Windows compiled C-worker validation: PASS.**
+   Coordinator-authorised bounded validation
+   completed on Windows 2025 / CPython 3.13
+   in Qt workflow ``41809431708``,
+   job ``126504663426`` (SUCCESS),
+   head ``d7856544f6d80f6eb06da9b7818fd40382fe6198``.
+   Real native ``psycopg_c`` wheel
+   was built and installed; the explicit
+   ``COMPILED_C_WORKER_VALIDATED`` assertion
+   confirmed a compiled ``.pyd`` and
+   ``pq_qt_thread._workerPq`` plus both
+   worker-module ``pq`` globals referencing
+   ``psycopg_c.pq``, with no Python fallback.
+   Full existing ``tools/smoke_qt_thread.py``
+   finished ``qpsycopg qt-thread smoke test: OK``
+   with ``PSYCOPG_IMPL=qt-thread`` and
+   ``QPSYCOPG_WORKER_IMPL=c``.
+   Evidence artifact ID ``13310819123``.
+   This closes the specific Windows
+   compiled C-worker smoke gap, **not**
+   all Windows or native-binding validation.
+#. **PR #2 documentation status corrected:**
+   ``docs/qt-backend-config.rst`` now reports
+   PR #2 MERGED, with the accepted
+   post-merge Tests evidence.
+   The Qt workflow's overall conclusion
+   is FAILURE solely due to separate
+   ``docs-validation``: the same nine
+   documented baseline Sphinx messages
+   (two literal block, six indentation,
+   one toctree) remain. Four other
+   Qt workflow jobs are SUCCESS.
+   Retain accepted lint/Sphinx exceptions
+   honestly as exceptions.
+#. **Next owner: existing 00 Coordinator**,
+   for bounded independent Windows
+   C-worker validation review. Do not
+   infer broad Windows parity or start
+   another runtime optimisation target
+   without a separate decision.
+
 #. **No new performance series** or
    ``optimized02`` is authorised.
    ``optimized01`` remains RETAIN;

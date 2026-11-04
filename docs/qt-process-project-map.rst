@@ -603,6 +603,71 @@ Implementation PackedValues contract audit -- diagnostic-only checkpoint
   ``00 Coordinator`` for independent STOP/review decision.
   Do not create another Implementation owner or Scout yet.
 
+Implementation PackedValues regression tests -- PyPy correctness blocker
+------------------------------------------------------------------------
+
+* **Base / scope:** Coordinator-authorised test-only stage from
+  ``5bbd255539c61c63fbc42c6729fa95c29ad17ea6``.
+  Test commits ``78d4869cf84a1b74440201889adb02ebf1b07c38``
+  and ``ef7bab12e8715b3c9e341518f2d4614f58591e31``
+  add only ``tests/pq/test_qt_process_protocol.py`` (17 cases).
+  They pin 0/1/4/6/9 cells, NULL/empty/binary, logical
+  indexing/slicing/truthiness, physical four-field tuple/list
+  iteration, pickle and marshal fast-frame socketpair round trips,
+  and restored logical cells. No PostgreSQL or PySide6 required.
+* **Test-only compatibility adjustment:** initial CI pool job
+  ``126562017227`` failed at test *collection* because it
+  installed older upstream Psycopg without the private
+  ``_qt_process_protocol`` module. Commit ``ef7bab12``
+  defers that import to a fixture (only when tests are
+  selected). In latest PR Tests workflow ``41826964492``,
+  pool-integration jobs ``126564060162`` (Psycopg 3.2)
+  and ``126564060200`` (Psycopg 3.3) both SUCCESS.
+* **Local targeted preflight:** ``python -m pytest -q
+  tests/pq/test_qt_process_protocol.py`` completed 17/17
+  PASS against a source-equivalent extracted Python
+  protocol mirror, not a complete repository installation.
+  Local checkout/network access was unavailable; this
+  preflight is not a substitute for actual repository CI.
+* **Actual repository CI: correctness BLOCKER on PyPy.**
+  PR Tests workflow ``41826964492`` on ``ef7bab12``:
+  PyPy 3.10 job ``126564060105`` and PyPy 3.11 job
+  ``126564060403`` FAILED. Each shows 15/15 selected
+  ``PackedValues`` cell/response tests raising
+  ``RecursionError``; both fast-request-only cases run.
+  Accessing ``values.count`` (also ``values.data``)
+  enters ``_qt_process_protocol.py:95 __getitem__``,
+  which accesses ``self.count`` again. ``__len__``
+  delegates to the same field and also recurses.
+  This is reproducible internal semantics failure under
+  the actual PyPy installations, not a mere mypy finding
+  and not caused by the test's assertions.
+* **Open validation:** the full 56-job workflow and main
+  Linux CPython 3.13 job were still in progress when
+  this blocker was recorded. Do not claim an overall
+  green CI matrix. On ``ef7bab12`` lint remains baseline
+  FAILED with the same six hooks; the new test file has
+  no new isort/black/flake8/mypy diagnostics. Qt workflow
+  had 4/5 jobs SUCCESS with Windows compiled-C job pending.
+* **Decision / protection:** STOP test-only stage due to
+  genuine interpreter-specific correctness blocker.
+  No skip/xfail or blanket ignore was added to hide it.
+  No production changes are authorised: do not rewrite
+  ``PackedValues``, ``__iter__``, ``NamedTuple`` or wire
+  transport on this stage. ``optimized01`` RETAIN,
+  native PGresult handoff A/B REJECT, no ``optimized02``.
+* **Recovery / next owner:** GitHub commits and job logs
+  above are authoritative. Old Windows/local-only
+  worktree state remains unverified. Existing ``11
+  Implementation — continuation`` remains sole runtime
+  owner but pauses changes. Route to existing ``00
+  Coordinator`` for evidence review: determine PyPy
+  support/correctness requirement and authorize one
+  minimal runtime repair or an explicit scope decision.
+  No other implementation or Scout chat yet.
+  **Context risk: CAUTION** (tool-heavy investigation);
+  repository evidence is recoverable.
+
 Coordinator independent lint triage and PackedValues decision
 -------------------------------------------------------------
 
@@ -676,48 +741,25 @@ Coordinator independent lint triage and PackedValues decision
 Immediate next work
 -------------------
 
-#. **Coordinator independent ``PackedValues`` review
-   COMPLETE: ACCEPT audit, STOP runtime correction.**
-   The ``NamedTuple`` four-field physical iteration
-   and logical cell indexing/length are inconsistent
-   under ordinary sequence expectations, but no
-   current production consumer defect was reproduced.
-   The compact wire path intentionally requires
-   ``tuple(values)`` to contain four physical
-   fields. Do not add ``__iter__``, replace the
-   tuple representation, alter the wire format,
-   or silence the type diagnostics without new
-   demonstrated correctness evidence.
-#. **Next bounded stage: implement focused
-   regression tests for the existing dual
-   internal contract.** Sole owner is
-   ``11 Implementation — continuation``.
-   Add concise Python-only tests (no PostgreSQL
-   dependency) for 0/1/4/6/9 logical cells,
-   NULL/empty/binary data, negative index and
-   slicing, physical ``tuple(values)`` wire
-   fields, and compact marshal/pickle fast
-   frame pack/unpack. Preserve existing
-   behavior: tests are **invariants**, not
-   authorization for protocol redesign.
-   Execute targeted pytest and applicable
-   existing CI, correcting only test issues;
-   record evidence in the handoff map.
-   Ask the user for a concrete Windows/local
-   run **only if** CI cannot cover a material
-   integration gap.
-#. **Work directly through ordinary test iterations.**
-   No intermediate Coordinator report is required
-   for each small test commit or CI run. Return
-   only a completed test milestone or a real
-   correctness blocker. No production runtime,
-   wire format, benchmark v3, performance
-   experiment, broad lint cleanup or blanket
-   ignore changes are authorised.
-   ``optimized01`` RETAIN; native PGresult
-   boundary A/B REJECT; no ``optimized02``.
-   The previous audit and routing instructions
-   below are historical and superseded.
+#. **PackedValues contract regression test stage: BLOCKED.**
+   Test-only commits ``78d4869`` and ``ef7bab1`` add
+   17 invariant cases. Two PyPy CI jobs reproduce a
+   ``RecursionError`` on ``PackedValues.count``/``data``
+   through recursive ``__getitem__`` field access.
+   The bug is in existing internal runtime semantics
+   on PyPy, not test collection or a style warning.
+   Do not hide it with skip/xfail or patch production
+   code without a new Coordinator authorization.
+#. **Next owner: existing 00 Coordinator** for a
+   correctness/support-scope decision based on GitHub
+   Tests workflow ``41826964492``, PyPy jobs
+   ``126564060105`` and ``126564060403``.
+   Sole Implementation owner ``11 Implementation —
+   continuation`` pauses runtime/test changes until
+   that decision. No new Scout/parallel owner.
+   ``optimized01`` RETAIN; native handoff REJECT;
+   no ``optimized02``. Older instructions below
+   are historical.
 
 #. **Coordinator independent Sphinx review: ACCEPT.**
    At tested branch SHA ``08f5a8048c14313107c5f635025776749598d402``,

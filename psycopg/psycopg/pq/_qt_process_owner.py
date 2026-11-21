@@ -80,12 +80,15 @@ class ConnectAttempt:
         self._transport: Any = None
         self._owners: dict[OwnerToken, tuple[Any, Any]] = {}
         self._context: Token[ConnectAttempt | None] | None = None
+        self._entered = False
         with _attempts_lock:
             _attempts[self.token] = self
 
     def __enter__(self) -> ConnectAttempt:
-        if self._context is not None:
-            raise RuntimeError("connect attempt cannot be entered twice")
+        with self._lock:
+            if self._entered:
+                raise RuntimeError("connect attempt token cannot be reused")
+            self._entered = True
         self._context = _current.set(self)
         return self
 

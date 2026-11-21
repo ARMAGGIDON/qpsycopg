@@ -55,8 +55,8 @@ The preferred Windows data path is::
       |
       +-- deferred send + compact fast execute
       |
-      +-- raw Windows named pipe
-      |     +-- native parent frame exchange when available
+      +-- Windows overlapped named pipe (or explicit TCP loopback)
+      |     +-- cancellable ReadFile/WriteFile and QProcess PID check
       |
       +================ process boundary ================+
                                                         |
@@ -68,9 +68,12 @@ The preferred Windows data path is::
                                                         |
                                                    PostgreSQL
 
-The main Windows transport defaults to ``QPSYCOPG_IPC=pipe``. TCP remains a
-fallback and uses the Windows loopback fast path where available. Non-Windows
-currently uses TCP.
+The main Windows transport defaults to ``QPSYCOPG_IPC=pipe``. TCP can be
+selected explicitly with ``QPSYCOPG_IPC=tcp`` and never acts as a silent
+fallback on Pipe failure. The Pipe implementation is Windows-only; asking for
+Pipe on other platforms fails explicitly. The actual physical IPC kind is
+available at ``connection.pgconn._transport.ipcKind`` (``pipe`` or ``tcp``).
+See :doc:`qt-process-ipc-pipe` for overlapped cancellation and its limits.
 
 The worker process and the PostgreSQL session have different lifetimes. Closing a
 Psycopg connection closes the real ``PGconn``; a healthy worker process may be
@@ -82,7 +85,8 @@ The current process hot path retains the measured wins from earlier work:
 * deferred ``send_query*`` + one-request fast execute;
 * compact/marshal framing;
 * raw Windows named-pipe transport;
-* native parent-side named-pipe frame exchange;
+* Python overlapped named-pipe framing (synchronous CRT/C frame fast paths
+  are intentionally disabled because they cannot safely use overlapped HANDLEs);
 * warmed worker-process reuse;
 * cached stable connection state where safe;
 * native result value/metadata packing;

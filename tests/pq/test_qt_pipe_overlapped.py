@@ -188,17 +188,17 @@ def test_managed_pipe_two_real_qprocess_workers():
             assert int(version) >= 180000, f"PostgreSQL 18 is required: {version}"
         # Kill only owner A: its independent sibling must keep servicing SQL.
         receipt = owners[0].requestKill(owners[0].ownerToken)
-        assert receipt.ownerToken == owners[0].ownerToken
+        assert receipt.owner_token == owners[0].ownerToken
         proof = owners[0].waitExit(owners[0].ownerToken, 10)
-        assert proof is not None and proof.ownerToken == owners[0].ownerToken
-        assert proof.osPid == owners[0]._osPid
-        assert not psutil.pid_exists(proof.osPid)
+        assert proof is not None and proof.owner_token == owners[0].ownerToken
+        assert proof.os_pid == owners[0]._osPid
+        assert not psutil.pid_exists(proof.os_pid)
         assert connections[1].execute("select 42").fetchone() == (42,)
         _evidence("qp09-windows-pipe-pg18.json", {
             "result": "PASS", "ipc": "pipe", "pg_server_version_num": int(version),
             "attempt_tokens_distinct": attempts[0].token != attempts[1].token,
             "owner_tokens_distinct": owners[0].ownerToken != owners[1].ownerToken,
-            "worker_a_os_pid": proof.osPid, "worker_b_os_pid": owners[1]._osPid,
+            "worker_a_os_pid": proof.os_pid, "worker_b_os_pid": owners[1]._osPid,
             "exit_proof": repr(proof), "external_pid_absent": True,
             "worker_b_survived": True,
         })
@@ -246,14 +246,14 @@ def test_cancel_managed_connect_with_peer_accepted_but_silent(monkeypatch):
         owner = attempt.owner
         assert owner is not None and psutil.pid_exists(owner._osPid)
         receipt = cancelConnect(attempt.token)
-        assert receipt is not None and receipt.ownerToken == owner.ownerToken
+        assert receipt is not None and receipt.owner_token == owner.ownerToken
         assert done.wait(4), "blocked handshake read ignored cancellation"
         thread.join(1)
         assert not errors, f"uncaught helper thread exception: {errors}"
         assert failures, "cancelled connect unexpectedly succeeded"
         proof = owner.waitExit(owner.ownerToken, 10)
         assert proof is not None
-        assert proof.ownerToken == owner.ownerToken and proof.osPid == owner._osPid
+        assert proof.owner_token == owner.ownerToken and proof.os_pid == owner._osPid
         assert not psutil.pid_exists(owner._osPid)
         _evidence("qp09-cancel-handshake.json", {
             "result": "PASS", "peer_accepted": True,

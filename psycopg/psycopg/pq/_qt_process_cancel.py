@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib
+import os
+import sys
 import secrets
 import select
 import socket
@@ -14,6 +16,7 @@ from .. import errors as e
 from .. import pq
 from ._qt_process_protocol import Operation, RemoteError, Request, Response
 from ._qt_process_protocol import recvFrame, recvToken, sendFrame, sendToken
+from ._qt_process_pipe import PipeListenerSocket, connectPipe
 
 CONTROL_OPEN = "qpsycopg_cancel_control_open"
 CONTROL_CANCEL = "qpsycopg_cancel_control"
@@ -31,7 +34,8 @@ class CancelControlClient:
     @classmethod
     def open(cls, pgconn: Any) -> CancelControlClient:
         host, port, token = pgconn._call(CONTROL_OPEN)
-        sock = socket.create_connection((host, int(port)), timeout=10.0)
+        sock = (connectPipe(host[5:]) if host.startswith("pipe:")
+                else socket.create_connection((host, int(port)), timeout=10.0))
         try:
             sock.settimeout(10.0)
             sendToken(sock, bytes(token))
@@ -109,7 +113,17 @@ class CancelControlServer:
         # PQcancelCreate touches PGconn, so create the object on the worker's
         # main thread before handing only PGcancelConn to the control thread.
         self.cancelConn = conn.cancel_conn()
-        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        ipc = os.environ.get("QPSYCOPG_IPC", "pipe" if sys.platform == "win32" else "tcp").lower()
+        if ipc == "pipe":
+            if sys.platform != "win32":
+                raise e.NotSupportedError("QPSYCOPG_IPC=pipe is Windows-only")
+            self.listener = PipeListenerSocket()
+            # Parent opens cancellation channel; do not accept another PID.
+            self.listener.expected_pid = os.getppid()
+        elif ipc == "tcp":
+            self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        else:
+            raise e.InterfaceError(f"unknown QPSYCOPG_IPC value: {ipc!r}")
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.listener.bind(("127.0.0.1", 0))
         self.listener.listen(1)

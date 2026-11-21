@@ -66,6 +66,8 @@ def test_real_owner_exit_and_unaffected_neighbor():
         assert proof.os_pid == pid
         assert proof.timestamp >= queued.timestamp
         assert owner.receipt(owner.ownerToken).state == ExitState.OS_EXIT_CONFIRMED
+        owner.thread.join(3)
+        assert not owner.thread.is_alive(), "confirmed kill leaked QProcess owner thread"
         assert worker_done.wait(10)
         try:
             current = psutil.Process(pid)

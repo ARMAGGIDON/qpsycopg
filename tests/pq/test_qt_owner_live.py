@@ -14,7 +14,11 @@ import pytest
 
 import psycopg
 from psycopg import pq
-from psycopg.pq._qt_process_owner import ExitState, cancelConnect, newConnectAttempt
+# Some upstream CI jobs run installed wheels without this fork-only module.
+_owner = pytest.importorskip("psycopg.pq._qt_process_owner")
+ExitState = _owner.ExitState
+cancelConnect = _owner.cancelConnect
+newConnectAttempt = _owner.newConnectAttempt
 
 _DSN = os.environ.get("QPSYCOPG_OWNER_TEST_DSN")
 pytestmark = pytest.mark.skipif(

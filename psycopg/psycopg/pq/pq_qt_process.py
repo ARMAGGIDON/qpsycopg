@@ -15,6 +15,10 @@ import secrets
 import importlib
 import itertools
 import threading
+from time import monotonic
+import socket as _stdlib_socket
+from ._qt_process_owner import (ConnectAttempt, ExitProof, ExitState, KillReceipt,
+                                OwnerToken, currentConnectAttempt)
 from typing import Any, cast
 from collections.abc import Callable
 
@@ -119,36 +123,128 @@ def _workerImpl() -> str:
 
 
 class _ProcessOwner:
-    """Own QProcess in one Python thread so calls never cross Qt affinity."""
+    """One QProcess and an immutable identity; Qt calls stay in its owner thread."""
 
-    def __init__(self, host: str, port: int, token: str) -> None:
+    def __init__(self, host: str, port: int, token: str, *,
+                 attempt: ConnectAttempt | None = None, transport: Any = None) -> None:
         self.host = host
         self.port = port
-        self.token = token
+        self.token = token  # IPC authentication only; never the process identity.
+        self.ownerToken = OwnerToken()
+        self.attemptToken = None if attempt is None else attempt.token
         self.commands: queue.Queue[str] = queue.Queue()
         self.started = threading.Event()
         self.startError: BaseException | None = None
+        self._stateLock = threading.Lock()
+        self._exitEvent = threading.Event()
+        self._killRequested = False
+        self._closeRequested = False
+        self._state = ExitState.EXIT_UNCONFIRMED
+        self._timestamp = monotonic()
+        self._osPid: int | None = None
+        self._exitProof: ExitProof | None = None
+        self._diagnostic = "worker not started"
         self.thread = threading.Thread(
-            target=self._run,
-            name="qpsycopg-QProcess",
-            daemon=True,
+            target=self._run, name="qpsycopg-QProcess", daemon=True
         )
+        # The callback is synchronous and precedes any potentially blocking
+        # QProcess/start/handshake/connect activity.
+        if attempt is not None:
+            attempt._bind(self, transport)
         self.thread.start()
+
+    def _checkToken(self, token: OwnerToken) -> None:
+        if not isinstance(token, OwnerToken) or token != self.ownerToken:
+            raise ValueError("wrong or stale qpsycopg owner token")
+
+    def receipt(self, token: OwnerToken) -> KillReceipt:
+        self._checkToken(token)
+        with self._stateLock:
+            return KillReceipt(token, self._state, self._timestamp,
+                               self._osPid, self._diagnostic)
+
+    def requestKill(self, token: OwnerToken) -> KillReceipt:
+        """An idempotent request, not an OS-exit assertion."""
+        self._checkToken(token)
+        with self._stateLock:
+            if not self._killRequested and self._exitProof is None:
+                self._killRequested = True
+                self._state = ExitState.KILL_QUEUED
+                self._timestamp = monotonic()
+                self._diagnostic = "kill queued for the owning QProcess thread"
+                self.commands.put("kill")
+            return KillReceipt(token, self._state, self._timestamp,
+                               self._osPid, self._diagnostic)
+
+    def kill(self) -> None:
+        """Legacy exact-instance API: enqueue only; never confirm OS-exit."""
+        self.requestKill(self.ownerToken)
+
+    def close(self) -> None:
+        with self._stateLock:
+            if self._closeRequested:
+                return
+            self._closeRequested = True
+            self.commands.put("close")
+
+    def exitProof(self, token: OwnerToken) -> ExitProof | None:
+        self._checkToken(token)
+        with self._stateLock:
+            return self._exitProof
+
+    def waitExit(self, token: OwnerToken, timeout: float) -> ExitProof | None:
+        self._checkToken(token)
+        if timeout < 0:
+            raise ValueError("timeout must be nonnegative")
+        self._exitEvent.wait(timeout)
+        return self.exitProof(token)
+
+    def exitConfirmed(self) -> bool:
+        """Compatibility seam for DBPT T08; thread death is not sufficient."""
+        return self.exitProof(self.ownerToken) is not None
+
+    def _dispatched(self) -> None:
+        with self._stateLock:
+            if self._exitProof is None:
+                self._state = ExitState.KILL_DISPATCHED
+                self._timestamp = monotonic()
+                self._diagnostic = "QProcess.kill() dispatch in owner thread"
+
+    def _unconfirmed(self, reason: str) -> None:
+        with self._stateLock:
+            if self._exitProof is None:
+                self._state = ExitState.EXIT_UNCONFIRMED
+                self._timestamp = monotonic()
+                self._diagnostic = reason
+
+    def _observeExit(self, process: QProcess, reason: str) -> None:
+        # QProcess.NotRunning is its OS process-status observation. Require a
+        # recorded real PID; neither Python thread completion nor queue drain
+        # is accepted as a substitute.
+        if process.state() != QProcess.ProcessState.NotRunning:
+            return
+        with self._stateLock:
+            if self._osPid is None or self._exitProof is not None:
+                return
+            status = process.exitStatus()
+            self._exitProof = ExitProof(
+                self.ownerToken, self._osPid, int(process.exitCode()),
+                int(getattr(status, "value", status)), monotonic(), reason,
+            )
+            self._state = ExitState.OS_EXIT_CONFIRMED
+            self._timestamp = self._exitProof.timestamp
+            self._diagnostic = reason
+            self._exitEvent.set()
 
     def _run(self) -> None:
         process: QProcess | None = None
         try:
             process = QProcess()
             process.setProgram(sys.executable)
-            process.setArguments(
-                [
-                    "-m",
-                    "psycopg.pq._qt_process_worker",
-                    self.host,
-                    str(self.port),
-                    self.token,
-                ]
-            )
+            process.setArguments(getattr(self, "_workerArguments", [
+                "-m", "psycopg.pq._qt_process_worker",
+                self.host, str(self.port), self.token,
+            ]))
             env = QProcessEnvironment.systemEnvironment()
             env.insert("PSYCOPG_IMPL", _workerImpl())
             process.setProcessEnvironment(env)
@@ -160,75 +256,115 @@ class _ProcessOwner:
                 raise e.OperationalError(
                     f"couldn't start qpsycopg worker: {process.errorString()}"
                 )
+            with self._stateLock:
+                pid = int(process.processId())
+                self._osPid = pid if pid > 0 else None
+                self._diagnostic = "worker started"
             self.started.set()
-
             while True:
                 command = self.commands.get()
                 if command == "kill":
-                    if process.state() != QProcess.ProcessState.NotRunning:
+                    running = process.state() != QProcess.ProcessState.NotRunning
+                    if running:
+                        self._dispatched()
                         process.kill()
                         process.waitForFinished(5_000)
+                    self._observeExit(
+                        process,
+                        "forced QProcess kill" if running else "worker already exited",
+                    )
+                    if process.state() == QProcess.ProcessState.NotRunning:
+                        return  # Never leave a reaped QProcess owner thread waiting.
+                    self._unconfirmed("kill dispatched; OS exit not confirmed after 5s")
                 elif command == "close":
                     if process.state() != QProcess.ProcessState.NotRunning:
                         process.waitForFinished(2_000)
-                        if process.state() != QProcess.ProcessState.NotRunning:
-                            process.kill()
-                            process.waitForFinished(5_000)
+                    forced = process.state() != QProcess.ProcessState.NotRunning
+                    if forced:
+                        self._dispatched()
+                        process.kill()
+                        process.waitForFinished(5_000)
+                    self._observeExit(
+                        process,
+                        "forced owner close" if forced else "graceful owner close",
+                    )
+                    if process.state() != QProcess.ProcessState.NotRunning:
+                        self._unconfirmed("owner close failed to verify OS termination")
                     return
         except BaseException as error:
             self.startError = error
+            with self._stateLock:
+                self._diagnostic = f"owner thread error: {error}"
             self.started.set()
         finally:
-            if (
-                process is not None
-                and process.state() != QProcess.ProcessState.NotRunning
-            ):
-                process.kill()
-                process.waitForFinished(5_000)
+            if process is not None:
+                if process.state() != QProcess.ProcessState.NotRunning:
+                    self._dispatched()
+                    process.kill()
+                    process.waitForFinished(5_000)
+                self._observeExit(process, "owner thread final cleanup")
+                if process.state() != QProcess.ProcessState.NotRunning:
+                    self._unconfirmed("final QProcess cleanup did not verify OS exit")
 
     def waitStarted(self) -> None:
-        if not self.started.wait(10.0):
+        if not self.started.wait(10.5):
             raise e.OperationalError("timed out starting qpsycopg worker")
         if self.startError is not None:
             raise self.startError
 
-    def kill(self) -> None:
-        self.commands.put("kill")
-
-    def close(self) -> None:
-        self.commands.put("close")
-
 
 class _Transport:
     def __init__(self) -> None:
-        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._attempt = currentConnectAttempt()
+        # A managed attempt requires bounded accept, not an uninterruptible
+        # Windows ConnectNamedPipe. Existing unmanaged IPC stays unchanged.
+        factory = _stdlib_socket.socket if self._attempt is not None else socket.socket
+        listener = factory(_stdlib_socket.AF_INET, _stdlib_socket.SOCK_STREAM)
+        self._listener: Any = listener
+        self.sock: Any = None
+        listener.setsockopt(_stdlib_socket.SOL_SOCKET, _stdlib_socket.SO_REUSEADDR, 1)
         listener.bind(("127.0.0.1", 0))
         listener.listen(1)
-        listener.settimeout(10.0)
+        listener.settimeout(0.2 if self._attempt is not None else 10.0)
         host, port = listener.getsockname()
         tokenHex = secrets.token_hex(32)
         token = bytes.fromhex(tokenHex)
 
-        self.owner = _ProcessOwner(host, port, tokenHex)
-        self.owner.waitStarted()
         try:
-            sock, _ = listener.accept()
+            self.owner = _ProcessOwner(host, port, tokenHex,
+                                       attempt=self._attempt, transport=self)
+            self.owner.waitStarted()
+            while True:
+                if self._attempt is not None:
+                    self._attempt.check()
+                try:
+                    sock, _ = listener.accept()
+                    break
+                except _stdlib_socket.timeout:
+                    if self._attempt is None:
+                        raise
+            self.sock = sock
         except BaseException:
-            self.owner.kill()
+            if hasattr(self, "owner"):
+                self.owner.kill()
             raise
         finally:
+            self._listener = None
             listener.close()
 
-        sock.settimeout(10.0)
-        received = recvToken(sock)
-        if not secrets.compare_digest(received, token):
+        try:
+            sock.settimeout(10.0)
+            received = recvToken(sock)
+            if not secrets.compare_digest(received, token):
+                raise e.OperationalError("qpsycopg worker authentication failed")
+            if self._attempt is not None:
+                self._attempt.check()
+            sock.settimeout(None)
+        except BaseException:
             sock.close()
             self.owner.kill()
-            raise e.OperationalError("qpsycopg worker authentication failed")
-        sock.settimeout(None)
+            raise
 
-        self.sock = sock
         self.lock = threading.RLock()
         self.requestId = 0
         self.closed = False
@@ -241,6 +377,21 @@ class _Transport:
         self._statusCache: int | None = None
         self._transactionStatusCache: int | None = None
         self._clientEncodingCache: bytes | None = None
+
+    def _abortConnect(self) -> None:
+        """Best-effort wakeup without taking a lock owned by blocked recv()."""
+        listener = getattr(self, "_listener", None)
+        if listener is not None:
+            try:
+                listener.close()
+            except OSError:
+                pass
+        sock = getattr(self, "sock", None)
+        if sock is not None and hasattr(sock, "shutdown"):
+            try:
+                sock.shutdown(_stdlib_socket.SHUT_RDWR)
+            except OSError:
+                pass
 
     def _clearQueryCache(self, objectId: int) -> None:
         self._flushCache.pop(objectId, None)
@@ -326,14 +477,32 @@ class _Transport:
                 _wire(args),
                 tuple((name, _wire(value)) for name, value in kwargs),
             )
+            attempt = (
+                self._attempt
+                if operation in (Operation.CONNECT, Operation.CONNECT_START)
+                else None
+            )
+            if attempt is not None:
+                attempt.check()
+                remaining = attempt.remaining()
+                if remaining is not None:
+                    self.sock.settimeout(max(0.001, remaining))
             try:
                 sendFrame(self.sock, request)
                 response = recvFrame(self.sock)
+                if attempt is not None:
+                    attempt.check()
             except (EOFError, OSError, ValueError) as error:
                 self._markBroken()
                 raise e.OperationalError(
                     "qpsycopg worker process disconnected"
                 ) from error
+            finally:
+                if attempt is not None:
+                    try:
+                        self.sock.settimeout(None)
+                    except OSError:
+                        pass
 
             if (
                 not isinstance(response, Response)
@@ -400,23 +569,40 @@ class _Transport:
             self.owner.kill()
 
     def close(self) -> None:
-        with self.lock:
+        # Never wait on the request lock: a SQL recv may be blocked forever.
+        if self.closed:
+            return
+        if not self.lock.acquire(blocking=False):
+            self.closed = True
+            self._abortConnect()
+            self.owner.kill()
+            return
+        try:
             if self.closed:
                 return
+            self.closed = True
+            self._statusCache = int(ConnStatus.BAD)
+            self._transactionStatusCache = None
+            self._clientEncodingCache = None
+            self._clearCaches()
+            # A Windows named-pipe read has no usable socket timeout. Do not
+            # issue an unbounded CLOSE RPC on it; QProcess close owns cleanup.
+            if isinstance(self.sock, _stdlib_socket.socket):
+                try:
+                    self.sock.settimeout(0.5)
+                    self.requestId += 1
+                    sendFrame(self.sock, Request(self.requestId, Operation.CLOSE))
+                    recvFrame(self.sock)
+                except (EOFError, OSError, ValueError):
+                    self.owner.kill()
+            self._abortConnect()
             try:
-                self.requestId += 1
-                sendFrame(self.sock, Request(self.requestId, Operation.CLOSE))
-                recvFrame(self.sock)
-            except Exception:
-                self.owner.kill()
-            finally:
-                self.closed = True
-                self._statusCache = int(ConnStatus.BAD)
-                self._transactionStatusCache = None
-                self._clientEncodingCache = None
-                self._clearCaches()
                 self.sock.close()
-                self.owner.close()
+            except OSError:
+                pass
+            self.owner.close()
+        finally:
+            self.lock.release()
 
 
 def _raiseRemote(error: RemoteError) -> None:
@@ -505,6 +691,9 @@ class PGconn(_RemoteObject):
         try:
             value = transport.request(Operation.CONNECT, args=(conninfo,))
             assert isinstance(value, PGconn)
+            attempt = getattr(transport, "_attempt", None)
+            if attempt is not None:
+                attempt.check()
             return value
         except BaseException:
             transport.close()
@@ -516,6 +705,9 @@ class PGconn(_RemoteObject):
         try:
             value = transport.request(Operation.CONNECT_START, args=(conninfo,))
             assert isinstance(value, PGconn)
+            attempt = getattr(transport, "_attempt", None)
+            if attempt is not None:
+                attempt.check()
             return value
         except BaseException:
             transport.close()

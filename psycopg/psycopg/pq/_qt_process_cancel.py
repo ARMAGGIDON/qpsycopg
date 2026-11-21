@@ -42,6 +42,8 @@ class CancelControlClient:
             raise
 
     def cancel(self, timeout: float) -> None:
+        if timeout <= 0:
+            raise ValueError("cancel timeout must be positive")
         with self.lock:
             if self.closed:
                 raise e.OperationalError("qpsycopg cancellation channel is closed")
@@ -54,11 +56,17 @@ class CancelControlClient:
                 (timeout,),
             )
             try:
+                # The control socket has its own deadline, independent of SQL
+                # recv() and the QProcess owner command consumer.
+                self.sock.settimeout(timeout)
                 sendFrame(self.sock, request)
                 response = recvFrame(self.sock)
             except (EOFError, OSError, ValueError) as error:
                 self._markClosed()
                 raise e.OperationalError("qpsycopg cancellation channel disconnected") from error
+            finally:
+                if not self.closed:
+                    self.sock.settimeout(None)
             self._checkResponse(request, response)
 
     def close(self) -> None:
@@ -68,6 +76,7 @@ class CancelControlClient:
             try:
                 self.requestId += 1
                 request = Request(self.requestId, Operation.CLOSE)
+                self.sock.settimeout(0.5)
                 sendFrame(self.sock, request)
                 response = recvFrame(self.sock)
                 self._checkResponse(request, response)
@@ -167,7 +176,9 @@ class CancelControlServer:
             self.cancelConn.finish()
 
     def _cancel(self, timeout: float) -> None:
-        deadline = monotonic() + timeout if timeout else None
+        if timeout <= 0:
+            raise ValueError("cancel timeout must be positive")
+        deadline = monotonic() + timeout
         self.cancelConn.start()
         while True:
             status = self.cancelConn.poll()

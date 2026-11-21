@@ -84,43 +84,16 @@ def _workerArguments(module: str, host: str, port: int, token: str) -> list[str]
     return ["-c", code, *args]
 
 
-def _ownerRun(self: Any) -> None:
-    process = None
-    try:
-        process = _pq.QProcess()
-        process.setProgram(sys.executable)
-        process.setArguments(
-            _workerArguments("psycopg.pq._qt_process_worker_pool", self.host, self.port, self.token)
-        )
-        env = _pq.QProcessEnvironment.systemEnvironment()
-        env.insert("PSYCOPG_IMPL", _pq._workerImpl())
-        process.setProcessEnvironment(env)
-        process.setProcessChannelMode(_pq.QProcess.ProcessChannelMode.ForwardedErrorChannel)
-        process.start()
-        if not process.waitForStarted(10_000):
-            raise e.OperationalError(f"couldn't start qpsycopg worker: {process.errorString()}")
-        self.started.set()
+_originalOwnerRun = _pq._ProcessOwner._run
 
-        while True:
-            command = self.commands.get()
-            if command == "kill":
-                if process.state() != _pq.QProcess.ProcessState.NotRunning:
-                    process.kill()
-                    process.waitForFinished(5_000)
-            elif command == "close":
-                if process.state() != _pq.QProcess.ProcessState.NotRunning:
-                    process.waitForFinished(2_000)
-                    if process.state() != _pq.QProcess.ProcessState.NotRunning:
-                        process.kill()
-                        process.waitForFinished(5_000)
-                return
-    except BaseException as error:
-        self.startError = error
-        self.started.set()
-    finally:
-        if process is not None and process.state() != _pq.QProcess.ProcessState.NotRunning:
-            process.kill()
-            process.waitForFinished(5_000)
+
+def _ownerRun(self: Any) -> None:
+    # Retain pooled worker startup arguments while sharing lifecycle,
+    # kill-dispatch and OS-exit evidence with the ordinary owner path.
+    self._workerArguments = _workerArguments(
+        "psycopg.pq._qt_process_worker_pool", self.host, self.port, self.token
+    )
+    _originalOwnerRun(self)
 
 
 def _patchConnectionHooks() -> None:
@@ -180,6 +153,10 @@ def _discardTransport(transport: _Transport) -> None:
 
 def _acquireTransport() -> _Transport:
     _patchConnectionHooks()
+    # A managed connection attempt must never adopt a pooled worker belonging
+    # to a previous session; owner/attempt identity remains one-to-one.
+    if _pq.currentConnectAttempt() is not None:
+        return _Transport()
     with _workerPoolLock:
         while _workerPool:
             transport = _workerPool.pop()
@@ -189,6 +166,9 @@ def _acquireTransport() -> _Transport:
 
 
 def _recycleTransport(transport: _Transport) -> bool:
+    if transport._attempt is not None:
+        _discardTransport(transport)
+        return False
     if transport.closed:
         return False
     _resetTransport(transport)
@@ -247,6 +227,11 @@ def _finish(self: _pq.PGconn) -> None:
     self._handle = 0
     self._qpsycopgWorkerReleased = False
     transport = self._transport
+    if transport._attempt is not None:
+        # An explicit owner must not be recycled. Closing the worker itself
+        # is equivalent to releasing its libpq state; do not block on an RPC.
+        _discardTransport(transport)
+        return
     control = getattr(transport, "_cancelControl", None)
     if control is not None:
         try:

@@ -59,7 +59,12 @@ def main():
     parser.add_argument("--dsn", default=os.environ.get("QPSYCOPG_OWNER_TEST_DSN"))
     parser.add_argument("--repeat", type=int, default=5)
     parser.add_argument("--iterations", type=int, default=500)
+    parser.add_argument("--lazy", action="store_true",
+                        help="enable the historical lazy worker-pool module on both revisions")
     args = parser.parse_args()
+    if args.lazy:
+        # QP08 selected its historical Pipe transport in this optional layer.
+        from psycopg.pq import _qt_process_lazy as _lazy  # noqa: F401
     if not args.dsn:
         parser.error("--dsn or QPSYCOPG_OWNER_TEST_DSN required")
     if psycopg.pq.__impl__ != "qt-process":
@@ -76,6 +81,9 @@ def main():
 
     with psycopg.connect(args.dsn) as connection:
         transport = connection.pgconn._transport
+        actual = getattr(transport, "ipcKind", None)
+        if actual is None:
+            actual = "pipe" if type(transport.sock).__name__ == "PipeStream" else "tcp"
         before = _process_tree()
         ipc = _samples(
             lambda: transport.request(Operation.GET, 1, "status"),
@@ -93,8 +101,11 @@ def main():
         output = {
             "platform": os.name, "backend": psycopg.pq.__impl__,
             "ipc_configured": os.environ.get("QPSYCOPG_IPC", ""),
-            "ipc_actual": transport.ipcKind, "worker_pid": transport.owner._osPid,
-            "postgresql_version": connection.execute("show server_version").fetchone()[0],
+            "ipc_actual": actual, "worker_pid": transport.owner._osPid,
+            "lazy_enabled": args.lazy,
+            "postgresql_version": connection.execute(
+                "show server_version"
+            ).fetchone()[0],
             "startup_ms": startup, "startup_median_ms": statistics.median(startup),
             "ipc_roundtrip": ipc, "select_1": simple, "bulk_100k": bulk,
             "resources_before": before, "resources_after": after,

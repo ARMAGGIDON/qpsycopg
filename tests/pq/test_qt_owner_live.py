@@ -24,6 +24,7 @@ ExitState = _owner.ExitState
 cancelConnect = _owner.cancelConnect
 newConnectAttempt = _owner.newConnectAttempt
 
+
 def _emitEvidence(name: str, evidence: dict[str, object]) -> None:
     serialized = json.dumps(evidence, sort_keys=True)
     print(f"{name}={serialized}", flush=True)
@@ -175,7 +176,8 @@ def test_cancel_hung_connect_before_connection_publication():
         try:
             with attempt:
                 conn = psycopg.connect(
-                    f"host={host} port={port} dbname=postgres user=postgres connect_timeout=25"
+                    f"host={host} port={port} dbname=postgres user=postgres "
+                    "connect_timeout=25"
                 )
                 result.append("UNEXPECTED_SUCCESS")
                 conn.close()

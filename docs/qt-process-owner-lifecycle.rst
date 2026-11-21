@@ -126,7 +126,7 @@ not prove the Windows OS-exit contract.
 
 
 QP08-REV: DBPT T04/T07/T08 integration contract (not applied in DBPT)
---------------------------------------------------------------------
+---------------------------------------------------------------------
 
 DBPT's current `SessionRegistry.bindTransport()` requires an established
 connection and therefore cannot publish owner identity during CONNECTING.
@@ -187,7 +187,7 @@ T07/T08 settlement order: SQL worker completed, recovery decision, lease
 release, then final retirement. No DBPT changes are made by QP08-REV.
 
 Windows PostgreSQL 18 — isolated manual acceptance (not yet executed)
---------------------------------------------------------------------
+---------------------------------------------------------------------
 
 Run in PowerShell from the qpsycopg root on a Windows machine with Docker
 Desktop Linux containers enabled and Windows libpq available to Python.

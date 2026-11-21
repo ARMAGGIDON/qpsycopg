@@ -255,7 +255,10 @@ class _PipeHandle:
             count = wt.DWORD()
             if not _overlappedResult(handle, ctypes.byref(operation.overlapped),
                                      ctypes.byref(count), False):
-                raise _error(ctypes.get_last_error())
+                error = ctypes.get_last_error()
+                if timed_out:
+                    raise socket.timeout("qpsycopg named-pipe I/O timed out")
+                raise _error(error)
             if self._closed:
                 raise OSError(_ERROR_OPERATION_ABORTED, "qpsycopg named-pipe I/O cancelled")
             if deadline is not None and time.monotonic() >= deadline and timed_out:

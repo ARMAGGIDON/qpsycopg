@@ -9,10 +9,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from psycopg.pq._qt_process_owner import (
-    AttemptToken, ConnectAttempt, ExitState, OwnerToken,
-    cancelConnect, newConnectAttempt,
-)
+# Upstream pool-integration jobs may run a published psycopg wheel without
+# the opt-in qpsycopg owner module. Their collection must not fail.
+_owner = pytest.importorskip("psycopg.pq._qt_process_owner")
+AttemptToken = _owner.AttemptToken
+ExitState = _owner.ExitState
+OwnerToken = _owner.OwnerToken
+cancelConnect = _owner.cancelConnect
+newConnectAttempt = _owner.newConnectAttempt
 
 
 def test_tokens_are_unique_immutable_and_distinct():

@@ -553,6 +553,10 @@ def main() -> int:
     # The parent selects the physical transport and passes the pipe address
     # explicitly. A pipe failure must never silently open a TCP connection.
     sock = connectPipe(host[5:]) if host.startswith("pipe:") else socket.create_connection((host, port), timeout=10.0)
+    if host.startswith("pipe:") and os.environ.get("QPSYCOPG_QP09_TEST_STALL_HANDSHAKE") == "1":
+        # Test-only fault injection: peer accepted, token not transmitted.
+        from time import sleep
+        sleep(30)
     sock.settimeout(10.0)
     sendToken(sock, token)
     sock.settimeout(None)

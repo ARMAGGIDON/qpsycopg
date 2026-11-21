@@ -3,6 +3,7 @@
 No DBPT imports. The caller must retain ConnectAttempt while its watchdog is
 active. A context is bound to the thread executing psycopg.connect().
 """
+
 from __future__ import annotations
 
 from contextvars import ContextVar, Token
@@ -51,7 +52,9 @@ class ExitProof:
     reason: str
 
 
-_current: ContextVar[ConnectAttempt | None] = ContextVar("qpsycopg_connect_attempt", default=None)
+_current: ContextVar[ConnectAttempt | None] = ContextVar(
+    "qpsycopg_connect_attempt", default=None
+)
 _attempts: WeakValueDictionary[AttemptToken, ConnectAttempt] = WeakValueDictionary()
 _attempts_lock = Lock()
 
@@ -123,9 +126,13 @@ class ConnectAttempt:
 
     def check(self) -> None:
         if self.cancelled:
-            raise RuntimeError(f"qpsycopg connecting attempt {self.token.value} cancelled")
+            raise RuntimeError(
+                f"qpsycopg connecting attempt {self.token.value} cancelled"
+            )
         if self.deadline is not None and monotonic() >= self.deadline:
-            raise TimeoutError(f"qpsycopg connecting attempt {self.token.value} expired")
+            raise TimeoutError(
+                f"qpsycopg connecting attempt {self.token.value} expired"
+            )
 
     def _bind(self, owner: Any, transport: Any) -> None:
         with self._lock:

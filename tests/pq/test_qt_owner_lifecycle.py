@@ -1,4 +1,5 @@
 """Owner identity / bounded cancellation invariants (no DB required)."""
+
 from __future__ import annotations
 
 import socket
@@ -6,6 +7,7 @@ import threading
 import time
 from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -28,7 +30,7 @@ def test_tokens_are_unique_immutable_and_distinct():
     assert len(set(attempts)) == len(attempts)
     assert is_dataclass(tokens[0])
     with pytest.raises(FrozenInstanceError):
-        tokens[0].value = tokens[1].value
+        setattr(tokens[0], "value", tokens[1].value)
 
 
 def test_early_registration_and_wrong_owner(monkeypatch):
@@ -44,21 +46,25 @@ def test_early_registration_and_wrong_owner(monkeypatch):
 
     monkeypatch.setattr(qp._ProcessOwner, "_run", fake_run)
     transport = SimpleNamespace(_abortConnect=lambda: None)
-    attempt = newConnectAttempt(lambda at, ot, owner: registered.append(
-        (at, ot, owner, owner.thread.is_alive())
-    ))
+    attempt = newConnectAttempt(
+        lambda attempt_token, owner_token, owner: registered.append(
+            (attempt_token, owner_token, owner, owner.thread.is_alive())
+        )
+    )
     with attempt:
-        owner = qp._ProcessOwner("127.0.0.1", 1, "secret", attempt=attempt, transport=transport)
+        owner = qp._ProcessOwner(
+            "127.0.0.1", 1, "secret", attempt=attempt, transport=transport
+        )
     try:
         assert len(registered) == 1
-        at, ot, instance, was_alive = registered[0]
-        assert at == attempt.token and ot == owner.ownerToken
+        attempt_token, owner_token, instance, was_alive = registered[0]
+        assert attempt_token == attempt.token and owner_token == owner.ownerToken
         assert instance is owner and not was_alive  # Before QProcess.start().
         with pytest.raises(ValueError):
             owner.requestKill(OwnerToken())
         with pytest.raises(ValueError):
             owner.exitProof(OwnerToken())
-        assert owner.exitProof(ot) is None
+        assert owner.exitProof(owner_token) is None
     finally:
         blocked.set()
         owner.thread.join(1)
@@ -99,7 +105,9 @@ def test_cancel_attempt_is_independent_of_blocked_owner(monkeypatch):
     attempt = newConnectAttempt(timeout_s=2)
     transport = SimpleNamespace(_abortConnect=lambda: interrupted.append(True))
     with attempt:
-        owner = qp._ProcessOwner("127.0.0.1", 1, "secret", attempt=attempt, transport=transport)
+        owner = qp._ProcessOwner(
+            "127.0.0.1", 1, "secret", attempt=attempt, transport=transport
+        )
     try:
         start = time.monotonic()
         receipt = cancelConnect(attempt.token)
@@ -139,7 +147,7 @@ def test_close_does_not_wait_for_busy_transport_lock():
     transport.closed = False
     transport._listener = None
     transport.sock = None
-    transport.owner = SimpleNamespace(kill=lambda: calls.append("kill"))
+    setattr(transport, "owner", SimpleNamespace(kill=lambda: calls.append("kill")))
     try:
         started = time.monotonic()
         transport.close()
@@ -156,8 +164,10 @@ def test_cancel_control_recv_deadline(monkeypatch):
     class StalledSocket:
         timeout = None
         closed = False
+
         def settimeout(self, value):
             self.timeout = value
+
         def close(self):
             self.closed = True
 
@@ -169,12 +179,12 @@ def test_cancel_control_recv_deadline(monkeypatch):
         raise socket.timeout("simulated stalled recvFrame")
 
     monkeypatch.setattr(mod, "recvFrame", blocked_recv)
-    control = mod.CancelControlClient(sock)
+    control = mod.CancelControlClient(cast(socket.socket, sock))
     with pytest.raises(Exception, match="disconnected"):
         control.cancel(0.05)
     assert control.closed and sock.closed
     with pytest.raises(ValueError):
-        mod.CancelControlClient(StalledSocket()).cancel(0)
+        mod.CancelControlClient(cast(socket.socket, StalledSocket())).cancel(0)
 
 
 def test_attempt_token_cannot_be_reused():
@@ -189,11 +199,14 @@ def test_attempt_token_cannot_be_reused():
 def test_managed_attempt_context_is_thread_local():
     assert newConnectAttempt().owner is None
     attempts = []
+
     def worker():
         from psycopg.pq._qt_process_owner import currentConnectAttempt
+
         with newConnectAttempt() as attempt:
             attempts.append(currentConnectAttempt() is attempt)
         attempts.append(currentConnectAttempt() is None)
+
     thread = threading.Thread(target=worker)
     thread.start()
     thread.join(2)

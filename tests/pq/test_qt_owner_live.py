@@ -3,6 +3,7 @@
 Run with PSYCOPG_IMPL=qt-process and QPSYCOPG_OWNER_TEST_DSN pointing to
 an isolated PostgreSQL 18 test instance. No tests kill processes by PID.
 """
+
 from __future__ import annotations
 
 import json
@@ -15,6 +16,7 @@ import pytest
 
 import psycopg
 from psycopg import pq
+
 # Some upstream CI jobs run installed wheels without this fork-only module.
 _owner = pytest.importorskip("psycopg.pq._qt_process_owner")
 ExitState = _owner.ExitState
@@ -36,7 +38,9 @@ def _connect(attempt):
 
 def test_real_owner_exit_and_unaffected_neighbor():
     psutil = pytest.importorskip("psutil")
-    first_attempt, second_attempt = newConnectAttempt(timeout_s=15), newConnectAttempt(timeout_s=15)
+    first_attempt, second_attempt = newConnectAttempt(timeout_s=15), newConnectAttempt(
+        timeout_s=15
+    )
     first = _connect(first_attempt)
     second = _connect(second_attempt)
     owner = first_attempt.owner
@@ -63,8 +67,11 @@ def test_real_owner_exit_and_unaffected_neighbor():
     try:
         # Only the bound owner object is authorized to receive this request.
         queued = owner.requestKill(owner.ownerToken)
-        assert queued.state in (ExitState.KILL_QUEUED, ExitState.KILL_DISPATCHED,
-                                ExitState.OS_EXIT_CONFIRMED)
+        assert queued.state in (
+            ExitState.KILL_QUEUED,
+            ExitState.KILL_DISPATCHED,
+            ExitState.OS_EXIT_CONFIRMED,
+        )
         proof = owner.waitExit(owner.ownerToken, 10.0)
         assert proof is not None, owner.receipt(owner.ownerToken)
         assert proof.owner_token == owner.ownerToken
@@ -72,7 +79,9 @@ def test_real_owner_exit_and_unaffected_neighbor():
         assert proof.timestamp >= queued.timestamp
         assert owner.receipt(owner.ownerToken).state == ExitState.OS_EXIT_CONFIRMED
         owner.thread.join(3)
-        assert not owner.thread.is_alive(), "confirmed kill leaked QProcess owner thread"
+        assert (
+            not owner.thread.is_alive()
+        ), "confirmed kill leaked QProcess owner thread"
         assert worker_done.wait(10)
         try:
             current = psutil.Process(pid)
@@ -84,17 +93,27 @@ def test_real_owner_exit_and_unaffected_neighbor():
             )
         assert external_exited, "QProcess proof disagrees with external OS observer"
         assert second.execute("SELECT %s::integer", (42,)).fetchone() == (42,)
-        print("QP08_OS_EXIT_EVIDENCE=" + json.dumps({
-            "owner_token": str(proof.owner_token.value),
-            "os_pid": proof.os_pid,
-            "exit_code": proof.exit_code,
-            "exit_status": proof.exit_status,
-            "monotonic_exit_timestamp": proof.timestamp,
-            "reason": proof.reason,
-            "external_process_exited": external_exited,
-            "neighbor_healthy": True,
-            "owner_thread_exited": not owner.thread.is_alive(),
-        }, sort_keys=True), flush=True)
+        first.close()
+        assert owner.exitProof(owner.ownerToken) == proof
+        assert owner.requestKill(owner.ownerToken).state == ExitState.OS_EXIT_CONFIRMED
+        print(
+            "QP08_OS_EXIT_EVIDENCE="
+            + json.dumps(
+                {
+                    "owner_token": str(proof.owner_token.value),
+                    "os_pid": proof.os_pid,
+                    "exit_code": proof.exit_code,
+                    "exit_status": proof.exit_status,
+                    "monotonic_exit_timestamp": proof.timestamp,
+                    "reason": proof.reason,
+                    "external_process_exited": external_exited,
+                    "neighbor_healthy": True,
+                    "owner_thread_exited": not owner.thread.is_alive(),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
     finally:
         try:
             first.close()
@@ -112,7 +131,7 @@ def test_cancel_hung_connect_before_connection_publication():
     host, port = listener.getsockname()
     ready = threading.Event()
     done = threading.Event()
-    attempt = newConnectAttempt(lambda at, ot, owner: ready.set(), timeout_s=12)
+    attempt = newConnectAttempt(lambda _attempt_token, _owner_token, _owner: ready.set(), timeout_s=12)
     result = []
 
     def hang_server():
@@ -150,15 +169,24 @@ def test_cancel_hung_connect_before_connection_publication():
         assert result and result != ["UNEXPECTED_SUCCESS"], result
         proof = attempt.waitExit(10)
         assert proof is not None, attempt.owner.receipt(attempt.ownerToken)
-        print("QP08_CONNECT_CANCEL_EVIDENCE=" + json.dumps({
-            "attempt_token": str(attempt.token.value),
-            "owner_token": str(proof.owner_token.value),
-            "os_pid": proof.os_pid,
-            "exit_status": proof.exit_status,
-            "reason": proof.reason,
-            "monotonic_exit_timestamp": proof.timestamp,
-            "connect_worker_exited": not client_thread.is_alive(),
-        }, sort_keys=True), flush=True)
+        assert attempt.exitProof() == proof
+        assert cancelConnect(attempt.token).state == ExitState.OS_EXIT_CONFIRMED
+        print(
+            "QP08_CONNECT_CANCEL_EVIDENCE="
+            + json.dumps(
+                {
+                    "attempt_token": str(attempt.token.value),
+                    "owner_token": str(proof.owner_token.value),
+                    "os_pid": proof.os_pid,
+                    "exit_status": proof.exit_status,
+                    "reason": proof.reason,
+                    "monotonic_exit_timestamp": proof.timestamp,
+                    "connect_worker_exited": not client_thread.is_alive(),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
     finally:
         done.set()
         listener.close()

@@ -211,17 +211,17 @@ class _PipeHandle:
             self._close_if_idle()
 
     def _reap(self, operation: _Operation) -> None:
-        # Rare kernel-delayed cancellation: preserve buffers and HANDLE while
-        # the calling thread returns. A daemon reaper observes completion.
-        try:
-            _waitEvent(operation.event, 0xFFFFFFFF)
-            count = wt.DWORD()
-            handle = self.handle
-            if handle is not None:
-                _overlappedResult(handle, ctypes.byref(operation.overlapped),
-                                  ctypes.byref(count), False)
-        finally:
-            self._finish(operation)
+        # GetOverlappedResult(..., TRUE) is the completion barrier, including
+        # cancellation. Event wait alone is not sufficient if the wait failed.
+        count = wt.DWORD()
+        handle = self.handle
+        if handle is None:
+            raise RuntimeError("pending I/O lost its HANDLE")
+        _overlappedResult(
+            handle, ctypes.byref(operation.overlapped),
+            ctypes.byref(count), True,
+        )
+        self._finish(operation)
 
     def perform(self, kind: str, buffer: Any = None, size: int = 0,
                 deadline: float | None = None) -> int:
@@ -260,6 +260,13 @@ class _PipeHandle:
                 if wait == _WAIT_OBJECT_0:
                     break
                 if wait != _WAIT_TIMEOUT:
+                    # The wait failed while kernel I/O may still be live.
+                    # Retain all state until GetOverlappedResult completes.
+                    operation.deferred = True
+                    threading.Thread(
+                        target=self._reap, args=(operation,),
+                        name="qpsycopg-pipe-reaper", daemon=True,
+                    ).start()
                     raise ctypes.WinError(ctypes.get_last_error())
                 now = time.monotonic()
                 if cancelled_at is None and (
@@ -366,10 +373,16 @@ class PipeStream:
             deadline = self._deadline()
             for offset in range(0, len(view), _IO_CHUNK):
                 part = view[offset:offset + _IO_CHUNK]
-                buffer = ctypes.create_string_buffer(part.tobytes())
-                written = self._pipe.perform("write", buffer, len(part), deadline)
-                if written != len(part):
-                    raise BrokenPipeError("qpsycopg named-pipe short write")
+                sent = 0
+                while sent < len(part):
+                    remaining = part[sent:]
+                    buffer = ctypes.create_string_buffer(remaining.tobytes())
+                    written = self._pipe.perform(
+                        "write", buffer, len(remaining), deadline
+                    )
+                    if not written:
+                        raise BrokenPipeError("qpsycopg named-pipe zero-byte write")
+                    sent += written
 
     def abort(self) -> None:
         self._pipe.close()

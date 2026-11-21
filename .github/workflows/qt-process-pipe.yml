@@ -45,6 +45,40 @@ jobs:
           $env:PYTHONPATH = Join-Path (Get-Location).Path 'psycopg'
           python -m pytest -q --capture=tee-sys tests/pq/test_qt_pipe_overlapped.py
           if ($LASTEXITCODE -ne 0) { throw 'QP09 Win32 Pipe integration failed' }
+      - name: Check out accepted QP08 as the historical synchronous Pipe baseline
+        uses: actions/checkout@v4
+        with:
+          ref: b7d4c38ab352fbbdef0a4ff08d2c44a72ed8e38e
+          path: qp08-baseline
+      - name: Benchmark TCP, QP09 overlapped Pipe and QP08 synchronous Pipe
+        shell: pwsh
+        env:
+          PSYCOPG_IMPL: qt-process
+          QPSYCOPG_WORKER_IMPL: python
+          QPSYCOPG_OWNER_TEST_DSN: "postgresql://postgres:postgres@127.0.0.1:55432/postgres"
+        run: |
+          $root = (Get-Location).Path
+          $env:PSYCOPG_PG_ROOT = Join-Path $env:ProgramFiles 'PostgreSQL\18'
+          $env:PYTHONPATH = Join-Path $root 'psycopg'
+          foreach ($mode in @('tcp', 'pipe')) {
+            $env:QPSYCOPG_IPC = $mode
+            $output = Join-Path $env:RUNNER_TEMP "qp09-bench-$mode.json"
+            python tools/bench_qp09_pipe.py --lazy --repeat 5 --iterations 200 |
+              Tee-Object -FilePath $output
+            if ($LASTEXITCODE -ne 0) { throw "QP09 $mode benchmark failed" }
+          }
+          $env:QPSYCOPG_IPC = 'pipe'
+          $env:PYTHONPATH = Join-Path $root 'qp08-baseline\psycopg'
+          python tools/bench_qp09_pipe.py --lazy --repeat 5 --iterations 200 |
+            Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'qp08-bench-old-pipe.json')
+          if ($LASTEXITCODE -ne 0) { throw 'QP08 synchronous Pipe benchmark failed' }
+      - name: Archive side-by-side transport benchmark JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qp09-windows-pg18-transport-benchmarks
+          path: ${{ runner.temp }}/*bench*.json
+          if-no-files-found: warn
       - name: Archive exact QProcess and OS-exit evidence
         if: always()
         uses: actions/upload-artifact@v4

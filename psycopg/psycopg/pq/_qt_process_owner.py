@@ -78,6 +78,7 @@ class ConnectAttempt:
         self._cancelled = Event()
         self._owner: Any = None
         self._transport: Any = None
+        self._owners: dict[OwnerToken, tuple[Any, Any]] = {}
         self._context: Token[ConnectAttempt | None] | None = None
         with _attempts_lock:
             _attempts[self.token] = self
@@ -105,6 +106,11 @@ class ConnectAttempt:
             return self._owner
 
     @property
+    def owners(self) -> tuple[Any, ...]:
+        with self._lock:
+            return tuple(pair[0] for pair in self._owners.values())
+
+    @property
     def ownerToken(self) -> OwnerToken | None:
         owner = self.owner
         return None if owner is None else owner.ownerToken
@@ -120,10 +126,11 @@ class ConnectAttempt:
 
     def _bind(self, owner: Any, transport: Any) -> None:
         with self._lock:
-            if self._owner is not None:
-                raise RuntimeError("a ConnectAttempt cannot own multiple physical workers")
+            if owner.ownerToken in self._owners:
+                raise RuntimeError("duplicate physical owner token")
             self._owner = owner
             self._transport = transport
+            self._owners[owner.ownerToken] = (owner, transport)
             cancelled = self._cancelled.is_set()
         # Publish before owner.thread.start(), QProcess.start(), accept and connect.
         try:
@@ -139,12 +146,16 @@ class ConnectAttempt:
         """Never waits for the blocked CONNECTING thread or Qt owner thread."""
         self._cancelled.set()
         with self._lock:
-            owner, transport = self._owner, self._transport
-        if transport is not None:
-            transport._abortConnect()
-        if owner is None:
+            owners = tuple(self._owners.values())
+        if not owners:
             return None  # No QProcess exists yet: not a successful OS-exit.
-        return owner.requestKill(owner.ownerToken)
+        receipt = None
+        # Every owner was registered by this exact attempt token. Multi-host
+        # fallback does not permit a stale earlier worker to survive cancel.
+        for owner, transport in owners:
+            transport._abortConnect()
+            receipt = owner.requestKill(owner.ownerToken)
+        return receipt
 
     def exitProof(self) -> ExitProof | None:
         owner = self.owner

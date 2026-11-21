@@ -5,6 +5,7 @@ an isolated PostgreSQL 18 test instance. No tests kill processes by PID.
 """
 from __future__ import annotations
 
+import json
 import os
 import socket
 import threading
@@ -76,10 +77,24 @@ def test_real_owner_exit_and_unaffected_neighbor():
         try:
             current = psutil.Process(pid)
         except psutil.NoSuchProcess:
-            pass
+            external_exited = True
         else:
-            assert not current.is_running() or current.create_time() != original_birth
+            external_exited = (
+                not current.is_running() or current.create_time() != original_birth
+            )
+        assert external_exited, "QProcess proof disagrees with external OS observer"
         assert second.execute("SELECT %s::integer", (42,)).fetchone() == (42,)
+        print("QP08_OS_EXIT_EVIDENCE=" + json.dumps({
+            "owner_token": str(proof.owner_token.value),
+            "os_pid": proof.os_pid,
+            "exit_code": proof.exit_code,
+            "exit_status": proof.exit_status,
+            "monotonic_exit_timestamp": proof.timestamp,
+            "reason": proof.reason,
+            "external_process_exited": external_exited,
+            "neighbor_healthy": True,
+            "owner_thread_exited": not owner.thread.is_alive(),
+        }, sort_keys=True), flush=True)
     finally:
         try:
             first.close()
@@ -135,6 +150,15 @@ def test_cancel_hung_connect_before_connection_publication():
         assert result and result != ["UNEXPECTED_SUCCESS"], result
         proof = attempt.waitExit(10)
         assert proof is not None, attempt.owner.receipt(attempt.ownerToken)
+        print("QP08_CONNECT_CANCEL_EVIDENCE=" + json.dumps({
+            "attempt_token": str(attempt.token.value),
+            "owner_token": str(proof.owner_token.value),
+            "os_pid": proof.os_pid,
+            "exit_status": proof.exit_status,
+            "reason": proof.reason,
+            "monotonic_exit_timestamp": proof.timestamp,
+            "connect_worker_exited": not client_thread.is_alive(),
+        }, sort_keys=True), flush=True)
     finally:
         done.set()
         listener.close()

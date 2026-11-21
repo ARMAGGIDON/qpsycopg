@@ -150,7 +150,9 @@ def _evidence(name: str, data: dict) -> None:
     if folder:
         target = Path(folder)
         target.mkdir(parents=True, exist_ok=True)
-        (target / name).write_text(json.dumps(data, sort_keys=True, indent=2), encoding="utf-8")
+        (target / name).write_text(
+            json.dumps(data, sort_keys=True, indent=2), encoding="utf-8"
+        )
     print(f"QP09_OS_EVIDENCE={json.dumps(data, sort_keys=True)}", flush=True)
 
 

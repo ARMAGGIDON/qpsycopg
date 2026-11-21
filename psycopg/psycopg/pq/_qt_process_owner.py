@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import Enum
 from threading import Event, Lock
 from time import monotonic
 from typing import Any, Callable
@@ -25,7 +25,7 @@ class AttemptToken:
     value: UUID = field(default_factory=uuid4)
 
 
-class ExitState(StrEnum):
+class ExitState(str, Enum):
     KILL_QUEUED = "KILL_QUEUED"
     KILL_DISPATCHED = "KILL_DISPATCHED"
     OS_EXIT_CONFIRMED = "OS_EXIT_CONFIRMED"

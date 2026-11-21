@@ -1,0 +1,95 @@
+name: QP09 Windows overlapped named-pipe IPC
+
+on:
+  pull_request:
+    branches:
+      - feature/qt-process-pq
+    paths:
+      - "psycopg/**"
+      - "tests/pq/test_qt_pipe_overlapped.py"
+      - ".github/workflows/qt-process-pipe.yml"
+  workflow_dispatch:
+
+jobs:
+  windows-pipe-postgresql18:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install PostgreSQL 18 on Windows (separate from preinstalled 17)
+        id: postgres
+        uses: ikalnytskyi/action-setup-postgres@v9
+        with:
+          postgres-version: "18"
+          username: postgres
+          password: postgres
+          database: postgres
+          port: "55432"
+      - name: Install qpsycopg and Windows process observer
+        shell: pwsh
+        run: python -m pip install -e "./psycopg[qt]" pytest psutil
+      - name: Real overlapped Windows Pipe and PostgreSQL 18 integration
+        shell: pwsh
+        env:
+          PSYCOPG_IMPL: qt-process
+          QPSYCOPG_WORKER_IMPL: python
+          QPSYCOPG_IPC: pipe
+          QPSYCOPG_REQUIRE_PG18: "1"
+          QPSYCOPG_OWNER_TEST_DSN: "postgresql://postgres:postgres@127.0.0.1:55432/postgres"
+          QPSYCOPG_OWNER_EVIDENCE_DIR: ${{ runner.temp }}/qp09-evidence
+        run: |
+          $env:PSYCOPG_PG_ROOT = Join-Path $env:ProgramFiles 'PostgreSQL\18'
+          $env:PYTHONPATH = Join-Path (Get-Location).Path 'psycopg'
+          python -m pytest -q --capture=tee-sys tests/pq/test_qt_pipe_overlapped.py
+          if ($LASTEXITCODE -ne 0) { throw 'QP09 Win32 Pipe integration failed' }
+      - name: Archive exact QProcess and OS-exit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qp09-windows-pipe-postgresql18-evidence
+          path: ${{ runner.temp }}/qp09-evidence/*.json
+          if-no-files-found: warn
+
+  windows-tcp-qp08-regression:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install qpsycopg and regression dependencies
+        run: python -m pip install -e "./psycopg[qt]" pytest psutil
+      - name: Start preinstalled Windows PostgreSQL
+        shell: pwsh
+        run: |
+          $service = Get-CimInstance Win32_Service |
+            Where-Object { $_.Name -like 'postgresql*' } |
+            Select-Object -First 1
+          if (-not $service) { throw 'No PostgreSQL Windows service found' }
+          Set-Service -Name $service.Name -StartupType Manual
+          if ((Get-Service -Name $service.Name).Status -ne 'Running') {
+            Start-Service -Name $service.Name
+          }
+          $exe = [regex]::Match($service.PathName, '^"([^"]+)"|^(\S+)')
+          $executable = if ($exe.Groups[1].Success) {
+            $exe.Groups[1].Value
+          } else {
+            $exe.Groups[2].Value
+          }
+          $root = Split-Path (Split-Path $executable -Parent) -Parent
+          "PSYCOPG_PG_ROOT=$root" >> $env:GITHUB_ENV
+      - name: Run QP08 owner lifecycle and real SQL TCP regression
+        shell: pwsh
+        env:
+          PSYCOPG_IMPL: qt-process
+          QPSYCOPG_WORKER_IMPL: python
+          QPSYCOPG_IPC: tcp
+          QPSYCOPG_OWNER_TEST_DSN: "host=127.0.0.1 dbname=postgres"
+        run: |
+          $env:PYTHONPATH = Join-Path (Get-Location).Path 'psycopg'
+          python -m pytest -q tests/pq/test_qt_owner_lifecycle.py tests/pq/test_qt_owner_live.py
+          if ($LASTEXITCODE -ne 0) { throw 'QP08 TCP regression failed' }

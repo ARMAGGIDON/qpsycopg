@@ -82,3 +82,41 @@ order; compare repeated medians and dispersion after warm-up. Collect
 connection startup, IPC status read, SELECT 1, bulk 100k rows, parent-plus-
 worker CPU and RSS/private bytes. No speed improvement may be asserted without
 real measurements.
+
+
+Measured QP09 Windows checkpoint (2026-11-21)
+---------------------------------------------
+
+Evidence: GitHub Actions run 44950793881, Windows Server 2025,
+PostgreSQL 18.7 (server_version_num=180007), Python 3.13, Python libpq
+worker, lazy process module enabled, same runner.
+Each benchmark has warm-ups and five repeats; latency values are medians.
+CPU and memory are aggregate parent + worker process-tree observations.
+
+===================================  ============  ===========  ============
+Metric                               TCP loopback  QP08 Pipe    QP09 Pipe
+===================================  ============  ===========  ============
+Connection startup median (ms)        53.026        50.865       55.958
+IPC roundtrip median (ms)              0.1480        0.1217       0.1793
+SELECT 1 median (ms)                   0.3739        0.3620       0.4260
+100k result transfer median (ms)     446.473       443.024      442.249
+Process-tree CPU delta (s)             3.766         3.625        3.750
+Process-tree RSS after (MiB)          97.35         98.30        98.96
+Private memory after (MiB)            64.86         65.09        66.05
+===================================  ============  ===========  ============
+
+The new overlapped Pipe has ~21.1% higher IPC-roundtrip latency and ~13.9%
+higher SELECT 1 latency than TCP in this run. Against the QP08 synchronous
+Pipe, its respective penalties are ~47.4% and ~17.7%. Bulk-result differences
+under 1% are not evidence of meaningful superiority. This checkpoint does
+not justify claiming that Pipe is faster. The difference should be profiled
+before changing fast paths, and blocking native I/O must not be reintroduced
+as a benchmark optimization.
+
+The historical QP08 synchronous Pipe worker emitted an EOFError traceback
+during shutdown while the benchmark command still exited 0; preserve this
+fact in comparisons, and do not interpret that baseline as clean lifecycle
+evidence. The QP09 Windows PostgreSQL 18 step ran 15 real integration tests
+successfully, and explicit TCP QP08 regression passed. This is Windows Server
+CI evidence; real Windows 11, long-running HANDLE leak stress, and wider
+cancellation/race matrices remain acceptance work. QP09 is PARTIAL, not PASS.

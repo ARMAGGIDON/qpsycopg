@@ -262,8 +262,9 @@ class _PipeHandle:
                 if wait != _WAIT_TIMEOUT:
                     raise ctypes.WinError(ctypes.get_last_error())
                 now = time.monotonic()
-                if (self._closed or (deadline is not None and now >= deadline)
-                        ) and cancelled_at is None:
+                if cancelled_at is None and (
+                    self._closed or (deadline is not None and now >= deadline)
+                ):
                     timed_out = (
                         deadline is not None and now >= deadline and not self._closed
                     )
@@ -274,8 +275,10 @@ class _PipeHandle:
                     and now - cancelled_at >= _CANCEL_DRAIN_SECONDS
                 ):
                     operation.deferred = True
-                    threading.Thread(target=self._reap, args=(operation,),
-                                     name="qpsycopg-pipe-reaper", daemon=True).start()
+                    threading.Thread(
+                        target=self._reap, args=(operation,),
+                        name="qpsycopg-pipe-reaper", daemon=True,
+                    ).start()
                     if timed_out:
                         raise socket.timeout("qpsycopg named-pipe I/O timed out")
                     raise OSError(
@@ -386,7 +389,8 @@ class PipeListenerSocket:
         try:
             handle = _createPipe(
                 self.address,
-                _PIPE_ACCESS_DUPLEX | _FILE_FLAG_OVERLAPPED | _FILE_FLAG_FIRST_PIPE_INSTANCE,
+                _PIPE_ACCESS_DUPLEX | _FILE_FLAG_OVERLAPPED
+                | _FILE_FLAG_FIRST_PIPE_INSTANCE,
                 _PIPE_TYPE_BYTE | _PIPE_READMODE_BYTE | _PIPE_WAIT
                 | _PIPE_REJECT_REMOTE_CLIENTS,
                 1, _BUFFER_SIZE, _BUFFER_SIZE, 0, ctypes.byref(attributes),

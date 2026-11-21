@@ -270,8 +270,13 @@ def main() -> int:
 
     host, port, tokenHex = sys.argv[1], int(sys.argv[2]), sys.argv[3]
     sock = _connectWorker(host, port)
-    sock.settimeout(None)
+    if host.startswith("pipe:") and os.environ.get("QPSYCOPG_QP09_TEST_STALL_HANDSHAKE") == "1":
+        # Test-only fault injection: accepted pipe with an unresponsive peer.
+        from time import sleep
+        sleep(30)
+    sock.settimeout(10.0)
     _sendToken(sock, bytes.fromhex(tokenHex))
+    sock.settimeout(None)
     try:
         Worker(sock).run()
         return 0

@@ -64,6 +64,15 @@ jobs:
           python tools/smoke_qt_process.py
           'postgresql://postgres:postgres@127.0.0.1:5432/postgres'
 
+      - name: Verify QP08 owner tokens, bounded cancellation and real PostgreSQL 18 OS exit
+        env:
+          PSYCOPG_IMPL: qt-process
+          QPSYCOPG_WORKER_IMPL: python
+          QPSYCOPG_OWNER_TEST_DSN: "postgresql://postgres:postgres@127.0.0.1:5432/postgres"
+        run: |
+          python -m pip install pytest psutil
+          PYTHONPATH="$PWD/psycopg" python -m pytest -q tests/pq/test_qt_owner_lifecycle.py tests/pq/test_qt_owner_live.py
+
       - name: Verify startup FATAL preservation (upstream and Qt Python workers)
         env:
           QPSYCOPG_CONNECT_ERROR_DSN: "postgresql://postgres:postgres@127.0.0.1:5432/postgres"
@@ -220,6 +229,19 @@ jobs:
           python -m pytest -q tests/test_qt_failed_connection.py 2>&1 |
             Tee-Object -FilePath $evidence -Append
           if ($LASTEXITCODE -ne 0) { throw 'Windows C-worker startup FATAL regression failed' }
+
+      - name: Verify Windows QP08 exact owner exit with native C worker
+        shell: pwsh
+        env:
+          PSYCOPG_IMPL: qt-process
+          QPSYCOPG_WORKER_IMPL: c
+          QPSYCOPG_OWNER_TEST_DSN: "host=127.0.0.1 dbname=postgres"
+          QPSYCOPG_IPC: tcp
+        run: |
+          python -m pip install pytest psutil
+          $env:PYTHONPATH = Join-Path (Get-Location).Path 'psycopg'
+          python -m pytest -q tests/pq/test_qt_owner_lifecycle.py tests/pq/test_qt_owner_live.py
+          if ($LASTEXITCODE -ne 0) { throw 'Windows QP08 owner exit contract failed' }
 
       - name: Preserve Windows C-worker smoke evidence
         if: always()

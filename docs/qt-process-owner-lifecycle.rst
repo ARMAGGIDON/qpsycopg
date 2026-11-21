@@ -123,3 +123,96 @@ stalled PostgreSQL-wire endpoint. On Windows prefer an isolated
 Acceptance is provisional until the fork's Windows/PG18 QProcess tests and a
 separate DBPT locked-fork update re-run T08. A CI success on Linux alone does
 not prove the Windows OS-exit contract.
+
+
+QP08-REV: DBPT T04/T07/T08 integration contract (not applied in DBPT)
+--------------------------------------------------------------------
+
+DBPT's current `SessionRegistry.bindTransport()` requires an established
+connection and therefore cannot publish owner identity during CONNECTING.
+The DBPT integration must add a thread-safe provisional owner record tied
+to the full SessionHandle (session_id, generation, profile_epoch), request ID,
+AttemptToken and OwnerToken. Pseudocode (not runnable on unmodified DBPT)::
+
+    # In DatabaseController.openSession(), before ConnectTask.start():
+    handle = registry.registerOpening(
+        request_id, fingerprint, purpose, profile_epoch,
+        owner_id=f"ConnectAttempt:{request_id}",
+    )
+
+    def on_owner_created(attempt_token, owner_token, owner_handle):
+        # This callback is in ConnectTask's worker thread, not the GUI.
+        registry.publishOpeningOwner(
+            handle, request_id, attempt_token, owner_token, owner_handle
+        )
+
+    qp_attempt = newConnectAttempt(on_owner_created, timeout_s=12.0)
+    task = ConnectTask(profile, cancel_event, request_id=request_id,
+                       qp_attempt=qp_attempt)
+
+    # In ConnectTask.run(), on the same connecting worker thread:
+    with qp_attempt:
+        conn = psycopg.connect(dsn, connect_timeout=5, autocommit=True)
+        # The controller (not ConnectTask) decides whether to accept it.
+
+    # In DatabaseController.requestCancelConnect() / watchdog:
+    cancel_event.set()
+    receipt = cancelConnect(qp_attempt.token)  # no worker join
+    # A receipt alone never means the QProcess has exited.
+
+The new registry operation must atomically validate request_id, generation,
+profile_epoch, token types and uniqueness, and the session state. It must
+never overwrite a different owner or grant a stale successful connection.
+In `_onConnectResult`, cross-check the provisional binding against the
+Connection's actual transport/owner, then use `bindTransport` only for an
+admissible live generation. Reject cancelled/late results, retire their
+physical owners and prohibit scheduler admission or TEMP cache reuse.
+
+DBPT state mapping:
+
+* `KILL_QUEUED`: existing `KILL_ENQUEUED` notification, no exit assertion.
+* `KILL_DISPATCHED`: QProcess.kill was dispatched in the owning thread;
+  still no confirmed termination.
+* `OS_EXIT_CONFIRMED`: exact ExitProof with OS PID, exit code/status and
+  monotonic timestamp; CLOSED is allowed only after owner validation and
+  SQL worker/scheduler lease settlement.
+* `EXIT_UNCONFIRMED`: remain revoked and quarantined; preserve owner
+  evidence and do not emit shutdown-completed.
+
+The independent watchdog may call `cancelConnect()` and inspect the
+nonblocking receipt, but it must not block the GUI on `waitExit()`.
+An off-GUI observer may use `owner.waitExit(owner_token, timeout)` and relay
+the result to DatabaseController on its owning Qt thread. Preserve the
+T07/T08 settlement order: SQL worker completed, recovery decision, lease
+release, then final retirement. No DBPT changes are made by QP08-REV.
+
+Windows PostgreSQL 18 — isolated manual acceptance (not yet executed)
+--------------------------------------------------------------------
+
+Run in PowerShell from the qpsycopg root on a Windows machine with Docker
+Desktop Linux containers enabled and Windows libpq available to Python.
+Set `PSYCOPG_PG_ROOT` to the installed PostgreSQL client root if needed::
+
+    docker run --rm -d --name qp08-pg18 -e POSTGRES_PASSWORD=qp08test -e POSTGRES_DB=qp08test -p 127.0.0.1:55432:5432 postgres:18
+    docker exec qp08-pg18 pg_isready -U postgres -d qp08test
+    python -m pip install -e './psycopg[qt]' pytest psutil
+    $env:PYTHONPATH = Join-Path (Get-Location).Path 'psycopg'
+    $env:PSYCOPG_IMPL = 'qt-process'
+    $env:QPSYCOPG_WORKER_IMPL = 'python'
+    $env:QPSYCOPG_IPC = 'tcp'
+    $env:QPSYCOPG_OWNER_TEST_DSN = 'host=127.0.0.1 port=55432 dbname=qp08test user=postgres password=qp08test'
+    $env:QPSYCOPG_OWNER_EVIDENCE_DIR = Join-Path (Get-Location).Path 'qp08-evidence'
+    python -m pytest -q --capture=tee-sys tests/pq/test_qt_owner_lifecycle.py tests/pq/test_qt_owner_live.py
+
+    # Collect qp08-evidence/*.json, then stop the disposable database:
+    docker rm -f qp08-pg18
+
+QP08 live tests emit structured JSON lines and write JSON files when
+`QPSYCOPG_OWNER_EVIDENCE_DIR` is set, recording owner/attempt tokens,
+OS PID, kill receipt, ExitProof, monotonic timestamps, duration,
+worker settlement and neighbor health. The Qt workflow uploads them as
+artifacts from Linux PG18, Windows Python-worker and Windows C-worker
+jobs. A successful Windows hosted runner against PG17 does not prove
+Windows PG18. For C-worker, first install a compiled psycopg_c wheel,
+validate the worker is a native .pyd and set `QPSYCOPG_WORKER_IMPL=c`
+before repeating the test command.

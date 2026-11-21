@@ -69,9 +69,18 @@ jobs:
           PSYCOPG_IMPL: qt-process
           QPSYCOPG_WORKER_IMPL: python
           QPSYCOPG_OWNER_TEST_DSN: "postgresql://postgres:postgres@127.0.0.1:5432/postgres"
+          QPSYCOPG_OWNER_EVIDENCE_DIR: ${{ runner.temp }}/qp08-evidence
         run: |
           python -m pip install pytest psutil
           PYTHONPATH="$PWD/psycopg" python -m pytest -q --capture=tee-sys tests/pq/test_qt_owner_lifecycle.py tests/pq/test_qt_owner_live.py
+
+      - name: Archive Linux PostgreSQL 18 QP08 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qp08-linux-pg18-python-worker-evidence
+          path: ${{ runner.temp }}/qp08-evidence/*.json
+          if-no-files-found: warn
 
       - name: Verify startup FATAL preservation (upstream and Qt Python workers)
         env:
@@ -174,6 +183,7 @@ jobs:
           QPSYCOPG_WORKER_IMPL: python
           QPSYCOPG_IPC: tcp
           QPSYCOPG_OWNER_TEST_DSN: "host=127.0.0.1 dbname=postgres"
+          QPSYCOPG_OWNER_EVIDENCE_DIR: ${{ runner.temp }}/qp08-evidence
         run: |
           $service = Get-CimInstance Win32_Service |
             Where-Object { $_.Name -like 'postgresql*' } |
@@ -197,6 +207,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows QProcess PostgreSQL preflight failed' }
           python -m pytest -q --capture=tee-sys tests/pq/test_qt_owner_lifecycle.py tests/pq/test_qt_owner_live.py
           if ($LASTEXITCODE -ne 0) { throw 'Windows QP08 OS-exit tests failed' }
+
+      - name: Archive Windows QP08 Python-worker evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qp08-windows-pg17-python-worker-evidence
+          path: ${{ runner.temp }}/qp08-evidence/*.json
+          if-no-files-found: warn
 
   windows-c-worker-smoke:
     runs-on: windows-2025
@@ -277,6 +295,7 @@ jobs:
           PSYCOPG_IMPL: qt-process
           QPSYCOPG_WORKER_IMPL: c
           QPSYCOPG_OWNER_TEST_DSN: "host=127.0.0.1 dbname=postgres"
+          QPSYCOPG_OWNER_EVIDENCE_DIR: ${{ runner.temp }}/qp08-evidence
           QPSYCOPG_IPC: tcp
         run: |
           python -m pip install pytest psutil
@@ -289,5 +308,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-qt-thread-c-worker-smoke
-          path: ${{ runner.temp }}/qt-thread-c-worker-evidence.log
+          path: |
+            ${{ runner.temp }}/qt-thread-c-worker-evidence.log
+            ${{ runner.temp }}/qp08-evidence/*.json
           if-no-files-found: warn

@@ -285,7 +285,8 @@ class _ProcessOwner:
                         process.kill()
                         process.waitForFinished(5_000)
                     self._observeExit(
-                        process, "forced owner close" if forced else "graceful owner close"
+                        process,
+                        "forced owner close" if forced else "graceful owner close",
                     )
                     if process.state() != QProcess.ProcessState.NotRunning:
                         self._unconfirmed("owner close failed to verify OS termination")
@@ -476,7 +477,11 @@ class _Transport:
                 _wire(args),
                 tuple((name, _wire(value)) for name, value in kwargs),
             )
-            attempt = self._attempt if operation in (Operation.CONNECT, Operation.CONNECT_START) else None
+            attempt = (
+                self._attempt
+                if operation in (Operation.CONNECT, Operation.CONNECT_START)
+                else None
+            )
             if attempt is not None:
                 attempt.check()
                 remaining = attempt.remaining()

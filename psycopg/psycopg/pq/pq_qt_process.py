@@ -210,6 +210,13 @@ class _ProcessOwner:
                 self._timestamp = monotonic()
                 self._diagnostic = "QProcess.kill() dispatch in owner thread"
 
+    def _unconfirmed(self, reason: str) -> None:
+        with self._stateLock:
+            if self._exitProof is None:
+                self._state = ExitState.EXIT_UNCONFIRMED
+                self._timestamp = monotonic()
+                self._diagnostic = reason
+
     def _observeExit(self, process: QProcess, reason: str) -> None:
         # QProcess.NotRunning is its OS process-status observation. Require a
         # recorded real PID; neither Python thread completion nor queue drain
@@ -268,6 +275,7 @@ class _ProcessOwner:
                     )
                     if process.state() == QProcess.ProcessState.NotRunning:
                         return  # Never leave a reaped QProcess owner thread waiting.
+                    self._unconfirmed("kill dispatched; OS exit not confirmed after 5s")
                 elif command == "close":
                     if process.state() != QProcess.ProcessState.NotRunning:
                         process.waitForFinished(2_000)
@@ -279,6 +287,8 @@ class _ProcessOwner:
                     self._observeExit(
                         process, "forced owner close" if forced else "graceful owner close"
                     )
+                    if process.state() != QProcess.ProcessState.NotRunning:
+                        self._unconfirmed("owner close failed to verify OS termination")
                     return
         except BaseException as error:
             self.startError = error
@@ -292,7 +302,8 @@ class _ProcessOwner:
                     process.kill()
                     process.waitForFinished(5_000)
                 self._observeExit(process, "owner thread final cleanup")
-            # If the process remains running, EXIT_UNCONFIRMED is intentional.
+                if process.state() != QProcess.ProcessState.NotRunning:
+                    self._unconfirmed("final QProcess cleanup did not verify OS exit")
 
     def waitStarted(self) -> None:
         if not self.started.wait(10.5):

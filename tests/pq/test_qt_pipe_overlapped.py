@@ -370,3 +370,79 @@ def test_partial_write_is_retried_without_dropping_bytes():
     stream._timeout = 0.5
     stream.sendall(b"abcdefghijk")
     assert stream._pipe.data == b"abcdefghijk"
+
+
+def test_win32_errors_have_explicit_mappings():
+    from psycopg.pq import _qt_process_pipe as pipe
+
+    assert isinstance(pipe._error(pipe._ERROR_BROKEN_PIPE), BrokenPipeError)
+    assert isinstance(pipe._error(pipe._ERROR_PIPE_NOT_CONNECTED), BrokenPipeError)
+    assert isinstance(pipe._error(pipe._ERROR_OPERATION_ABORTED), OSError)
+
+
+def test_cancel_before_qprocess_creation_is_not_exit_proof():
+    from psycopg.pq._qt_process_owner import newConnectAttempt
+
+    attempt = newConnectAttempt()
+    assert attempt.cancel() is None
+    assert attempt.owner is None
+    assert attempt.waitExit(0) is None
+    with attempt:
+        with pytest.raises(RuntimeError, match="cancelled"):
+            attempt.check()
+
+
+def test_concurrent_kill_abort_close_and_neighbor_survives():
+    import psutil
+    import psycopg
+    from psycopg.pq._qt_process_owner import newConnectAttempt, cancelConnect
+
+    dsn = os.environ["QPSYCOPG_OWNER_TEST_DSN"]
+    attempt_a, attempt_b = newConnectAttempt(timeout_s=12), newConnectAttempt(timeout_s=12)
+    with attempt_a:
+        first = psycopg.connect(dsn)
+    with attempt_b:
+        second = psycopg.connect(dsn)
+    owner = attempt_a.owner
+    assert owner is not None
+    assert first.pgconn._transport.ipcKind == "pipe"
+    assert second.pgconn._transport.ipcKind == "pipe"
+    assert first.pgconn._transport.owner is owner
+    assert second.pgconn._transport.owner is not owner
+    begun = threading.Event()
+
+    def blocked_query():
+        begun.set()
+        try:
+            first.execute("select pg_sleep(20)")
+        except psycopg.Error:
+            return
+        raise AssertionError("blocked SQL unexpectedly succeeded after worker kill")
+
+    query_thread, query_errors, query_done = _thread(blocked_query)
+    try:
+        assert begun.wait(2)
+        time.sleep(0.2)
+        closer, close_errors, close_done = _thread(first.pgconn._transport.close)
+        receipt = cancelConnect(attempt_a.token)
+        assert receipt is not None and receipt.owner_token == owner.ownerToken
+        second_receipt = cancelConnect(attempt_a.token)
+        assert second_receipt is not None
+        assert second_receipt.owner_token == owner.ownerToken
+        owner.requestKill(owner.ownerToken)
+        assert close_done.wait(4), "close deadlocked with kill/cancel"
+        assert query_done.wait(4), "blocked SQL I/O survived kill/cancel"
+        closer.join(1)
+        query_thread.join(1)
+        assert not close_errors, f"close helper exception: {close_errors}"
+        assert not query_errors, f"query helper exception: {query_errors}"
+        proof = owner.waitExit(owner.ownerToken, 10)
+        assert proof is not None and proof.owner_token == owner.ownerToken
+        assert proof.os_pid == owner._osPid
+        assert not psutil.pid_exists(proof.os_pid)
+        assert second.execute("select 123").fetchone() == (123,)
+    finally:
+        first.close()
+        second.close()
+        owner.requestKill(owner.ownerToken)
+        owner.waitExit(owner.ownerToken, 10)

@@ -6,11 +6,12 @@ an isolated PostgreSQL 18 test instance. No tests kill processes by PID.
 
 from __future__ import annotations
 
-import json
 import os
+import json
+import time
 import socket
 import threading
-import time
+from pathlib import Path
 
 import pytest
 
@@ -22,6 +23,18 @@ _owner = pytest.importorskip("psycopg.pq._qt_process_owner")
 ExitState = _owner.ExitState
 cancelConnect = _owner.cancelConnect
 newConnectAttempt = _owner.newConnectAttempt
+
+def _emitEvidence(name: str, evidence: dict[str, object]) -> None:
+    serialized = json.dumps(evidence, sort_keys=True)
+    print(f"{name}={serialized}", flush=True)
+    output_dir = os.environ.get("QPSYCOPG_OWNER_EVIDENCE_DIR")
+    if output_dir:
+        directory = Path(output_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{name.lower()}.json").write_text(
+            serialized + "\n", encoding="utf-8"
+        )
+
 
 _DSN = os.environ.get("QPSYCOPG_OWNER_TEST_DSN")
 pytestmark = pytest.mark.skipif(
@@ -66,6 +79,7 @@ def test_real_owner_exit_and_unaffected_neighbor():
     time.sleep(0.3)
     try:
         # Only the bound owner object is authorized to receive this request.
+        kill_started = time.monotonic()
         queued = owner.requestKill(owner.ownerToken)
         assert queued.state in (
             ExitState.KILL_QUEUED,
@@ -96,23 +110,35 @@ def test_real_owner_exit_and_unaffected_neighbor():
         first.close()
         assert owner.exitProof(owner.ownerToken) == proof
         assert owner.requestKill(owner.ownerToken).state == ExitState.OS_EXIT_CONFIRMED
-        print(
-            "QP08_OS_EXIT_EVIDENCE="
-            + json.dumps(
-                {
+        _emitEvidence(
+            "QP08_OS_EXIT_EVIDENCE",
+            {
+                "attempt_token": str(first_attempt.token.value),
+                "owner_token": str(proof.owner_token.value),
+                "os_pid": proof.os_pid,
+                "exit_code": proof.exit_code,
+                "exit_status": proof.exit_status,
+                "monotonic_exit_timestamp": proof.timestamp,
+                "reason": proof.reason,
+                "kill_receipt": {
+                    "state": queued.state.value,
+                    "timestamp": queued.timestamp,
+                    "os_pid": queued.os_pid,
+                },
+                "exit_proof": {
                     "owner_token": str(proof.owner_token.value),
                     "os_pid": proof.os_pid,
                     "exit_code": proof.exit_code,
                     "exit_status": proof.exit_status,
-                    "monotonic_exit_timestamp": proof.timestamp,
-                    "reason": proof.reason,
-                    "external_process_exited": external_exited,
-                    "neighbor_healthy": True,
-                    "owner_thread_exited": not owner.thread.is_alive(),
+                    "timestamp": proof.timestamp,
                 },
-                sort_keys=True,
-            ),
-            flush=True,
+                "duration_seconds": time.monotonic() - kill_started,
+                "worker_settled": worker_done.is_set(),
+                "external_process_exited": external_exited,
+                "neighbor_healthy": True,
+                "owner_thread_exited": not owner.thread.is_alive(),
+                "timeout_or_unconfirmed": False,
+            },
         )
     finally:
         try:
@@ -131,7 +157,9 @@ def test_cancel_hung_connect_before_connection_publication():
     host, port = listener.getsockname()
     ready = threading.Event()
     done = threading.Event()
-    attempt = newConnectAttempt(lambda _attempt_token, _owner_token, _owner: ready.set(), timeout_s=12)
+    attempt = newConnectAttempt(
+        lambda _attempt_token, _owner_token, _owner: ready.set(), timeout_s=12
+    )
     result = []
 
     def hang_server():
@@ -162,7 +190,8 @@ def test_cancel_hung_connect_before_connection_publication():
         assert ready.wait(5), "owner not published before CONNECTING"
         start = time.monotonic()
         receipt = cancelConnect(attempt.token)
-        assert time.monotonic() - start < 0.3
+        cancel_elapsed = time.monotonic() - start
+        assert cancel_elapsed < 0.3
         assert receipt is not None
         client_thread.join(10)
         assert not client_thread.is_alive(), "CONNECTING worker did not settle"
@@ -171,21 +200,34 @@ def test_cancel_hung_connect_before_connection_publication():
         assert proof is not None, attempt.owner.receipt(attempt.ownerToken)
         assert attempt.exitProof() == proof
         assert cancelConnect(attempt.token).state == ExitState.OS_EXIT_CONFIRMED
-        print(
-            "QP08_CONNECT_CANCEL_EVIDENCE="
-            + json.dumps(
-                {
-                    "attempt_token": str(attempt.token.value),
+        _emitEvidence(
+            "QP08_CONNECT_CANCEL_EVIDENCE",
+            {
+                "attempt_token": str(attempt.token.value),
+                "owner_token": str(proof.owner_token.value),
+                "os_pid": proof.os_pid,
+                "exit_code": proof.exit_code,
+                "exit_status": proof.exit_status,
+                "reason": proof.reason,
+                "monotonic_exit_timestamp": proof.timestamp,
+                "kill_receipt": {
+                    "state": receipt.state.value,
+                    "timestamp": receipt.timestamp,
+                    "os_pid": receipt.os_pid,
+                },
+                "exit_proof": {
                     "owner_token": str(proof.owner_token.value),
                     "os_pid": proof.os_pid,
+                    "exit_code": proof.exit_code,
                     "exit_status": proof.exit_status,
-                    "reason": proof.reason,
-                    "monotonic_exit_timestamp": proof.timestamp,
-                    "connect_worker_exited": not client_thread.is_alive(),
+                    "timestamp": proof.timestamp,
                 },
-                sort_keys=True,
-            ),
-            flush=True,
+                "cancel_elapsed_seconds": cancel_elapsed,
+                "duration_seconds": time.monotonic() - start,
+                "worker_settled": not client_thread.is_alive(),
+                "late_success_rejected": result != ["UNEXPECTED_SUCCESS"],
+                "timeout_or_unconfirmed": False,
+            },
         )
     finally:
         done.set()

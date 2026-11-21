@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import time
 import socket
 import threading
-import time
-from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
 from typing import cast
+from dataclasses import FrozenInstanceError
 
 import pytest
 

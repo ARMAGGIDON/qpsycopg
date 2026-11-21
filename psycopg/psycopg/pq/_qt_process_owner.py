@@ -6,14 +6,14 @@ active. A context is bound to the thread executing psycopg.connect().
 
 from __future__ import annotations
 
+from enum import Enum
+from time import monotonic
+from uuid import UUID, uuid4
+from typing import Any, Callable
+from weakref import WeakValueDictionary
+from threading import Event, Lock
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from enum import Enum
-from threading import Event, Lock
-from time import monotonic
-from typing import Any, Callable
-from uuid import UUID, uuid4
-from weakref import WeakValueDictionary
 
 
 @dataclass(frozen=True, slots=True)

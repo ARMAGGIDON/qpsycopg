@@ -113,7 +113,8 @@ class CancelControlServer:
         # PQcancelCreate touches PGconn, so create the object on the worker's
         # main thread before handing only PGcancelConn to the control thread.
         self.cancelConn = conn.cancel_conn()
-        ipc = os.environ.get("QPSYCOPG_IPC", "pipe" if sys.platform == "win32" else "tcp").lower()
+        defaultIpc = "pipe" if sys.platform == "win32" else "tcp"
+        ipc = os.environ.get("QPSYCOPG_IPC", defaultIpc).lower()
         if ipc == "pipe":
             if sys.platform != "win32":
                 raise e.NotSupportedError("QPSYCOPG_IPC=pipe is Windows-only")

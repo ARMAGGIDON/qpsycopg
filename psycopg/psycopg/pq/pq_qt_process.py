@@ -665,8 +665,9 @@ class PGconn(_RemoteObject):
         try:
             value = transport.request(Operation.CONNECT, args=(conninfo,))
             assert isinstance(value, PGconn)
-            if transport._attempt is not None:
-                transport._attempt.check()
+            attempt = getattr(transport, "_attempt", None)
+            if attempt is not None:
+                attempt.check()
             return value
         except BaseException:
             transport.close()
@@ -678,8 +679,9 @@ class PGconn(_RemoteObject):
         try:
             value = transport.request(Operation.CONNECT_START, args=(conninfo,))
             assert isinstance(value, PGconn)
-            if transport._attempt is not None:
-                transport._attempt.check()
+            attempt = getattr(transport, "_attempt", None)
+            if attempt is not None:
+                attempt.check()
             return value
         except BaseException:
             transport.close()

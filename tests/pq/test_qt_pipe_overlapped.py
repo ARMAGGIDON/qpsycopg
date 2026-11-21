@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import secrets
 import socket
 import sys
 import threading
@@ -13,7 +12,9 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows Named Pipes only")
+pytestmark = pytest.mark.skipif(
+    sys.platform != "win32", reason="Windows Named Pipes only"
+)
 
 
 def _thread(target):
@@ -242,7 +243,9 @@ def test_cancel_managed_connect_with_peer_accepted_but_silent(monkeypatch):
 
     thread, errors, done = _thread(do_connect)
     try:
-        assert connected.wait(12), "peer never connected or parent never entered handshake read"
+        assert connected.wait(12), (
+            "peer never connected or parent never entered handshake read"
+        )
         owner = attempt.owner
         assert owner is not None and psutil.pid_exists(owner._osPid)
         receipt = cancelConnect(attempt.token)
@@ -264,3 +267,104 @@ def test_cancel_managed_connect_with_peer_accepted_but_silent(monkeypatch):
     finally:
         cancelConnect(attempt.token)
         thread.join(2)
+
+
+def test_close_interrupts_real_blocked_recv():
+    from psycopg.pq._qt_process_pipe import PipeListenerSocket, connectPipe
+
+    listener = PipeListenerSocket()
+    client = connectPipe(listener.address)
+    server, _ = listener.accept()
+    started = threading.Event()
+
+    def receive():
+        started.set()
+        with pytest.raises(OSError):
+            server.recv(10)
+
+    thread, errors, done = _thread(receive)
+    try:
+        assert started.wait(2)
+        time.sleep(0.05)
+        server.close()
+        server.close()
+        assert done.wait(3), "blocked ReadFile survived PipeStream.close()"
+        thread.join(1)
+        assert not errors, f"uncaught helper thread exception: {errors}"
+    finally:
+        server.close()
+        client.close()
+        listener.close()
+
+
+def test_reconnect_after_timeout_and_multiple_independent_pipes():
+    from psycopg.pq._qt_process_pipe import PipeListenerSocket, connectPipe
+
+    timed_out = PipeListenerSocket()
+    timed_out.settimeout(0.02)
+    try:
+        with pytest.raises(socket.timeout):
+            timed_out.accept()
+    finally:
+        timed_out.close()
+
+    a, b = PipeListenerSocket(), PipeListenerSocket()
+    client_a = connectPipe(a.address)
+    client_b = connectPipe(b.address)
+    stream_a, _ = a.accept()
+    stream_b, _ = b.accept()
+    try:
+        stream_a.sendall(b"first")
+        stream_b.sendall(b"second")
+        assert client_a.recv(5) == b"first"
+        assert client_b.recv(6) == b"second"
+        stream_a.close()
+        client_b.sendall(b"still alive")
+        assert stream_b.recv(11) == b"still alive"
+    finally:
+        stream_a.close()
+        stream_b.close()
+        client_a.close()
+        client_b.close()
+        a.close()
+        b.close()
+
+
+def test_real_truncated_token_handshake_rejected():
+    from psycopg.pq._qt_process_pipe import PipeListenerSocket, connectPipe
+    from psycopg.pq._qt_process_protocol import recvToken
+
+    listener = PipeListenerSocket()
+    client = connectPipe(listener.address)
+    server, _ = listener.accept()
+    server.settimeout(0.5)
+    try:
+        client.sendall(b"short-token")
+        client.close()
+        with pytest.raises(EOFError):
+            recvToken(server)
+    finally:
+        client.close()
+        server.close()
+        listener.close()
+
+
+def test_partial_write_is_retried_without_dropping_bytes():
+    from psycopg.pq._qt_process_pipe import PipeStream
+
+    class ShortWrite:
+        def __init__(self):
+            self.data = bytearray()
+
+        def perform(self, kind, buffer, size, deadline):
+            assert kind == "write"
+            n = min(size, 3)
+            self.data.extend(buffer.raw[:n])
+            return n
+
+    stream = PipeStream.__new__(PipeStream)
+    stream._pipe = ShortWrite()
+    stream._writeLock = threading.Lock()
+    stream._timeout = 0.5
+    stream.sendall(b"abcdefghijk")
+    assert stream._pipe.data == b"abcdefghijk"

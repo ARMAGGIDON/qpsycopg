@@ -1,3 +1,4 @@
+# mypy: disable-error-code="attr-defined, no-any-return"
 """Cancelable Windows named-pipe byte stream for the qt-process backend.
 
 All overlapped storage, events, and data buffers remain owned until the kernel
@@ -67,40 +68,54 @@ if os.name == "nt":
         fn.argtypes, fn.restype = args, result
         return fn
 
-    _createPipe = _api(_kernel, "CreateNamedPipeW",
+    _createPipe = _api(
+        _kernel, "CreateNamedPipeW",
         (wt.LPCWSTR, wt.DWORD, wt.DWORD, wt.DWORD, wt.DWORD, wt.DWORD,
          wt.DWORD, ctypes.POINTER(_SECURITY_ATTRIBUTES)), wt.HANDLE)
-    _connect = _api(_kernel, "ConnectNamedPipe",
+    _connect = _api(
+        _kernel, "ConnectNamedPipe",
         (wt.HANDLE, ctypes.POINTER(_OVERLAPPED)), wt.BOOL)
-    _createFile = _api(_kernel, "CreateFileW",
+    _createFile = _api(
+        _kernel, "CreateFileW",
         (wt.LPCWSTR, wt.DWORD, wt.DWORD, ctypes.c_void_p, wt.DWORD,
          wt.DWORD, wt.HANDLE), wt.HANDLE)
     _waitPipe = _api(_kernel, "WaitNamedPipeW", (wt.LPCWSTR, wt.DWORD), wt.BOOL)
-    _read = _api(_kernel, "ReadFile",
+    _read = _api(
+        _kernel, "ReadFile",
         (wt.HANDLE, ctypes.c_void_p, wt.DWORD, ctypes.c_void_p,
          ctypes.POINTER(_OVERLAPPED)), wt.BOOL)
-    _write = _api(_kernel, "WriteFile",
+    _write = _api(
+        _kernel, "WriteFile",
         (wt.HANDLE, ctypes.c_void_p, wt.DWORD, ctypes.c_void_p,
          ctypes.POINTER(_OVERLAPPED)), wt.BOOL)
-    _newEvent = _api(_kernel, "CreateEventW",
+    _newEvent = _api(
+        _kernel, "CreateEventW",
         (ctypes.c_void_p, wt.BOOL, wt.BOOL, wt.LPCWSTR), wt.HANDLE)
     _waitEvent = _api(_kernel, "WaitForSingleObject", (wt.HANDLE, wt.DWORD), wt.DWORD)
-    _overlappedResult = _api(_kernel, "GetOverlappedResult",
-        (wt.HANDLE, ctypes.POINTER(_OVERLAPPED), ctypes.POINTER(wt.DWORD), wt.BOOL), wt.BOOL)
-    _cancelIo = _api(_kernel, "CancelIoEx",
+    _overlappedResult = _api(
+        _kernel, "GetOverlappedResult",
+        (wt.HANDLE, ctypes.POINTER(_OVERLAPPED),
+         ctypes.POINTER(wt.DWORD), wt.BOOL), wt.BOOL)
+    _cancelIo = _api(
+        _kernel, "CancelIoEx",
         (wt.HANDLE, ctypes.POINTER(_OVERLAPPED)), wt.BOOL)
     _closeHandle = _api(_kernel, "CloseHandle", (wt.HANDLE,), wt.BOOL)
-    _clientPid = _api(_kernel, "GetNamedPipeClientProcessId",
+    _clientPid = _api(
+        _kernel, "GetNamedPipeClientProcessId",
         (wt.HANDLE, ctypes.POINTER(wt.ULONG)), wt.BOOL)
     _getProcess = _api(_kernel, "GetCurrentProcess", (), wt.HANDLE)
-    _openToken = _api(_advapi, "OpenProcessToken",
+    _openToken = _api(
+        _advapi, "OpenProcessToken",
         (wt.HANDLE, wt.DWORD, ctypes.POINTER(wt.HANDLE)), wt.BOOL)
-    _tokenInfo = _api(_advapi, "GetTokenInformation",
+    _tokenInfo = _api(
+        _advapi, "GetTokenInformation",
         (wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD,
          ctypes.POINTER(wt.DWORD)), wt.BOOL)
-    _sidString = _api(_advapi, "ConvertSidToStringSidW",
+    _sidString = _api(
+        _advapi, "ConvertSidToStringSidW",
         (ctypes.c_void_p, ctypes.POINTER(wt.LPWSTR)), wt.BOOL)
-    _parseSddl = _api(_advapi, "ConvertStringSecurityDescriptorToSecurityDescriptorW",
+    _parseSddl = _api(
+        _advapi, "ConvertStringSecurityDescriptorToSecurityDescriptorW",
         (wt.LPCWSTR, wt.DWORD, ctypes.POINTER(ctypes.c_void_p),
          ctypes.POINTER(wt.DWORD)), wt.BOOL)
     _localFree = _api(_kernel, "LocalFree", (ctypes.c_void_p,), ctypes.c_void_p)
@@ -166,7 +181,9 @@ class _PipeHandle:
 
     def _cancel(self, operation: _Operation) -> None:
         handle = self.handle
-        if handle is not None and not _cancelIo(handle, ctypes.byref(operation.overlapped)):
+        if handle is not None and not _cancelIo(
+            handle, ctypes.byref(operation.overlapped)
+        ):
             error = ctypes.get_last_error()
             if error != _ERROR_NOT_FOUND:
                 # Completion still has to be observed; never free on this error.
@@ -219,9 +236,13 @@ class _PipeHandle:
             if kind == "connect":
                 ok = _connect(handle, ctypes.byref(operation.overlapped))
             elif kind == "read":
-                ok = _read(handle, buffer, size, None, ctypes.byref(operation.overlapped))
+                ok = _read(
+                    handle, buffer, size, None, ctypes.byref(operation.overlapped)
+                )
             elif kind == "write":
-                ok = _write(handle, buffer, size, None, ctypes.byref(operation.overlapped))
+                ok = _write(
+                    handle, buffer, size, None, ctypes.byref(operation.overlapped)
+                )
             else:
                 raise ValueError(f"unsupported pipe operation: {kind}")
             error = 0 if ok else ctypes.get_last_error()
@@ -241,17 +262,25 @@ class _PipeHandle:
                 if wait != _WAIT_TIMEOUT:
                     raise ctypes.WinError(ctypes.get_last_error())
                 now = time.monotonic()
-                if (self._closed or (deadline is not None and now >= deadline)) and cancelled_at is None:
-                    timed_out = deadline is not None and now >= deadline and not self._closed
+                if (self._closed or (deadline is not None and now >= deadline)
+                        ) and cancelled_at is None:
+                    timed_out = (
+                        deadline is not None and now >= deadline and not self._closed
+                    )
                     self._cancel(operation)
                     cancelled_at = now
-                if cancelled_at is not None and now - cancelled_at >= _CANCEL_DRAIN_SECONDS:
+                if (
+                    cancelled_at is not None
+                    and now - cancelled_at >= _CANCEL_DRAIN_SECONDS
+                ):
                     operation.deferred = True
                     threading.Thread(target=self._reap, args=(operation,),
                                      name="qpsycopg-pipe-reaper", daemon=True).start()
                     if timed_out:
                         raise socket.timeout("qpsycopg named-pipe I/O timed out")
-                    raise OSError(_ERROR_OPERATION_ABORTED, "qpsycopg named-pipe I/O cancelled")
+                    raise OSError(
+                        _ERROR_OPERATION_ABORTED, "qpsycopg named-pipe I/O cancelled"
+                    )
             count = wt.DWORD()
             if not _overlappedResult(handle, ctypes.byref(operation.overlapped),
                                      ctypes.byref(count), False):
@@ -260,7 +289,9 @@ class _PipeHandle:
                     raise socket.timeout("qpsycopg named-pipe I/O timed out")
                 raise _error(error)
             if self._closed:
-                raise OSError(_ERROR_OPERATION_ABORTED, "qpsycopg named-pipe I/O cancelled")
+                raise OSError(
+                    _ERROR_OPERATION_ABORTED, "qpsycopg named-pipe I/O cancelled"
+                )
             if deadline is not None and time.monotonic() >= deadline and timed_out:
                 raise socket.timeout("qpsycopg named-pipe I/O timed out")
             return count.value
@@ -303,7 +334,8 @@ class PipeStream:
         with self._readLock:
             if self._readOffset < len(self._readBuffer):
                 count = min(len(view), len(self._readBuffer) - self._readOffset)
-                view[:count] = self._readBuffer[self._readOffset:self._readOffset + count]
+                end = self._readOffset + count
+                view[:count] = self._readBuffer[self._readOffset:end]
                 self._readOffset += count
                 return count
             requested = min(max(len(view), _READ_AHEAD), _IO_CHUNK)
@@ -353,8 +385,10 @@ class PipeListenerSocket:
         attributes, descriptor = _current_user_security()
         try:
             handle = _createPipe(
-                self.address, _PIPE_ACCESS_DUPLEX | _FILE_FLAG_OVERLAPPED | _FILE_FLAG_FIRST_PIPE_INSTANCE,
-                _PIPE_TYPE_BYTE | _PIPE_READMODE_BYTE | _PIPE_WAIT | _PIPE_REJECT_REMOTE_CLIENTS,
+                self.address,
+                _PIPE_ACCESS_DUPLEX | _FILE_FLAG_OVERLAPPED | _FILE_FLAG_FIRST_PIPE_INSTANCE,
+                _PIPE_TYPE_BYTE | _PIPE_READMODE_BYTE | _PIPE_WAIT
+                | _PIPE_REJECT_REMOTE_CLIENTS,
                 1, _BUFFER_SIZE, _BUFFER_SIZE, 0, ctypes.byref(attributes),
             )
             if handle in (None, _INVALID_HANDLE):
@@ -398,7 +432,9 @@ class PipeListenerSocket:
                 raise ctypes.WinError(ctypes.get_last_error())
             if int(pid.value) != self.expected_pid:
                 pipe.close()
-                raise PermissionError(f"unexpected qpsycopg pipe client PID: {pid.value}")
+                raise PermissionError(
+                    f"unexpected qpsycopg pipe client PID: {pid.value}"
+                )
         # Ownership transfer occurs only after the operation has completed.
         self._pipe = None
         return PipeStreamHandle(pipe), None

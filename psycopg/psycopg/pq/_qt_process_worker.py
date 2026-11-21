@@ -18,6 +18,7 @@ from ._qt_process_protocol import Operation, PackedValues, RemoteError, RemoteKi
 from ._qt_process_protocol import RemoteRef, Request, Response, ResultSnapshot
 from ._qt_process_protocol import ResultReadSnapshot, SendSnapshot, WaitSnapshot
 from ._qt_process_protocol import recvFrame, sendFrame, sendToken
+from ._qt_process_pipe import connectPipe
 
 READ = 1
 WRITE = 2
@@ -549,9 +550,12 @@ def main() -> int:
 
     host, port, tokenHex = sys.argv[1], int(sys.argv[2]), sys.argv[3]
     token = bytes.fromhex(tokenHex)
-    sock = socket.create_connection((host, port), timeout=10.0)
-    sock.settimeout(None)
+    # The parent selects the physical transport and passes the pipe address
+    # explicitly. A pipe failure must never silently open a TCP connection.
+    sock = connectPipe(host[5:]) if host.startswith("pipe:") else socket.create_connection((host, port), timeout=10.0)
+    sock.settimeout(10.0)
     sendToken(sock, token)
+    sock.settimeout(None)
     try:
         Worker(sock).run()
         return 0

@@ -182,7 +182,7 @@ class _ProcessOwner:
 
     def close(self) -> None:
         with self._stateLock:
-            if self._closeRequested or self._exitProof is not None:
+            if self._closeRequested:
                 return
             self._closeRequested = True
             self.commands.put("close")
@@ -250,25 +250,35 @@ class _ProcessOwner:
                     f"couldn't start qpsycopg worker: {process.errorString()}"
                 )
             with self._stateLock:
-                self._osPid = int(process.processId())
+                pid = int(process.processId())
+                self._osPid = pid if pid > 0 else None
                 self._diagnostic = "worker started"
             self.started.set()
             while True:
                 command = self.commands.get()
                 if command == "kill":
-                    self._dispatched()
-                    if process.state() != QProcess.ProcessState.NotRunning:
-                        process.kill()
-                        process.waitForFinished(5_000)
-                    self._observeExit(process, "forced QProcess kill")
-                elif command == "close":
-                    if process.state() != QProcess.ProcessState.NotRunning:
-                        process.waitForFinished(2_000)
-                    if process.state() != QProcess.ProcessState.NotRunning:
+                    running = process.state() != QProcess.ProcessState.NotRunning
+                    if running:
                         self._dispatched()
                         process.kill()
                         process.waitForFinished(5_000)
-                    self._observeExit(process, "owner close (graceful or escalated)")
+                    self._observeExit(
+                        process,
+                        "forced QProcess kill" if running else "worker already exited",
+                    )
+                    if process.state() == QProcess.ProcessState.NotRunning:
+                        return  # Never leave a reaped QProcess owner thread waiting.
+                elif command == "close":
+                    if process.state() != QProcess.ProcessState.NotRunning:
+                        process.waitForFinished(2_000)
+                    forced = process.state() != QProcess.ProcessState.NotRunning
+                    if forced:
+                        self._dispatched()
+                        process.kill()
+                        process.waitForFinished(5_000)
+                    self._observeExit(
+                        process, "forced owner close" if forced else "graceful owner close"
+                    )
                     return
         except BaseException as error:
             self.startError = error
@@ -298,7 +308,7 @@ class _Transport:
         # Windows ConnectNamedPipe. Existing unmanaged IPC stays unchanged.
         factory = _stdlib_socket.socket if self._attempt is not None else socket.socket
         listener = factory(_stdlib_socket.AF_INET, _stdlib_socket.SOCK_STREAM)
-        self._listener = listener
+        self._listener: Any = listener
         self.sock: Any = None
         listener.setsockopt(_stdlib_socket.SOL_SOCKET, _stdlib_socket.SO_REUSEADDR, 1)
         listener.bind(("127.0.0.1", 0))

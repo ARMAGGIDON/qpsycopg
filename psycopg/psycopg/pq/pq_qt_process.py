@@ -30,6 +30,7 @@ from ._qt_process_protocol import Operation, RemoteError, RemoteKind, RemoteRef
 from ._qt_process_protocol import Request, Response, ResultSnapshot, SendSnapshot
 from ._qt_process_protocol import ResultReadSnapshot, WaitSnapshot
 from ._qt_process_protocol import recvFrame, recvToken, sendFrame
+from ._qt_process_pipe import PipeListenerSocket
 
 try:
     from PySide6.QtCore import QProcess, QProcessEnvironment
@@ -316,10 +317,20 @@ class _ProcessOwner:
 class _Transport:
     def __init__(self) -> None:
         self._attempt = currentConnectAttempt()
-        # IPC selection is independent of managed ConnectAttempt. On Windows
-        # the patched socket factory provides a real overlapped named pipe.
-        listener = socket.socket(_stdlib_socket.AF_INET, _stdlib_socket.SOCK_STREAM)
-        self.ipcKind = getattr(listener, "ipc_kind", "tcp")
+        # IPC selection is independent of managed ConnectAttempt and the
+        # optional lazy fast-path monkeypatch. Never fall back to TCP.
+        ipc = os.environ.get(
+            "QPSYCOPG_IPC", "pipe" if sys.platform == "win32" else "tcp"
+        ).lower()
+        if ipc == "pipe":
+            if sys.platform != "win32":
+                raise e.NotSupportedError("QPSYCOPG_IPC=pipe is Windows-only")
+            listener = PipeListenerSocket()
+        elif ipc == "tcp":
+            listener = socket.socket(_stdlib_socket.AF_INET, _stdlib_socket.SOCK_STREAM)
+        else:
+            raise e.InterfaceError(f"unknown QPSYCOPG_IPC value: {ipc!r}")
+        self.ipcKind = ipc
         self._listener: Any = listener
         self.sock: Any = None
         listener.setsockopt(_stdlib_socket.SOL_SOCKET, _stdlib_socket.SO_REUSEADDR, 1)

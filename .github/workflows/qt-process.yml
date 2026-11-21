@@ -157,6 +157,47 @@ jobs:
   # Independent of the existing Python-worker Windows connection smoke:
   # build the same C wheel as the upstream Windows c-matrix, then run
   # the actual qt-thread semantic smoke with its native worker selected.
+  windows-qp08-python-worker:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install qpsycopg, Qt and process observer
+        run: python -m pip install -e "./psycopg[qt]" pytest psutil
+      - name: Verify QP08 with actual Windows QProcesses
+        shell: pwsh
+        env:
+          PSYCOPG_IMPL: qt-process
+          QPSYCOPG_WORKER_IMPL: python
+          QPSYCOPG_IPC: tcp
+          QPSYCOPG_OWNER_TEST_DSN: "host=127.0.0.1 dbname=postgres"
+        run: |
+          $service = Get-CimInstance Win32_Service |
+            Where-Object { $_.Name -like 'postgresql*' } |
+            Select-Object -First 1
+          if (-not $service) { throw 'No PostgreSQL Windows service found' }
+          Set-Service -Name $service.Name -StartupType Manual
+          if ((Get-Service -Name $service.Name).Status -ne 'Running') {
+            Start-Service -Name $service.Name
+          }
+          $exe = [regex]::Match($service.PathName, '^"([^"]+)"|^(\S+)')
+          if (-not $exe.Success) { throw 'Unknown PostgreSQL service path' }
+          $executable = if ($exe.Groups[1].Success) {
+            $exe.Groups[1].Value
+          } else {
+            $exe.Groups[2].Value
+          }
+          $env:PSYCOPG_PG_ROOT = Split-Path (Split-Path $executable -Parent) -Parent
+          $env:QPSYCOPG_ENV_FILE = Join-Path $env:RUNNER_TEMP 'absent-qpsycopg.env'
+          $env:PYTHONPATH = Join-Path (Get-Location).Path 'psycopg'
+          python -c 'import psycopg; c=psycopg.connect("host=127.0.0.1 dbname=postgres"); print("WINDOWS_QP08_PG_VERSION", c.execute("show server_version").fetchone()[0]); c.close()'
+          if ($LASTEXITCODE -ne 0) { throw 'Windows QProcess PostgreSQL preflight failed' }
+          python -m pytest -q tests/pq/test_qt_owner_lifecycle.py tests/pq/test_qt_owner_live.py
+          if ($LASTEXITCODE -ne 0) { throw 'Windows QP08 OS-exit tests failed' }
+
   windows-c-worker-smoke:
     runs-on: windows-2025
     timeout-minutes: 35

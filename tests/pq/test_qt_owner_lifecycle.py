@@ -173,6 +173,15 @@ def test_cancel_control_recv_deadline(monkeypatch):
         mod.CancelControlClient(StalledSocket()).cancel(0)
 
 
+def test_attempt_token_cannot_be_reused():
+    attempt = newConnectAttempt()
+    with attempt:
+        assert not attempt.cancelled
+    with pytest.raises(RuntimeError, match="cannot be reused"):
+        with attempt:
+            pytest.fail("a single AttemptToken must not identify two sessions")
+
+
 def test_managed_attempt_context_is_thread_local():
     assert newConnectAttempt().owner is None
     attempts = []

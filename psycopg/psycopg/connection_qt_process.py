@@ -28,6 +28,7 @@ from .connection_async import AsyncConnection as _AsyncConnection
 from .pq._qt_process_cancel import CancelControlClient
 from .pq.pq_qt_process import PGconn as QtPGconn
 from .pq.pq_qt_process import waitRemote
+from .pq._qt_process_owner import currentConnectAttempt
 
 _REMOTE_WAIT_INTERVAL = 0.01
 
@@ -55,14 +56,12 @@ def _closeCancelControl(pgconn: QtPGconn) -> None:
 
 
 def _waitProcessOwner(pgconn: object) -> None:
+    # Close only dispatches an owner-local request. Do not confuse a Python
+    # thread join with OS process exit, or block the GUI up to eight seconds.
     owner = cast(QtPGconn, pgconn)._transport.owner
-    if not owner.thread.is_alive():
-        return
-
     owner.close()
-    owner.thread.join(8.0)
-    if owner.thread.is_alive():
-        logger.warning("qpsycopg QProcess owner thread didn't stop after close")
+    # Call owner.waitExit(owner.ownerToken, timeout) explicitly off the GUI
+    # thread when a verified process-exit barrier is required.
 
 
 def _waitRemote(
@@ -235,6 +234,13 @@ class Connection(_Connection[Row]):
         if context:
             rv._adapters = AdaptersMap(context.adapters)
         rv.prepare_threshold = prepare_threshold
+        managed_attempt = currentConnectAttempt()
+        if managed_attempt is not None:
+            try:
+                managed_attempt.check()
+            except (RuntimeError, TimeoutError) as error:
+                rv.pgconn.finish()
+                raise e.OperationalError(str(error)) from error
         return rv
 
     def close(self) -> None:
@@ -373,6 +379,13 @@ class AsyncConnection(_AsyncConnection[Row]):
         if context:
             rv._adapters = AdaptersMap(context.adapters)
         rv.prepare_threshold = prepare_threshold
+        managed_attempt = currentConnectAttempt()
+        if managed_attempt is not None:
+            try:
+                managed_attempt.check()
+            except (RuntimeError, TimeoutError) as error:
+                rv.pgconn.finish()
+                raise e.OperationalError(str(error)) from error
         return rv
 
     async def close(self) -> None:

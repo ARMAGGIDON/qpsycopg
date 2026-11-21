@@ -316,16 +316,20 @@ class _ProcessOwner:
 class _Transport:
     def __init__(self) -> None:
         self._attempt = currentConnectAttempt()
-        # A managed attempt requires bounded accept, not an uninterruptible
-        # Windows ConnectNamedPipe. Existing unmanaged IPC stays unchanged.
-        factory = _stdlib_socket.socket if self._attempt is not None else socket.socket
-        listener = factory(_stdlib_socket.AF_INET, _stdlib_socket.SOCK_STREAM)
+        # IPC selection is independent of managed ConnectAttempt. On Windows
+        # the patched socket factory provides a real overlapped named pipe.
+        listener = socket.socket(_stdlib_socket.AF_INET, _stdlib_socket.SOCK_STREAM)
+        self.ipcKind = getattr(listener, "ipc_kind", "tcp")
         self._listener: Any = listener
         self.sock: Any = None
         listener.setsockopt(_stdlib_socket.SOL_SOCKET, _stdlib_socket.SO_REUSEADDR, 1)
         listener.bind(("127.0.0.1", 0))
         listener.listen(1)
-        listener.settimeout(0.2 if self._attempt is not None else 10.0)
+        if self.ipcKind == "pipe":
+            remaining = None if self._attempt is None else self._attempt.remaining()
+            listener.settimeout(remaining if remaining is not None else 10.0)
+        else:
+            listener.settimeout(0.2 if self._attempt is not None else 10.0)
         host, port = listener.getsockname()
         tokenHex = secrets.token_hex(32)
         token = bytes.fromhex(tokenHex)
@@ -334,6 +338,11 @@ class _Transport:
             self.owner = _ProcessOwner(host, port, tokenHex,
                                        attempt=self._attempt, transport=self)
             self.owner.waitStarted()
+            if self.ipcKind == "pipe":
+                # Verify the connecting client is precisely this QProcess.
+                if self.owner._osPid is None:
+                    raise e.OperationalError("QProcess worker PID not available")
+                listener.expected_pid = self.owner._osPid
             while True:
                 if self._attempt is not None:
                     self._attempt.check()
@@ -341,7 +350,7 @@ class _Transport:
                     sock, _ = listener.accept()
                     break
                 except _stdlib_socket.timeout:
-                    if self._attempt is None:
+                    if self.ipcKind == "pipe" or self._attempt is None:
                         raise
             self.sock = sock
         except BaseException:
@@ -387,9 +396,12 @@ class _Transport:
             except OSError:
                 pass
         sock = getattr(self, "sock", None)
-        if sock is not None and hasattr(sock, "shutdown"):
+        if sock is not None:
             try:
-                sock.shutdown(_stdlib_socket.SHUT_RDWR)
+                if hasattr(sock, "abort"):
+                    sock.abort()
+                elif hasattr(sock, "shutdown"):
+                    sock.shutdown(_stdlib_socket.SHUT_RDWR)
             except OSError:
                 pass
 
@@ -585,16 +597,15 @@ class _Transport:
             self._transactionStatusCache = None
             self._clientEncodingCache = None
             self._clearCaches()
-            # A Windows named-pipe read has no usable socket timeout. Do not
-            # issue an unbounded CLOSE RPC on it; QProcess close owns cleanup.
-            if isinstance(self.sock, _stdlib_socket.socket):
-                try:
-                    self.sock.settimeout(0.5)
-                    self.requestId += 1
-                    sendFrame(self.sock, Request(self.requestId, Operation.CLOSE))
-                    recvFrame(self.sock)
-                except (EOFError, OSError, ValueError):
-                    self.owner.kill()
+            # Both TCP and overlapped Pipe have a bounded CLOSE RPC. A blocked
+            # SQL operation uses the independent abort path without this lock.
+            try:
+                self.sock.settimeout(0.5)
+                self.requestId += 1
+                sendFrame(self.sock, Request(self.requestId, Operation.CLOSE))
+                recvFrame(self.sock)
+            except (EOFError, OSError, ValueError):
+                self.owner.kill()
             self._abortConnect()
             try:
                 self.sock.close()

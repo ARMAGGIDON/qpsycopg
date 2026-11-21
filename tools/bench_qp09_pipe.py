@@ -59,8 +59,10 @@ def main():
     parser.add_argument("--dsn", default=os.environ.get("QPSYCOPG_OWNER_TEST_DSN"))
     parser.add_argument("--repeat", type=int, default=5)
     parser.add_argument("--iterations", type=int, default=500)
-    parser.add_argument("--lazy", action="store_true",
-                        help="enable the historical lazy worker-pool module on both revisions")
+    parser.add_argument(
+        "--lazy", action="store_true",
+        help="enable the historical lazy worker-pool module on both revisions",
+    )
     args = parser.parse_args()
     if args.lazy:
         # QP08 selected its historical Pipe transport in this optional layer.

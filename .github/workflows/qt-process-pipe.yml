@@ -45,6 +45,22 @@ jobs:
           $env:PYTHONPATH = Join-Path (Get-Location).Path 'psycopg'
           python -m pytest -q --capture=tee-sys tests/pq/test_qt_pipe_overlapped.py
           if ($LASTEXITCODE -ne 0) { throw 'QP09 Win32 Pipe integration failed' }
+      - name: QP09-FINAL prolonged HANDLE, thread, child-process and I/O stress
+        shell: pwsh
+        env:
+          PSYCOPG_IMPL: qt-process
+          QPSYCOPG_WORKER_IMPL: python
+          QPSYCOPG_IPC: pipe
+          QPSYCOPG_QP09_AUDIT_STRESS: "1"
+          QPSYCOPG_QP09_STRESS_SECONDS: "180"
+          QPSYCOPG_QP09_WORKER_STRESS_LOOPS: "60"
+          QPSYCOPG_OWNER_TEST_DSN: "postgresql://postgres:postgres@127.0.0.1:55432/postgres"
+          QPSYCOPG_OWNER_EVIDENCE_DIR: ${{ runner.temp }}/qp09-evidence
+        run: |
+          $env:PSYCOPG_PG_ROOT = Join-Path $env:ProgramFiles 'PostgreSQL\18'
+          $env:PYTHONPATH = Join-Path (Get-Location).Path 'psycopg'
+          python -m pytest -q --capture=tee-sys -k qp09_audit tests/pq/test_qt_pipe_overlapped.py
+          if ($LASTEXITCODE -ne 0) { throw 'QP09-FINAL resource stress failed' }
       - name: Check out accepted QP08 as the historical synchronous Pipe baseline
         uses: actions/checkout@v4
         with:

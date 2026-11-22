@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - feature/qt-process-pq
+      - feature/qt-process-overlapped-pipe
     paths:
       - "psycopg/**"
       - "tests/pq/test_qt_pipe_overlapped.py"

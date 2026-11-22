@@ -9,6 +9,7 @@ an overlapped HANDLE must never be passed to synchronous file-descriptor I/O.
 from __future__ import annotations
 
 import ctypes
+import errno
 import os
 import secrets
 import socket
@@ -20,6 +21,11 @@ _READ_AHEAD = 64 * 1024
 _IO_CHUNK = 256 * 1024
 _POLL_MS = 25
 _CANCEL_DRAIN_SECONDS = 1.0
+# One process-wide budget covers all issued overlapped Pipe operations, not
+# only their deferred reapers. A kernel operation that cannot complete holds
+# its slot forever rather than permitting unbounded pinned memory/threads.
+_MAX_INFLIGHT_IO = 128
+_inflight_io = threading.BoundedSemaphore(_MAX_INFLIGHT_IO)
 
 if os.name == "nt":
     from ctypes import wintypes as wt
@@ -161,13 +167,29 @@ def _current_user_security() -> tuple[Any, Any]:
 
 class _Operation:
     def __init__(self, buffer: Any = None) -> None:
-        self.buffer = buffer  # Pin storage until actual I/O completion.
-        self.event = _newEvent(None, True, False, None)
-        if not self.event:
-            raise ctypes.WinError(ctypes.get_last_error())
-        self.overlapped = _OVERLAPPED()
-        self.overlapped.hEvent = self.event
-        self.deferred = False
+        # Reserve before the Win32 call. A full budget must never issue another
+        # operation for which no completion owner can be retained. Fail fast:
+        # GUI cancellation must not wait on a permanently stalled kernel I/O.
+        if not _inflight_io.acquire(blocking=False):
+            raise OSError(
+                errno.ENOBUFS,
+                "qpsycopg Pipe I/O capacity exhausted; cancelled "
+                "kernel operations may still be pending",
+            )
+        self.event = None
+        try:
+            self.buffer = buffer  # Pin storage until actual I/O completion.
+            self.event = _newEvent(None, True, False, None)
+            if not self.event:
+                raise ctypes.WinError(ctypes.get_last_error())
+            self.overlapped = _OVERLAPPED()
+            self.overlapped.hEvent = self.event
+            self.deferred = False
+        except BaseException:
+            if self.event:
+                _closeHandle(self.event)
+            _inflight_io.release()
+            raise
 
 
 class _PipeHandle:
@@ -207,8 +229,13 @@ class _PipeHandle:
     def _finish(self, operation: _Operation) -> None:
         with self._lock:
             self._pending.remove(operation)
-            _closeHandle(operation.event)
-            self._close_if_idle()
+            try:
+                _closeHandle(operation.event)
+                self._close_if_idle()
+            finally:
+                # The slot is returned only after the kernel completion
+                # barrier and all owned HANDLE/event cleanup.
+                _inflight_io.release()
 
     def _reap(self, operation: _Operation) -> None:
         # GetOverlappedResult(..., TRUE) is the completion barrier, including
@@ -223,32 +250,47 @@ class _PipeHandle:
         )
         self._finish(operation)
 
+    def _defer(self, operation: _Operation) -> None:
+        """Keep ownership if starting the deferred completion thread fails."""
+        operation.deferred = True
+        try:
+            threading.Thread(
+                target=self._reap, args=(operation,),
+                name="qpsycopg-pipe-reaper", daemon=True,
+            ).start()
+        except BaseException:
+            # Thread creation can fail under resource exhaustion. In that
+            # case the only safe fallback is a synchronous kernel completion
+            # barrier; never release pending OVERLAPPED storage prematurely.
+            self._reap(operation)
+            raise
+
     def perform(self, kind: str, buffer: Any = None, size: int = 0,
                 deadline: float | None = None) -> int:
+        if kind not in ("connect", "read", "write"):
+            raise ValueError(f"unsupported pipe operation: {kind}")
         operation = _Operation(buffer)
-        pending = False
-        with self._lock:
-            if self._closed or self.handle is None:
-                _closeHandle(operation.event)
-                raise OSError("qpsycopg named pipe closed")
-            handle = self.handle
-            self._pending.add(operation)
-            if kind == "connect":
-                ok = _connect(handle, ctypes.byref(operation.overlapped))
-            elif kind == "read":
-                ok = _read(
-                    handle, buffer, size, None, ctypes.byref(operation.overlapped)
-                )
-            elif kind == "write":
-                ok = _write(
-                    handle, buffer, size, None, ctypes.byref(operation.overlapped)
-                )
-            else:
-                raise ValueError(f"unsupported pipe operation: {kind}")
-            error = 0 if ok else ctypes.get_last_error()
-            pending = not ok and error == _ERROR_IO_PENDING
-
+        registered = False
         try:
+            with self._lock:
+                if self._closed or self.handle is None:
+                    raise OSError("qpsycopg named pipe closed")
+                handle = self.handle
+                self._pending.add(operation)
+                registered = True
+                if kind == "connect":
+                    ok = _connect(handle, ctypes.byref(operation.overlapped))
+                elif kind == "read":
+                    ok = _read(
+                        handle, buffer, size, None, ctypes.byref(operation.overlapped)
+                    )
+                else:
+                    ok = _write(
+                        handle, buffer, size, None, ctypes.byref(operation.overlapped)
+                    )
+                error = 0 if ok else ctypes.get_last_error()
+                pending = not ok and error == _ERROR_IO_PENDING
+
             if not ok and kind == "connect" and error == _ERROR_PIPE_CONNECTED:
                 return 0
             if not ok and not pending:
@@ -262,11 +304,7 @@ class _PipeHandle:
                 if wait != _WAIT_TIMEOUT:
                     # The wait failed while kernel I/O may still be live.
                     # Retain all state until GetOverlappedResult completes.
-                    operation.deferred = True
-                    threading.Thread(
-                        target=self._reap, args=(operation,),
-                        name="qpsycopg-pipe-reaper", daemon=True,
-                    ).start()
+                    self._defer(operation)
                     raise ctypes.WinError(ctypes.get_last_error())
                 now = time.monotonic()
                 if cancelled_at is None and (
@@ -281,11 +319,7 @@ class _PipeHandle:
                     cancelled_at is not None
                     and now - cancelled_at >= _CANCEL_DRAIN_SECONDS
                 ):
-                    operation.deferred = True
-                    threading.Thread(
-                        target=self._reap, args=(operation,),
-                        name="qpsycopg-pipe-reaper", daemon=True,
-                    ).start()
+                    self._defer(operation)
                     if timed_out:
                         raise socket.timeout("qpsycopg named-pipe I/O timed out")
                     raise OSError(
@@ -307,7 +341,13 @@ class _PipeHandle:
             return count.value
         finally:
             if not operation.deferred:
-                self._finish(operation)
+                if registered:
+                    self._finish(operation)
+                else:
+                    # Closed/rejected before the Win32 call: no kernel I/O
+                    # owns this event, but its global capacity is reserved.
+                    _closeHandle(operation.event)
+                    _inflight_io.release()
 
 
 class PipeStream:

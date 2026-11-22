@@ -241,12 +241,28 @@ class _ProcessOwner:
         process: QProcess | None = None
         try:
             process = QProcess()
-            process.setProgram(sys.executable)
+            # Windows venv python.exe is often a redirector that spawns a
+            # separate interpreter. QProcess would then own the launcher PID,
+            # while the Named Pipe peer (and PostgreSQL session) belongs to
+            # an untracked child. Follow CPython multiprocessing's Win32
+            # strategy: start the real interpreter and preserve venv context.
+            workerExecutable = sys.executable
+            venvLauncher = None
+            if sys.platform == "win32":
+                baseExecutable = getattr(sys, "_base_executable", sys.executable)
+                basePath = os.path.normcase(os.path.abspath(baseExecutable))
+                venvPath = os.path.normcase(os.path.abspath(sys.executable))
+                if basePath != venvPath:
+                    workerExecutable = baseExecutable
+                    venvLauncher = sys.executable
+            process.setProgram(workerExecutable)
             process.setArguments(getattr(self, "_workerArguments", [
                 "-m", "psycopg.pq._qt_process_worker",
                 self.host, str(self.port), self.token,
             ]))
             env = QProcessEnvironment.systemEnvironment()
+            if venvLauncher is not None:
+                env.insert("__PYVENV_LAUNCHER__", venvLauncher)
             env.insert("PSYCOPG_IMPL", _workerImpl())
             # Cancellation Pipe belongs to a separate OS child process. Its
             # verified client is this parent, not the worker's own PID.

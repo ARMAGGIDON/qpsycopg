@@ -413,7 +413,8 @@ def test_concurrent_kill_abort_close_and_neighbor_survives():
     from psycopg.pq._qt_process_owner import newConnectAttempt, cancelConnect
 
     dsn = os.environ["QPSYCOPG_OWNER_TEST_DSN"]
-    attempt_a, attempt_b = newConnectAttempt(timeout_s=12), newConnectAttempt(timeout_s=12)
+    attempt_a = newConnectAttempt(timeout_s=12)
+    attempt_b = newConnectAttempt(timeout_s=12)
     with attempt_a:
         first = psycopg.connect(dsn)
     with attempt_b:
@@ -461,3 +462,394 @@ def test_concurrent_kill_abort_close_and_neighbor_survives():
         second.close()
         owner.requestKill(owner.ownerToken)
         owner.waitExit(owner.ownerToken, 10)
+
+
+def test_reaper_start_failure_keeps_overlapped_until_kernel_completion(monkeypatch):
+    """Fault-inject thread exhaustion after CancelIoEx, without mocking Win32 I/O."""
+    from psycopg.pq import _qt_process_pipe as pipe
+
+    listener = pipe.PipeListenerSocket()
+    listener.settimeout(0.0)
+    handle = listener._pipe
+    assert handle is not None
+    thread_start = threading.Thread.start
+
+    def fail_reaper_start(self):
+        if self.name == "qpsycopg-pipe-reaper":
+            raise RuntimeError("injected reaper thread startup failure")
+        return thread_start(self)
+
+    # Force the deferred branch even if the kernel has completed the
+    # cancellation before the next 25 ms poll. GetOverlappedResult remains real.
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            pipe, "_waitEvent", lambda event, milliseconds: pipe._WAIT_TIMEOUT
+        )
+        patch.setattr(pipe, "_CANCEL_DRAIN_SECONDS", 0.0)
+        patch.setattr(threading.Thread, "start", fail_reaper_start)
+        try:
+            with pytest.raises(RuntimeError, match="injected reaper"):
+                listener.accept()
+        finally:
+            listener.close()
+    assert not handle._pending, "a failed reaper start orphaned pending OVERLAPPED I/O"
+    assert handle.handle is None
+
+
+def test_bounded_overlapped_capacity_preserves_kernel_owned_storage(monkeypatch):
+    """A stalled completion holds one global slot; other Pipe calls fail fast."""
+    from psycopg.pq import _qt_process_pipe as pipe
+
+    # Use a one-slot budget for deterministic fault injection. The real
+    # production limit is 128 process-wide and cannot grow at runtime.
+    monkeypatch.setattr(pipe, "_inflight_io", threading.BoundedSemaphore(1))
+    first, second = pipe.PipeListenerSocket(), pipe.PipeListenerSocket()
+    first.settimeout(0.0)
+    second.settimeout(0.02)
+    entered, release, finished = (threading.Event() for _ in range(3))
+    real_reap = pipe._PipeHandle._reap
+
+    def hold_reap(self, operation):
+        entered.set()
+        try:
+            assert release.wait(5), "injected stalled completion was not released"
+            return real_reap(self, operation)  # Actual Win32 completion barrier.
+        finally:
+            finished.set()
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(pipe._PipeHandle, "_reap", hold_reap)
+            # Force the deferred branch without faking OS I/O completion.
+            patch.setattr(
+                pipe, "_waitEvent", lambda event, milliseconds: pipe._WAIT_TIMEOUT
+            )
+            patch.setattr(pipe, "_CANCEL_DRAIN_SECONDS", 0.0)
+            with pytest.raises(socket.timeout):
+                first.accept()
+            assert entered.wait(2), "deferred completion did not enter reaper"
+            assert first._pipe is not None and len(first._pipe._pending) == 1
+
+            started = time.monotonic()
+            with pytest.raises(OSError, match="capacity exhausted"):
+                second.accept()
+            assert time.monotonic() - started < 0.5
+            assert second._pipe is not None and not second._pipe._pending
+            # Neither an extra operation nor a second reaper was created.
+            assert len(first._pipe._pending) == 1
+            release.set()
+            assert finished.wait(3), "real kernel completion barrier did not finish"
+        assert first._pipe is not None and not first._pipe._pending
+
+        # Once kernel completion releases the slot, regular Win32 I/O works.
+        with pytest.raises(socket.timeout):
+            second.accept()
+        _evidence("qp09-final-bounded-io-capacity.json", {
+            "limit_production": pipe._MAX_INFLIGHT_IO,
+            "injected_limit": 1,
+            "capacity_exhaustion": "fast failure before issuing Win32 I/O",
+            "deferred_completion": "real kernel barrier",
+            "permit_recovered": True,
+        })
+    finally:
+        release.set()
+        if entered.is_set():
+            assert finished.wait(3)  # Avoid restoring the budget mid-reap.
+        first.close()
+        second.close()
+
+
+def test_overlapped_capacity_returns_after_event_creation_failure(monkeypatch):
+    """An allocation failure must not consume an I/O slot indefinitely."""
+    from psycopg.pq import _qt_process_pipe as pipe
+
+    monkeypatch.setattr(pipe, "_inflight_io", threading.BoundedSemaphore(1))
+    listener = pipe.PipeListenerSocket()
+    listener.settimeout(0.02)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(pipe, "_newEvent", lambda *args: None)
+            with pytest.raises(OSError):
+                listener.accept()
+        assert listener._pipe is not None and not listener._pipe._pending
+        with pytest.raises(socket.timeout):
+            listener.accept()
+    finally:
+        listener.close()
+
+
+def test_actual_pipe_dacl_and_handle_inheritance():
+    """Read back the kernel object's actual DACL and inherit flag."""
+    from psycopg.pq import _qt_process_pipe as pipe
+
+    listener = pipe.PipeListenerSocket()
+    try:
+        handle = listener._pipe
+        assert handle is not None and handle.handle is not None
+        flags = pipe.wt.DWORD()
+        get_flags = pipe._api(
+            pipe._kernel, "GetHandleInformation",
+            (pipe.wt.HANDLE, pipe.ctypes.POINTER(pipe.wt.DWORD)), pipe.wt.BOOL,
+        )
+        assert get_flags(handle.handle, pipe.ctypes.byref(flags))
+        assert flags.value & 1 == 0, "Named Pipe HANDLE must not be inherited"
+
+        get_security = pipe._api(
+            pipe._advapi, "GetSecurityInfo",
+            (pipe.wt.HANDLE, pipe.wt.DWORD, pipe.wt.DWORD,
+             pipe.ctypes.c_void_p, pipe.ctypes.c_void_p, pipe.ctypes.c_void_p,
+             pipe.ctypes.c_void_p, pipe.ctypes.POINTER(pipe.ctypes.c_void_p)),
+            pipe.wt.DWORD,
+        )
+        descriptor = pipe.ctypes.c_void_p()
+        # SE_FILE_OBJECT=1; DACL_SECURITY_INFORMATION=4.
+        code = get_security(handle.handle, 1, 4, None, None, None, None,
+                            pipe.ctypes.byref(descriptor))
+        assert code == 0, f"GetSecurityInfo failed: {code}"
+        try:
+            to_sddl = pipe._api(
+                pipe._advapi, "ConvertSecurityDescriptorToStringSecurityDescriptorW",
+                (pipe.ctypes.c_void_p, pipe.wt.DWORD, pipe.wt.DWORD,
+                 pipe.ctypes.POINTER(pipe.wt.LPWSTR),
+                 pipe.ctypes.POINTER(pipe.wt.DWORD)),
+                pipe.wt.BOOL,
+            )
+            sddl_ptr = pipe.wt.LPWSTR()
+            assert to_sddl(descriptor, 1, 4, pipe.ctypes.byref(sddl_ptr), None)
+            try:
+                sddl = sddl_ptr.value
+                assert "D:P" in sddl, f"Pipe DACL is not protected: {sddl}"
+                assert "SY" in sddl, f"Local SYSTEM missing: {sddl}"
+                assert "WD" not in sddl and "AN" not in sddl, (
+                    f"Everyone or Anonymous unexpectedly allowed: {sddl}"
+                )
+            finally:
+                pipe._localFree(pipe.ctypes.cast(sddl_ptr, pipe.ctypes.c_void_p))
+        finally:
+            pipe._localFree(descriptor)
+    finally:
+        listener.close()
+
+
+@pytest.mark.skipif(
+    os.environ.get("QPSYCOPG_QP09_AUDIT_STRESS") != "1",
+    reason="run explicitly with QPSYCOPG_QP09_AUDIT_STRESS=1",
+)
+def test_qp09_audit_repeated_pipe_io_and_resource_stability():
+    """Real Win32 stress covering accept, read cancellation and write timeout."""
+    import gc
+    import psutil
+    from psycopg.pq._qt_process_pipe import PipeListenerSocket, connectPipe
+
+    process = psutil.Process()
+    gc.collect()
+    before = {
+        "handles": process.num_handles(), "threads": process.num_threads(),
+        "rss_bytes": process.memory_info().rss,
+        "children": len(process.children(recursive=True)),
+    }
+    payload = b"x" * (8 << 20)
+    duration = float(os.environ.get("QPSYCOPG_QP09_STRESS_SECONDS", "30"))
+    start = time.monotonic()
+    iterations = 0
+    peak_handles = before["handles"]
+    peak_threads = before["threads"]
+
+    while iterations < 200 or time.monotonic() - start < duration:
+        mode = iterations % 4
+        listener = PipeListenerSocket()
+        client = server = None
+        try:
+            if mode == 0:
+                client = connectPipe(listener.address)
+                server, _ = listener.accept()
+                client.sendall(b"ok")
+                assert server.recv(2) == b"ok"
+            elif mode == 1:
+                listener.settimeout(0.005)
+                with pytest.raises(socket.timeout):
+                    listener.accept()
+            elif mode == 2:
+                client = connectPipe(listener.address)
+                server, _ = listener.accept()
+                begun = threading.Event()
+
+                def blocked_read():
+                    begun.set()
+                    with pytest.raises(OSError):
+                        server.recv(8)
+
+                reader, errors, done = _thread(blocked_read)
+                assert begun.wait(2)
+                time.sleep(0.005)
+                server.close()
+                assert done.wait(3), "blocked read failed to cancel"
+                reader.join(1)
+                assert not errors
+            else:
+                client = connectPipe(listener.address)
+                server, _ = listener.accept()
+                server.settimeout(0.05)
+                with pytest.raises(socket.timeout):
+                    server.sendall(payload)
+        finally:
+            if server is not None:
+                server.close()
+            if client is not None:
+                client.close()
+            listener.close()
+        iterations += 1
+        if iterations % 25 == 0:
+            peak_handles = max(peak_handles, process.num_handles())
+            peak_threads = max(peak_threads, process.num_threads())
+
+    gc.collect()
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        reapers = sum(t.name == "qpsycopg-pipe-reaper" for t in threading.enumerate())
+        if reapers == 0 and process.num_handles() <= before["handles"] + 16:
+            break
+        time.sleep(0.1)
+    after = {
+        "handles": process.num_handles(), "threads": process.num_threads(),
+        "rss_bytes": process.memory_info().rss,
+        "children": len(process.children(recursive=True)),
+    }
+    reapers = sum(t.name == "qpsycopg-pipe-reaper" for t in threading.enumerate())
+    _evidence("qp09-final-pipe-resource-stress.json", {
+        "iterations": iterations,
+        "duration_seconds": round(time.monotonic() - start, 3),
+        "before": before, "after": after, "peak_handles": peak_handles,
+        "peak_threads": peak_threads, "pending_reaper_threads": reapers,
+    })
+    assert reapers == 0, "overlapped I/O completion reapers did not terminate"
+    assert after["handles"] <= before["handles"] + 16, "HANDLE count failed to recover"
+    assert after["threads"] <= before["threads"] + 3, "thread count failed to recover"
+    assert after["children"] == before["children"], "unexpected child processes"
+
+
+@pytest.mark.skipif(
+    os.environ.get("QPSYCOPG_QP09_AUDIT_STRESS") != "1"
+    or os.environ.get("PSYCOPG_IMPL", "").lower() != "qt-process"
+    or os.environ.get("QPSYCOPG_IPC", "").lower() != "pipe",
+    reason="requires explicit managed Qt Pipe stress environment",
+)
+def test_qp09_audit_repeated_real_workers_and_exact_exit_proofs():
+    """Repeated QProcess creation, normal close, forced kill and reconnect."""
+    import gc
+    import psutil
+    import psycopg
+    from psycopg.pq._qt_process_owner import newConnectAttempt
+
+    proc = psutil.Process()
+    baseline_children = {p.pid for p in proc.children(recursive=True)}
+    iterations = int(os.environ.get("QPSYCOPG_QP09_WORKER_STRESS_LOOPS", "60"))
+    proofs = 0
+    for i in range(iterations):
+        attempt = newConnectAttempt(timeout_s=12)
+        with attempt:
+            connection = psycopg.connect(os.environ["QPSYCOPG_OWNER_TEST_DSN"])
+        owner = attempt.owner
+        assert owner is not None
+        assert connection.pgconn._transport.ipcKind == "pipe"
+        try:
+            assert connection.execute("select 1").fetchone() == (1,)
+        finally:
+            if i % 3 == 0:
+                owner.requestKill(owner.ownerToken)
+            connection.close()
+            owner.requestKill(owner.ownerToken)
+            proof = owner.waitExit(owner.ownerToken, 10)
+            assert proof is not None
+            assert proof.owner_token == owner.ownerToken
+            assert proof.os_pid == owner._osPid
+            assert not psutil.pid_exists(proof.os_pid)
+            proofs += 1
+
+    gc.collect()
+    after_children = {p.pid for p in proc.children(recursive=True)}
+    _evidence("qp09-final-worker-resource-stress.json", {
+        "iterations": iterations, "exact_exit_proofs": proofs,
+        "baseline_child_pids": sorted(baseline_children),
+        "remaining_child_pids": sorted(after_children),
+    })
+    assert after_children == baseline_children
+
+
+@pytest.mark.skipif(
+    os.environ.get("QPSYCOPG_QP09_AUDIT_STRESS") != "1"
+    or os.environ.get("PSYCOPG_IMPL", "").lower() != "qt-process"
+    or os.environ.get("QPSYCOPG_IPC", "").lower() != "pipe",
+    reason="requires explicit managed Qt Pipe stress environment",
+)
+def test_qp09_audit_concurrent_independent_qprocess_sessions():
+    """Prove exact OS process exit without relying on PID disappearance."""
+    import ctypes
+    from ctypes import wintypes as wt
+    from concurrent.futures import ThreadPoolExecutor
+
+    import psycopg
+    from psycopg.pq import _qt_process_pipe as pipe
+    from psycopg.pq._qt_process_owner import newConnectAttempt
+
+    # Keep an independent Win32 process HANDLE open from before termination.
+    # WaitForSingleObject on this exact object is not affected by PID reuse,
+    # and remains valid while Qt still holds its own process HANDLE.
+    open_process = pipe._api(
+        pipe._kernel, "OpenProcess",
+        (wt.DWORD, wt.BOOL, wt.DWORD), wt.HANDLE,
+    )
+    get_exit_code = pipe._api(
+        pipe._kernel, "GetExitCodeProcess",
+        (wt.HANDLE, ctypes.POINTER(wt.DWORD)), wt.BOOL,
+    )
+    dsn = os.environ["QPSYCOPG_OWNER_TEST_DSN"]
+
+    def worker(index):
+        confirmed = 0
+        for iteration in range(10):
+            attempt = newConnectAttempt(timeout_s=12)
+            with attempt:
+                connection = psycopg.connect(dsn)
+            owner = attempt.owner
+            assert owner is not None and owner._osPid is not None
+            # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION.
+            witness = open_process(0x00101000, False, owner._osPid)
+            if not witness:
+                connection.close()
+                raise ctypes.WinError(ctypes.get_last_error())
+            try:
+                assert connection.execute("select %s", (index,)).fetchone() == (index,)
+                if (index + iteration) % 3 == 0:
+                    owner.requestKill(owner.ownerToken)
+            finally:
+                try:
+                    connection.close()
+                    owner.requestKill(owner.ownerToken)
+                    proof = owner.waitExit(owner.ownerToken, 10)
+                    assert proof is not None and proof.owner_token == owner.ownerToken
+                    assert proof.os_pid == owner._osPid
+                    assert pipe._waitEvent(witness, 10_000) == pipe._WAIT_OBJECT_0, (
+                        f"QProcess exited without OS process signalling: {proof!r}"
+                    )
+                    exit_code = wt.DWORD()
+                    assert get_exit_code(witness, ctypes.byref(exit_code)), (
+                        f"GetExitCodeProcess failed for {proof.os_pid}"
+                    )
+                    assert exit_code.value == proof.exit_code, (
+                        f"Win32 exit code {exit_code.value} "
+                        f"!= ExitProof {proof.exit_code}"
+                    )
+                    confirmed += 1
+                finally:
+                    pipe._closeHandle(witness)
+        return confirmed
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        counts = list(executor.map(worker, range(4)))
+    _evidence("qp09-final-concurrent-worker-stress.json", {
+        "workers": 4, "cycles_per_worker": 10,
+        "exact_os_exit_witnesses_per_worker": counts,
+        "method": "OpenProcess + WaitForSingleObject + GetExitCodeProcess",
+    })
+    assert counts == [10] * 4

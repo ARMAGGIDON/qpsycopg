@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - feature/qt-process-pq
+      - feature/qt-process-overlapped-pipe
     paths:
       - "psycopg/**"
       - "tests/pq/test_qt_pipe_overlapped.py"
@@ -45,6 +46,42 @@ jobs:
           $env:PYTHONPATH = Join-Path (Get-Location).Path 'psycopg'
           python -m pytest -q --capture=tee-sys tests/pq/test_qt_pipe_overlapped.py
           if ($LASTEXITCODE -ne 0) { throw 'QP09 Win32 Pipe integration failed' }
+      - name: Real Windows venv redirector and exact QProcess PID regression
+        shell: pwsh
+        env:
+          PSYCOPG_IMPL: qt-process
+          QPSYCOPG_WORKER_IMPL: python
+          QPSYCOPG_IPC: pipe
+          QPSYCOPG_REQUIRE_PG18: "1"
+          QPSYCOPG_OWNER_TEST_DSN: "postgresql://postgres:postgres@127.0.0.1:55432/postgres"
+          QPSYCOPG_OWNER_EVIDENCE_DIR: ${{ runner.temp }}/qp09-evidence
+        run: |
+          $env:PSYCOPG_PG_ROOT = Join-Path $env:ProgramFiles 'PostgreSQL\18'
+          $env:PYTHONPATH = Join-Path (Get-Location).Path 'psycopg'
+          python -m venv .qp09-test-venv
+          $venvPython = '.\.qp09-test-venv\Scripts\python.exe'
+          & $venvPython -m pip install -e "./psycopg[qt]" pytest psutil
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot install qpsycopg into Windows venv' }
+          & $venvPython -c "import sys; print('venv python:', sys.executable); print('actual interpreter:', sys._base_executable); assert sys.executable != sys._base_executable"
+          if ($LASTEXITCODE -ne 0) { throw 'Expected Windows venv redirector was not active' }
+          & $venvPython -m pytest -q --capture=tee-sys tests/pq/test_qt_pipe_overlapped.py
+          if ($LASTEXITCODE -ne 0) { throw 'Windows venv QProcess PID regression failed' }
+      - name: QP09-FINAL prolonged HANDLE, thread, child-process and I/O stress
+        shell: pwsh
+        env:
+          PSYCOPG_IMPL: qt-process
+          QPSYCOPG_WORKER_IMPL: python
+          QPSYCOPG_IPC: pipe
+          QPSYCOPG_QP09_AUDIT_STRESS: "1"
+          QPSYCOPG_QP09_STRESS_SECONDS: "180"
+          QPSYCOPG_QP09_WORKER_STRESS_LOOPS: "60"
+          QPSYCOPG_OWNER_TEST_DSN: "postgresql://postgres:postgres@127.0.0.1:55432/postgres"
+          QPSYCOPG_OWNER_EVIDENCE_DIR: ${{ runner.temp }}/qp09-evidence
+        run: |
+          $env:PSYCOPG_PG_ROOT = Join-Path $env:ProgramFiles 'PostgreSQL\18'
+          $env:PYTHONPATH = Join-Path (Get-Location).Path 'psycopg'
+          python -m pytest -q --capture=tee-sys -k qp09_audit tests/pq/test_qt_pipe_overlapped.py
+          if ($LASTEXITCODE -ne 0) { throw 'QP09-FINAL resource stress failed' }
       - name: Check out accepted QP08 as the historical synchronous Pipe baseline
         uses: actions/checkout@v4
         with:

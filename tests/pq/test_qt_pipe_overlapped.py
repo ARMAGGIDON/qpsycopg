@@ -413,7 +413,8 @@ def test_concurrent_kill_abort_close_and_neighbor_survives():
     from psycopg.pq._qt_process_owner import newConnectAttempt, cancelConnect
 
     dsn = os.environ["QPSYCOPG_OWNER_TEST_DSN"]
-    attempt_a, attempt_b = newConnectAttempt(timeout_s=12), newConnectAttempt(timeout_s=12)
+    attempt_a = newConnectAttempt(timeout_s=12)
+    attempt_b = newConnectAttempt(timeout_s=12)
     with attempt_a:
         first = psycopg.connect(dsn)
     with attempt_b:
@@ -836,7 +837,8 @@ def test_qp09_audit_concurrent_independent_qprocess_sessions():
                         f"GetExitCodeProcess failed for {proof.os_pid}"
                     )
                     assert exit_code.value == proof.exit_code, (
-                        f"Win32 exit code {exit_code.value} != ExitProof {proof.exit_code}"
+                        f"Win32 exit code {exit_code.value} "
+                        f"!= ExitProof {proof.exit_code}"
                     )
                     confirmed += 1
                 finally:

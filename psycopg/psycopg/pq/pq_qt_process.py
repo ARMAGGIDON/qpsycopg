@@ -250,9 +250,9 @@ class _ProcessOwner:
             venvLauncher = None
             if sys.platform == "win32":
                 baseExecutable = getattr(sys, "_base_executable", sys.executable)
-                if os.path.normcase(os.path.abspath(baseExecutable)) != os.path.normcase(
-                    os.path.abspath(sys.executable)
-                ):
+                basePath = os.path.normcase(os.path.abspath(baseExecutable))
+                venvPath = os.path.normcase(os.path.abspath(sys.executable))
+                if basePath != venvPath:
                     workerExecutable = baseExecutable
                     venvLauncher = sys.executable
             process.setProgram(workerExecutable)

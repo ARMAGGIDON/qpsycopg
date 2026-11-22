@@ -30,10 +30,29 @@ monotonic deadline; sendall shares one deadline across chunks. Cancellation
 invokes CancelIoEx on exact operations, and closing a stream never frees
 pending OVERLAPPED or HANDLE resources.
 
+A process-wide bounded semaphore allows at most 128 simultaneously issued
+overlapped Pipe operations, including pending cancellation completions and
+deferred reapers. Acquisition is non-blocking and happens *before* the Win32
+I/O call. On budget exhaustion the new operation fails immediately with
+OSError(ENOBUFS); it never starts unowned I/O or silently changes to TCP.
+Only GetOverlappedResult completion (including ERROR_OPERATION_ABORTED)
+permits the pending buffer/event/HANDLE and budget slot to be released.
+
 For delayed kernel cancellations a daemon reaper retains all I/O storage and
 the HANDLE until completion; the calling thread returns after a bounded drain
-window. Absolute OS-level drain deadlines cannot be promised, and lingering
-reaper/handle growth must be regarded as a failure of resource verification.
+window. The global cap prevents unbounded reaper and pending-operation growth
+*within each Python process*, even if Windows never completes a cancellation.
+The cost is deliberate backpressure: at 128 indefinitely stalled operations,
+new Pipe I/O fails safely rather than creating unbounded reaper threads.
+An absolute OS-level drain deadline is impossible without risking
+use-after-free; successful stress runs cannot establish eventual completion
+for a permanently stalled kernel request.
+
+If starting the reaper thread itself fails under resource exhaustion, the
+current thread executes a synchronous kernel-completion barrier. This rare
+fallback preserves OVERLAPPED lifetime, but *cannot guarantee a bounded caller
+return* on a permanently stalled kernel operation. This is an explicit
+safety-versus-liveness limitation, not an unreported passing guarantee.
 QProcess OS exit remains independent: only the exact OwnerToken ExitProof
 permits OS_EXIT_CONFIRMED; thread exit, close or KillReceipt alone do not.
 
@@ -116,7 +135,15 @@ as a benchmark optimization.
 The historical QP08 synchronous Pipe worker emitted an EOFError traceback
 during shutdown while the benchmark command still exited 0; preserve this
 fact in comparisons, and do not interpret that baseline as clean lifecycle
-evidence. The QP09 Windows PostgreSQL 18 step ran 15 real integration tests
-successfully, and explicit TCP QP08 regression passed. This is Windows Server
-CI evidence; real Windows 11, long-running HANDLE leak stress, and wider
-cancellation/race matrices remain acceptance work. QP09 is PARTIAL, not PASS.
+evidence.
+
+The QP09 audit's later Windows Server 2025 and actual Windows 11 Pro build
+26200 verification used PostgreSQL 18 and Python 3.13. On Windows 11,
+17/17 quick tests and 3/3 prolonged stress tests passed (6,446 real Pipe
+operations in 180.136 s, HANDLEs 192 to 191, no leftover child processes,
+no pending reapers, 60 independent QProcess exit proofs, and 40 concurrent
+Win32 process-HANDLE witnesses). These runs validate realistic cleanup and
+concurrency, not an absolute upper bound on a kernel I/O that never completes.
+The separately audited process-wide capacity bound prevents such a stall
+from causing unlimited new Pipe operations or reaper threads; its injected
+saturation and slot-recovery tests are required for final acceptance.

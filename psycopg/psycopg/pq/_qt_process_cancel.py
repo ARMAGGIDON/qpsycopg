@@ -119,8 +119,11 @@ class CancelControlServer:
             if sys.platform != "win32":
                 raise e.NotSupportedError("QPSYCOPG_IPC=pipe is Windows-only")
             self.listener = PipeListenerSocket()
-            # Parent opens cancellation channel; do not accept another PID.
-            self.listener.expected_pid = os.getppid()
+            # qt-thread hosts the cancel listener in the current process;
+            # qt-process hosts it in a QProcess child. The parent explicitly
+            # publishes its PID into the child's environment.
+            parentPid = os.environ.get("QPSYCOPG_QPROCESS_PARENT_PID")
+            self.listener.expected_pid = int(parentPid) if parentPid else os.getpid()
         elif ipc == "tcp":
             self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         else:

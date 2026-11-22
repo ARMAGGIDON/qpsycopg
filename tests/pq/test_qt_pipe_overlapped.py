@@ -461,3 +461,230 @@ def test_concurrent_kill_abort_close_and_neighbor_survives():
         second.close()
         owner.requestKill(owner.ownerToken)
         owner.waitExit(owner.ownerToken, 10)
+
+
+def test_reaper_start_failure_keeps_overlapped_until_kernel_completion(monkeypatch):
+    """Fault-inject thread exhaustion after CancelIoEx, without mocking Win32 I/O."""
+    from psycopg.pq import _qt_process_pipe as pipe
+
+    listener = pipe.PipeListenerSocket()
+    listener.settimeout(0.0)
+    handle = listener._pipe
+    assert handle is not None
+    thread_start = threading.Thread.start
+
+    def fail_reaper_start(self):
+        if self.name == "qpsycopg-pipe-reaper":
+            raise RuntimeError("injected reaper thread startup failure")
+        return thread_start(self)
+
+    # Force the deferred branch even if the kernel has completed the
+    # cancellation before the next 25 ms poll. GetOverlappedResult remains real.
+    with monkeypatch.context() as patch:
+        patch.setattr(pipe, "_waitEvent", lambda event, milliseconds: pipe._WAIT_TIMEOUT)
+        patch.setattr(pipe, "_CANCEL_DRAIN_SECONDS", 0.0)
+        patch.setattr(threading.Thread, "start", fail_reaper_start)
+        try:
+            with pytest.raises(RuntimeError, match="injected reaper"):
+                listener.accept()
+        finally:
+            listener.close()
+    assert not handle._pending, "a failed reaper start orphaned pending OVERLAPPED I/O"
+    assert handle.handle is None
+
+
+def test_actual_pipe_dacl_and_handle_inheritance():
+    """Read back the kernel object's actual DACL and inherit flag."""
+    from psycopg.pq import _qt_process_pipe as pipe
+
+    listener = pipe.PipeListenerSocket()
+    try:
+        handle = listener._pipe
+        assert handle is not None and handle.handle is not None
+        flags = pipe.wt.DWORD()
+        get_flags = pipe._api(
+            pipe._kernel, "GetHandleInformation",
+            (pipe.wt.HANDLE, pipe.ctypes.POINTER(pipe.wt.DWORD)), pipe.wt.BOOL,
+        )
+        assert get_flags(handle.handle, pipe.ctypes.byref(flags))
+        assert flags.value & 1 == 0, "Named Pipe HANDLE must not be inherited"
+
+        get_security = pipe._api(
+            pipe._advapi, "GetSecurityInfo",
+            (pipe.wt.HANDLE, pipe.wt.DWORD, pipe.wt.DWORD,
+             pipe.ctypes.c_void_p, pipe.ctypes.c_void_p, pipe.ctypes.c_void_p,
+             pipe.ctypes.c_void_p, pipe.ctypes.POINTER(pipe.ctypes.c_void_p)),
+            pipe.wt.DWORD,
+        )
+        descriptor = pipe.ctypes.c_void_p()
+        # SE_FILE_OBJECT=1; DACL_SECURITY_INFORMATION=4.
+        code = get_security(handle.handle, 1, 4, None, None, None, None,
+                            pipe.ctypes.byref(descriptor))
+        assert code == 0, f"GetSecurityInfo failed: {code}"
+        try:
+            to_sddl = pipe._api(
+                pipe._advapi, "ConvertSecurityDescriptorToStringSecurityDescriptorW",
+                (pipe.ctypes.c_void_p, pipe.wt.DWORD, pipe.wt.DWORD,
+                 pipe.ctypes.POINTER(pipe.wt.LPWSTR),
+                 pipe.ctypes.POINTER(pipe.wt.DWORD)),
+                pipe.wt.BOOL,
+            )
+            sddl_ptr = pipe.wt.LPWSTR()
+            assert to_sddl(descriptor, 1, 4, pipe.ctypes.byref(sddl_ptr), None)
+            try:
+                sddl = sddl_ptr.value
+                assert "D:P" in sddl, f"Pipe DACL is not protected: {sddl}"
+                assert "SY" in sddl, f"Local SYSTEM missing: {sddl}"
+                assert "WD" not in sddl and "AN" not in sddl, (
+                    f"Everyone or Anonymous unexpectedly allowed: {sddl}"
+                )
+            finally:
+                pipe._localFree(pipe.ctypes.cast(sddl_ptr, pipe.ctypes.c_void_p))
+        finally:
+            pipe._localFree(descriptor)
+    finally:
+        listener.close()
+
+
+@pytest.mark.skipif(
+    os.environ.get("QPSYCOPG_QP09_AUDIT_STRESS") != "1",
+    reason="run explicitly with QPSYCOPG_QP09_AUDIT_STRESS=1",
+)
+def test_qp09_audit_repeated_pipe_io_and_resource_stability():
+    """Real Win32 stress covering accept, read cancellation and write timeout."""
+    import gc
+    import psutil
+    from psycopg.pq._qt_process_pipe import PipeListenerSocket, connectPipe
+
+    process = psutil.Process()
+    gc.collect()
+    before = {
+        "handles": process.num_handles(), "threads": process.num_threads(),
+        "rss_bytes": process.memory_info().rss,
+        "children": len(process.children(recursive=True)),
+    }
+    payload = b"x" * (8 << 20)
+    duration = float(os.environ.get("QPSYCOPG_QP09_STRESS_SECONDS", "30"))
+    start = time.monotonic()
+    iterations = 0
+    peak_handles = before["handles"]
+    peak_threads = before["threads"]
+
+    while iterations < 200 or time.monotonic() - start < duration:
+        mode = iterations % 4
+        listener = PipeListenerSocket()
+        client = server = None
+        try:
+            if mode == 0:
+                client = connectPipe(listener.address)
+                server, _ = listener.accept()
+                client.sendall(b"ok")
+                assert server.recv(2) == b"ok"
+            elif mode == 1:
+                listener.settimeout(0.005)
+                with pytest.raises(socket.timeout):
+                    listener.accept()
+            elif mode == 2:
+                client = connectPipe(listener.address)
+                server, _ = listener.accept()
+                begun = threading.Event()
+
+                def blocked_read():
+                    begun.set()
+                    with pytest.raises(OSError):
+                        server.recv(8)
+
+                reader, errors, done = _thread(blocked_read)
+                assert begun.wait(2)
+                time.sleep(0.005)
+                server.close()
+                assert done.wait(3), "blocked read failed to cancel"
+                reader.join(1)
+                assert not errors
+            else:
+                client = connectPipe(listener.address)
+                server, _ = listener.accept()
+                server.settimeout(0.05)
+                with pytest.raises(socket.timeout):
+                    server.sendall(payload)
+        finally:
+            if server is not None:
+                server.close()
+            if client is not None:
+                client.close()
+            listener.close()
+        iterations += 1
+        if iterations % 25 == 0:
+            peak_handles = max(peak_handles, process.num_handles())
+            peak_threads = max(peak_threads, process.num_threads())
+
+    gc.collect()
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        reapers = sum(t.name == "qpsycopg-pipe-reaper" for t in threading.enumerate())
+        if reapers == 0 and process.num_handles() <= before["handles"] + 16:
+            break
+        time.sleep(0.1)
+    after = {
+        "handles": process.num_handles(), "threads": process.num_threads(),
+        "rss_bytes": process.memory_info().rss,
+        "children": len(process.children(recursive=True)),
+    }
+    reapers = sum(t.name == "qpsycopg-pipe-reaper" for t in threading.enumerate())
+    _evidence("qp09-final-pipe-resource-stress.json", {
+        "iterations": iterations, "duration_seconds": round(time.monotonic() - start, 3),
+        "before": before, "after": after, "peak_handles": peak_handles,
+        "peak_threads": peak_threads, "pending_reaper_threads": reapers,
+    })
+    assert reapers == 0, "overlapped I/O completion reapers did not terminate"
+    assert after["handles"] <= before["handles"] + 16, "HANDLE count failed to recover"
+    assert after["threads"] <= before["threads"] + 3, "thread count failed to recover"
+    assert after["children"] == before["children"], "unexpected child processes"
+
+
+@pytest.mark.skipif(
+    os.environ.get("QPSYCOPG_QP09_AUDIT_STRESS") != "1"
+    or os.environ.get("PSYCOPG_IMPL", "").lower() != "qt-process"
+    or os.environ.get("QPSYCOPG_IPC", "").lower() != "pipe",
+    reason="requires explicit managed Qt Pipe stress environment",
+)
+def test_qp09_audit_repeated_real_workers_and_exact_exit_proofs():
+    """Repeated QProcess creation, normal close, forced kill and reconnect."""
+    import gc
+    import psutil
+    import psycopg
+    from psycopg.pq._qt_process_owner import newConnectAttempt
+
+    proc = psutil.Process()
+    baseline_children = {p.pid for p in proc.children(recursive=True)}
+    iterations = int(os.environ.get("QPSYCOPG_QP09_WORKER_STRESS_LOOPS", "60"))
+    proofs = 0
+    for i in range(iterations):
+        attempt = newConnectAttempt(timeout_s=12)
+        with attempt:
+            connection = psycopg.connect(os.environ["QPSYCOPG_OWNER_TEST_DSN"])
+        owner = attempt.owner
+        assert owner is not None
+        assert connection.pgconn._transport.ipcKind == "pipe"
+        try:
+            assert connection.execute("select 1").fetchone() == (1,)
+        finally:
+            if i % 3 == 0:
+                owner.requestKill(owner.ownerToken)
+            connection.close()
+            owner.requestKill(owner.ownerToken)
+            proof = owner.waitExit(owner.ownerToken, 10)
+            assert proof is not None
+            assert proof.owner_token == owner.ownerToken
+            assert proof.os_pid == owner._osPid
+            assert not psutil.pid_exists(proof.os_pid)
+            proofs += 1
+
+    gc.collect()
+    after_children = {p.pid for p in proc.children(recursive=True)}
+    _evidence("qp09-final-worker-resource-stress.json", {
+        "iterations": iterations, "exact_exit_proofs": proofs,
+        "baseline_child_pids": sorted(baseline_children),
+        "remaining_child_pids": sorted(after_children),
+    })
+    assert after_children == baseline_children

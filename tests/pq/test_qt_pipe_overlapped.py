@@ -700,13 +700,26 @@ def test_qp09_audit_repeated_real_workers_and_exact_exit_proofs():
     reason="requires explicit managed Qt Pipe stress environment",
 )
 def test_qp09_audit_concurrent_independent_qprocess_sessions():
-    """Interleave SQL, forced kill and reconnect across independent owners."""
+    """Prove exact OS process exit without relying on PID disappearance."""
+    import ctypes
+    from ctypes import wintypes as wt
     from concurrent.futures import ThreadPoolExecutor
 
-    import psutil
     import psycopg
+    from psycopg.pq import _qt_process_pipe as pipe
     from psycopg.pq._qt_process_owner import newConnectAttempt
 
+    # Keep an independent Win32 process HANDLE open from before termination.
+    # WaitForSingleObject on this exact object is not affected by PID reuse,
+    # and remains valid while Qt still holds its own process HANDLE.
+    open_process = pipe._api(
+        pipe._kernel, "OpenProcess",
+        (wt.DWORD, wt.BOOL, wt.DWORD), wt.HANDLE,
+    )
+    get_exit_code = pipe._api(
+        pipe._kernel, "GetExitCodeProcess",
+        (wt.HANDLE, ctypes.POINTER(wt.DWORD)), wt.BOOL,
+    )
     dsn = os.environ["QPSYCOPG_OWNER_TEST_DSN"]
 
     def worker(index):
@@ -716,25 +729,43 @@ def test_qp09_audit_concurrent_independent_qprocess_sessions():
             with attempt:
                 connection = psycopg.connect(dsn)
             owner = attempt.owner
-            assert owner is not None
+            assert owner is not None and owner._osPid is not None
+            # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION.
+            witness = open_process(0x00101000, False, owner._osPid)
+            if not witness:
+                connection.close()
+                raise ctypes.WinError(ctypes.get_last_error())
             try:
                 assert connection.execute("select %s", (index,)).fetchone() == (index,)
                 if (index + iteration) % 3 == 0:
                     owner.requestKill(owner.ownerToken)
             finally:
-                connection.close()
-                owner.requestKill(owner.ownerToken)
-                proof = owner.waitExit(owner.ownerToken, 10)
-                assert proof is not None and proof.owner_token == owner.ownerToken
-                assert proof.os_pid == owner._osPid
-                assert not psutil.pid_exists(proof.os_pid)
-                confirmed += 1
+                try:
+                    connection.close()
+                    owner.requestKill(owner.ownerToken)
+                    proof = owner.waitExit(owner.ownerToken, 10)
+                    assert proof is not None and proof.owner_token == owner.ownerToken
+                    assert proof.os_pid == owner._osPid
+                    assert pipe._waitEvent(witness, 10_000) == pipe._WAIT_OBJECT_0, (
+                        f"QProcess exited without OS process signalling: {proof!r}"
+                    )
+                    exit_code = wt.DWORD()
+                    assert get_exit_code(witness, ctypes.byref(exit_code)), (
+                        f"GetExitCodeProcess failed for {proof.os_pid}"
+                    )
+                    assert exit_code.value == proof.exit_code, (
+                        f"Win32 exit code {exit_code.value} != ExitProof {proof.exit_code}"
+                    )
+                    confirmed += 1
+                finally:
+                    pipe._closeHandle(witness)
         return confirmed
 
     with ThreadPoolExecutor(max_workers=4) as executor:
         counts = list(executor.map(worker, range(4)))
     _evidence("qp09-final-concurrent-worker-stress.json", {
         "workers": 4, "cycles_per_worker": 10,
-        "exit_proofs_per_worker": counts,
+        "exact_os_exit_witnesses_per_worker": counts,
+        "method": "OpenProcess + WaitForSingleObject + GetExitCodeProcess",
     })
     assert counts == [10] * 4

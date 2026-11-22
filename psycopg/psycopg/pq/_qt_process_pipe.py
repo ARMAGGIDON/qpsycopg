@@ -223,6 +223,21 @@ class _PipeHandle:
         )
         self._finish(operation)
 
+    def _defer(self, operation: _Operation) -> None:
+        """Keep ownership if starting the deferred completion thread fails."""
+        operation.deferred = True
+        try:
+            threading.Thread(
+                target=self._reap, args=(operation,),
+                name="qpsycopg-pipe-reaper", daemon=True,
+            ).start()
+        except BaseException:
+            # Thread creation can fail under resource exhaustion. In that
+            # case the only safe fallback is a synchronous kernel completion
+            # barrier; never release pending OVERLAPPED storage prematurely.
+            self._reap(operation)
+            raise
+
     def perform(self, kind: str, buffer: Any = None, size: int = 0,
                 deadline: float | None = None) -> int:
         operation = _Operation(buffer)
@@ -262,11 +277,7 @@ class _PipeHandle:
                 if wait != _WAIT_TIMEOUT:
                     # The wait failed while kernel I/O may still be live.
                     # Retain all state until GetOverlappedResult completes.
-                    operation.deferred = True
-                    threading.Thread(
-                        target=self._reap, args=(operation,),
-                        name="qpsycopg-pipe-reaper", daemon=True,
-                    ).start()
+                    self._defer(operation)
                     raise ctypes.WinError(ctypes.get_last_error())
                 now = time.monotonic()
                 if cancelled_at is None and (
@@ -281,11 +292,7 @@ class _PipeHandle:
                     cancelled_at is not None
                     and now - cancelled_at >= _CANCEL_DRAIN_SECONDS
                 ):
-                    operation.deferred = True
-                    threading.Thread(
-                        target=self._reap, args=(operation,),
-                        name="qpsycopg-pipe-reaper", daemon=True,
-                    ).start()
+                    self._defer(operation)
                     if timed_out:
                         raise socket.timeout("qpsycopg named-pipe I/O timed out")
                     raise OSError(

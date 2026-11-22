@@ -481,7 +481,9 @@ def test_reaper_start_failure_keeps_overlapped_until_kernel_completion(monkeypat
     # Force the deferred branch even if the kernel has completed the
     # cancellation before the next 25 ms poll. GetOverlappedResult remains real.
     with monkeypatch.context() as patch:
-        patch.setattr(pipe, "_waitEvent", lambda event, milliseconds: pipe._WAIT_TIMEOUT)
+        patch.setattr(
+            pipe, "_waitEvent", lambda event, milliseconds: pipe._WAIT_TIMEOUT
+        )
         patch.setattr(pipe, "_CANCEL_DRAIN_SECONDS", 0.0)
         patch.setattr(threading.Thread, "start", fail_reaper_start)
         try:
@@ -632,7 +634,8 @@ def test_qp09_audit_repeated_pipe_io_and_resource_stability():
     }
     reapers = sum(t.name == "qpsycopg-pipe-reaper" for t in threading.enumerate())
     _evidence("qp09-final-pipe-resource-stress.json", {
-        "iterations": iterations, "duration_seconds": round(time.monotonic() - start, 3),
+        "iterations": iterations,
+        "duration_seconds": round(time.monotonic() - start, 3),
         "before": before, "after": after, "peak_handles": peak_handles,
         "peak_threads": peak_threads, "pending_reaper_threads": reapers,
     })
@@ -688,3 +691,50 @@ def test_qp09_audit_repeated_real_workers_and_exact_exit_proofs():
         "remaining_child_pids": sorted(after_children),
     })
     assert after_children == baseline_children
+
+
+@pytest.mark.skipif(
+    os.environ.get("QPSYCOPG_QP09_AUDIT_STRESS") != "1"
+    or os.environ.get("PSYCOPG_IMPL", "").lower() != "qt-process"
+    or os.environ.get("QPSYCOPG_IPC", "").lower() != "pipe",
+    reason="requires explicit managed Qt Pipe stress environment",
+)
+def test_qp09_audit_concurrent_independent_qprocess_sessions():
+    """Interleave SQL, forced kill and reconnect across independent owners."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    import psutil
+    import psycopg
+    from psycopg.pq._qt_process_owner import newConnectAttempt
+
+    dsn = os.environ["QPSYCOPG_OWNER_TEST_DSN"]
+
+    def worker(index):
+        confirmed = 0
+        for iteration in range(10):
+            attempt = newConnectAttempt(timeout_s=12)
+            with attempt:
+                connection = psycopg.connect(dsn)
+            owner = attempt.owner
+            assert owner is not None
+            try:
+                assert connection.execute("select %s", (index,)).fetchone() == (index,)
+                if (index + iteration) % 3 == 0:
+                    owner.requestKill(owner.ownerToken)
+            finally:
+                connection.close()
+                owner.requestKill(owner.ownerToken)
+                proof = owner.waitExit(owner.ownerToken, 10)
+                assert proof is not None and proof.owner_token == owner.ownerToken
+                assert proof.os_pid == owner._osPid
+                assert not psutil.pid_exists(proof.os_pid)
+                confirmed += 1
+        return confirmed
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        counts = list(executor.map(worker, range(4)))
+    _evidence("qp09-final-concurrent-worker-stress.json", {
+        "workers": 4, "cycles_per_worker": 10,
+        "exit_proofs_per_worker": counts,
+    })
+    assert counts == [10] * 4

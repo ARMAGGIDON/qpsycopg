@@ -85,13 +85,17 @@ Lifecycle and limitations
 -------------------------
 
 Explicitly managed attempts create independent QProcesses rather than reuse
-the lazy worker pool. Managed startup uses loopback TCP instead of Windows
-`ConnectNamedPipe`, whose synchronous accept cannot honor a Python socket
-timeout. Worker startup/accept have finite wait/check points, and a supplied
-attempt deadline bounds its connect IPC wait. The cancellation request does
-not require the connecting worker to finish and can interrupt the TCP stream.
+the lazy worker pool. QP09 selects physical IPC independently of this attempt:
+``QPSYCOPG_IPC=pipe`` means a real Windows named pipe; ``tcp`` keeps loopback
+TCP. Both managed and unmanaged connections must use the requested transport.
+A Pipe listener now uses overlapped ``ConnectNamedPipe`` and cancelable
+``ReadFile``/``WriteFile``; the parent can abort a blocked accept or token
+handshake without joining the connecting thread. The accepted client PID is
+checked against the exact QProcess PID prior to authentication. Failure to
+initialize Pipe is fatal and never converted into a TCP connection.
 Late connections must still be rejected by DBPT's request-ID, generation and
-profile-epoch checks.
+profile-epoch checks. See :doc:`qt-process-ipc-pipe` for Win32, ACL, timeout,
+error and benchmark details.
 
 A control-socket `cancel_safe(timeout=...)` uses its own bounded socket
 roundtrip. Managed transport `close()` does not wait for an occupied SQL lock
@@ -99,8 +103,10 @@ or join the owner thread. Owner kill/wait attempts are finite inside the
 owner thread. **Actual OS termination is not guaranteed by a deadline**:
 if QProcess cannot confirm a stopped worker, `waitExit(timeout)` returns
 `None`; callers must retain `EXIT_UNCONFIRMED` and quarantine the session.
-The default legacy named-pipe fast path may still have blocking native read
-operations; managed DBPT attempts deliberately avoid it.
+All Windows named-pipe instances created by QP09 use overlapped handles.
+The earlier synchronous CRT/C native named-pipe fast paths are intentionally
+disabled for these handles; no implicit blocking read is permitted.
+CancelIoEx cancellation completion and OS-exit observation are separate events.
 
 Tests
 -----

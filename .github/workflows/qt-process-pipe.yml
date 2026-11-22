@@ -1,6 +1,9 @@
 name: QP09 Windows overlapped named-pipe IPC
 
 on:
+  push:
+    branches:
+      - audit/qp09-final
   pull_request:
     branches:
       - feature/qt-process-pq

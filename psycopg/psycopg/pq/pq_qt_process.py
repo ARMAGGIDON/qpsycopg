@@ -248,6 +248,9 @@ class _ProcessOwner:
             ]))
             env = QProcessEnvironment.systemEnvironment()
             env.insert("PSYCOPG_IMPL", _workerImpl())
+            # Cancellation Pipe belongs to a separate OS child process. Its
+            # verified client is this parent, not the worker's own PID.
+            env.insert("QPSYCOPG_QPROCESS_PARENT_PID", str(os.getpid()))
             process.setProcessEnvironment(env)
             process.setProcessChannelMode(
                 QProcess.ProcessChannelMode.ForwardedErrorChannel

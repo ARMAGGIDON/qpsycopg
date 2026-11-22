@@ -495,6 +495,89 @@ def test_reaper_start_failure_keeps_overlapped_until_kernel_completion(monkeypat
     assert handle.handle is None
 
 
+def test_bounded_overlapped_capacity_preserves_kernel_owned_storage(monkeypatch):
+    """A stalled completion holds one global slot; other Pipe calls fail fast."""
+    from psycopg.pq import _qt_process_pipe as pipe
+
+    # Use a one-slot budget for deterministic fault injection. The real
+    # production limit is 128 process-wide and cannot grow at runtime.
+    monkeypatch.setattr(pipe, "_inflight_io", threading.BoundedSemaphore(1))
+    first, second = pipe.PipeListenerSocket(), pipe.PipeListenerSocket()
+    first.settimeout(0.0)
+    second.settimeout(0.02)
+    entered, release, finished = (threading.Event() for _ in range(3))
+    real_reap = pipe._PipeHandle._reap
+
+    def hold_reap(self, operation):
+        entered.set()
+        try:
+            assert release.wait(5), "injected stalled completion was not released"
+            return real_reap(self, operation)  # Actual Win32 completion barrier.
+        finally:
+            finished.set()
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(pipe._PipeHandle, "_reap", hold_reap)
+            # Force the deferred branch without faking OS I/O completion.
+            patch.setattr(
+                pipe, "_waitEvent", lambda event, milliseconds: pipe._WAIT_TIMEOUT
+            )
+            patch.setattr(pipe, "_CANCEL_DRAIN_SECONDS", 0.0)
+            with pytest.raises(socket.timeout):
+                first.accept()
+            assert entered.wait(2), "deferred completion did not enter reaper"
+            assert first._pipe is not None and len(first._pipe._pending) == 1
+
+            started = time.monotonic()
+            with pytest.raises(OSError, match="capacity exhausted"):
+                second.accept()
+            assert time.monotonic() - started < 0.5
+            assert second._pipe is not None and not second._pipe._pending
+            # Neither an extra operation nor a second reaper was created.
+            assert sum(
+                t.name == "qpsycopg-pipe-reaper" for t in threading.enumerate()
+            ) == 1
+            release.set()
+            assert finished.wait(3), "real kernel completion barrier did not finish"
+        assert first._pipe is not None and not first._pipe._pending
+
+        # Once kernel completion releases the slot, regular Win32 I/O works.
+        with pytest.raises(socket.timeout):
+            second.accept()
+        _evidence("qp09-final-bounded-io-capacity.json", {
+            "limit_production": pipe._MAX_INFLIGHT_IO,
+            "injected_limit": 1,
+            "capacity_exhaustion": "fast failure before issuing Win32 I/O",
+            "deferred_completion": "real kernel barrier",
+            "permit_recovered": True,
+        })
+    finally:
+        release.set()
+        assert finished.wait(3)  # Do not restore the global budget mid-reap.
+        first.close()
+        second.close()
+
+
+def test_overlapped_capacity_returns_after_event_creation_failure(monkeypatch):
+    """An allocation failure must not consume an I/O slot indefinitely."""
+    from psycopg.pq import _qt_process_pipe as pipe
+
+    monkeypatch.setattr(pipe, "_inflight_io", threading.BoundedSemaphore(1))
+    listener = pipe.PipeListenerSocket()
+    listener.settimeout(0.02)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(pipe, "_newEvent", lambda *args: None)
+            with pytest.raises(OSError):
+                listener.accept()
+        assert listener._pipe is not None and not listener._pipe._pending
+        with pytest.raises(socket.timeout):
+            listener.accept()
+    finally:
+        listener.close()
+
+
 def test_actual_pipe_dacl_and_handle_inheritance():
     """Read back the kernel object's actual DACL and inherit flag."""
     from psycopg.pq import _qt_process_pipe as pipe

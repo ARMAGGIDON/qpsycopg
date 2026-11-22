@@ -156,6 +156,11 @@ def _evidence(name: str, data: dict) -> None:
     print(f"QP09_OS_EVIDENCE={json.dumps(data, sort_keys=True)}", flush=True)
 
 
+@pytest.mark.skipif(
+    os.environ.get("PSYCOPG_IMPL", "").lower() != "qt-process"
+    or os.environ.get("QPSYCOPG_IPC", "").lower() != "pipe",
+    reason="requires explicit qt-process Named Pipe integration environment",
+)
 def test_managed_pipe_two_real_qprocess_workers():
     import psutil
     import psycopg
@@ -216,6 +221,11 @@ def test_managed_pipe_two_real_qprocess_workers():
             owner.waitExit(owner.ownerToken, 10)
 
 
+@pytest.mark.skipif(
+    os.environ.get("PSYCOPG_IMPL", "").lower() != "qt-process"
+    or os.environ.get("QPSYCOPG_IPC", "").lower() != "pipe",
+    reason="requires explicit qt-process Named Pipe integration environment",
+)
 def test_cancel_managed_connect_with_peer_accepted_but_silent(monkeypatch):
     import psutil
     import psycopg
@@ -392,6 +402,11 @@ def test_cancel_before_qprocess_creation_is_not_exit_proof():
             attempt.check()
 
 
+@pytest.mark.skipif(
+    os.environ.get("PSYCOPG_IMPL", "").lower() != "qt-process"
+    or os.environ.get("QPSYCOPG_IPC", "").lower() != "pipe",
+    reason="requires explicit qt-process Named Pipe integration environment",
+)
 def test_concurrent_kill_abort_close_and_neighbor_survives():
     import psutil
     import psycopg

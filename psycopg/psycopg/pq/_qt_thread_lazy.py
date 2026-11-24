@@ -46,9 +46,22 @@ def _cancelRemote(connection: Any, timeout: float) -> None:
     control.cancel(timeout)
 
 
+def _closeCancelControl(pgconn: Any) -> None:
+    # qt-thread still owns its legacy control client directly on the transport.
+    # It does not participate in the QProcess-specific generation lifecycle.
+    transport = pgconn._transport
+    control = getattr(transport, "_cancelControl", None)
+    if control is not None:
+        try:
+            control.close()
+        finally:
+            transport._cancelControl = None
+
+
 # Connection.connect() normally opens cancellation eagerly. qt-thread can defer
 # it because the transport can prepare the independent cancel channel immediately
 # before the first query is handed to the worker thread.
 _connection._openCancelControl = lambda pgconn: None
 _connection._cancelRemote = _cancelRemote
+_connection._closeCancelControl = _closeCancelControl
 _Transport.request = _request  # type: ignore[method-assign]

@@ -341,11 +341,14 @@ def _request(
     isSend = operation == Operation.CALL and objectId == 1 and member in _SEND_MEMBERS
     # All first sends rendezvous BEFORE the SQL RPC lock. A cancellation
     # initializer can therefore issue CONTROL_OPEN without an AB/BA cycle.
+    pgconn = self.connection if isSend else None
     if isSend:
         _ensureCancelControl(self)
     with self.lock:
         if self.closed:
             raise e.OperationalError("qpsycopg worker process is closed")
+        if isSend and (pgconn is None or self.connection is not pgconn or not pgconn._handle):
+            raise e.OperationalError("qpsycopg connection generation retired")
         pending = getattr(self, "_pendingSend", None)
         if pending is not None:
             sendObjectId, sendMember, sendArgs, sendKwargs = pending
@@ -358,8 +361,6 @@ def _request(
             _originalRequest(self, Operation.CALL, sendObjectId, sendMember, sendArgs, sendKwargs)
 
         if isSend:
-            if self.connection is None or not self.connection._handle:
-                raise e.OperationalError("qpsycopg connection is closed")
             self._clearQueryCache(objectId)
             self._statusCache = None
             self._transactionStatusCache = None

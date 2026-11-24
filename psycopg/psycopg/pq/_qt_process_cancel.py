@@ -150,7 +150,6 @@ class CancelControlClient:
             pass
 
 
-
 def _remaining(deadline: float) -> float:
     remaining = deadline - monotonic()
     if remaining <= 0:
@@ -237,6 +236,17 @@ class CancelControlLifecycle:
             if transport.connection is pgconn:
                 transport._markBroken()
             raise
+
+    def fail_if_closed(self, pgconn: Any, client: CancelControlClient) -> None:
+        # A normal close may have retired/recycled this generation between
+        # cancel() returning and its caller's finally. Never kill its successor.
+        with self.condition:
+            if self.state != "READY" or self.client is not client or not client.closed:
+                return
+            self.state = "FAILED"
+            self.reusable = False
+            self.condition.notify_all()
+        pgconn._transport._markBroken()
 
     def retire(self, pgconn: Any) -> bool:
         """Reject late publication and invalidate client before pool reuse."""

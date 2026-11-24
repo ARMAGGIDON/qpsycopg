@@ -15,6 +15,7 @@ import secrets
 import importlib
 import itertools
 import threading
+import weakref
 from time import monotonic
 import socket as _stdlib_socket
 from ._qt_process_owner import (ConnectAttempt, ExitProof, ExitState, KillReceipt,
@@ -31,6 +32,7 @@ from ._qt_process_protocol import Request, Response, ResultSnapshot, SendSnapsho
 from ._qt_process_protocol import ResultReadSnapshot, WaitSnapshot
 from ._qt_process_protocol import recvFrame, recvToken, sendFrame
 from ._qt_process_pipe import PipeListenerSocket
+from ._qt_process_cancel import CancelControlLifecycle, CONTROL_OPEN, _remaining
 
 try:
     from PySide6.QtCore import QProcess, QProcessEnvironment
@@ -137,6 +139,9 @@ class _ProcessOwner:
         self.started = threading.Event()
         self.startError: BaseException | None = None
         self._stateLock = threading.Lock()
+        self._transportRef = (
+            weakref.ref(transport) if hasattr(transport, "_retireCancelControl") else None
+        )
         self._exitEvent = threading.Event()
         self._killRequested = False
         self._closeRequested = False
@@ -174,8 +179,15 @@ class _ProcessOwner:
                 self._timestamp = monotonic()
                 self._diagnostic = "kill queued for the owning QProcess thread"
                 self.commands.put("kill")
-            return KillReceipt(token, self._state, self._timestamp,
-                               self._osPid, self._diagnostic)
+            receipt = KillReceipt(token, self._state, self._timestamp,
+                                  self._osPid, self._diagnostic)
+        self._retireCancelControl()
+        return receipt
+
+    def _retireCancelControl(self) -> None:
+        transport = None if self._transportRef is None else self._transportRef()
+        if transport is not None:
+            transport._retireCancelControl()
 
     def kill(self) -> None:
         """Legacy exact-instance API: enqueue only; never confirm OS-exit."""
@@ -187,6 +199,7 @@ class _ProcessOwner:
                 return
             self._closeRequested = True
             self.commands.put("close")
+        self._retireCancelControl()
 
     def exitProof(self, token: OwnerToken) -> ExitProof | None:
         self._checkToken(token)
@@ -236,6 +249,7 @@ class _ProcessOwner:
             self._timestamp = self._exitProof.timestamp
             self._diagnostic = reason
             self._exitEvent.set()
+        self._retireCancelControl()
 
     def _run(self) -> None:
         process: QProcess | None = None
@@ -408,6 +422,7 @@ class _Transport:
         self.requestId = 0
         self.closed = False
         self.connection: PGconn | None = None
+        self._cancelControl: Any = None
         self._flushCache: dict[int, int] = {}
         self._busyCache: dict[int, int] = {}
         self._consumeCache: set[int] = set()
@@ -417,8 +432,34 @@ class _Transport:
         self._transactionStatusCache: int | None = None
         self._clientEncodingCache: bytes | None = None
 
+    def _retireCancelControl(self) -> bool:
+        pgconn = getattr(self, "connection", None)
+        return pgconn is None or pgconn._cancelLifecycle.retire(pgconn)
+
+    def _requestCancelOpen(self, deadline: float) -> Any:
+        # Cold setup only. All first sends initialize before taking this lock.
+        # READY cancellation must never pass through here.
+        if not self.lock.acquire(timeout=_remaining(deadline)):
+            raise e._WaitTimeout("cancellation setup SQL RPC lock timed out")
+        try:
+            if self.closed:
+                raise e.OperationalError("qpsycopg worker process is closed")
+            self.sock.settimeout(_remaining(deadline))
+            try:
+                return self.request(Operation.CALL, 1, CONTROL_OPEN)
+            except e.OperationalError as error:
+                if isinstance(error.__cause__, TimeoutError):
+                    raise e._WaitTimeout("cancellation setup RPC timed out") from error
+                raise
+            finally:
+                if not self.closed:
+                    self.sock.settimeout(None)
+        finally:
+            self.lock.release()
+
     def _abortConnect(self) -> None:
         """Best-effort wakeup without taking a lock owned by blocked recv()."""
+        self._retireCancelControl()
         listener = getattr(self, "_listener", None)
         if listener is not None:
             try:
@@ -598,6 +639,7 @@ class _Transport:
             return _restore(value, self)
 
     def _markBroken(self) -> None:
+        self._retireCancelControl()
         if self.closed:
             return
         self.closed = True
@@ -606,12 +648,14 @@ class _Transport:
         self._clientEncodingCache = None
         self._clearCaches()
         try:
+            self._abortConnect()
             self.sock.close()
         finally:
             self.owner.kill()
 
     def close(self) -> None:
         # Never wait on the request lock: a SQL recv may be blocked forever.
+        self._retireCancelControl()
         if self.closed:
             return
         if not self.lock.acquire(blocking=False):
@@ -718,6 +762,7 @@ class PGconn(_RemoteObject):
         self._handle = _registerHandle(transport, objectId)
         self.notice_handler: Callable[[abc.PGresult], None] | None = None
         self.notify_handler: Callable[[PGnotify], None] | None = None
+        self._cancelLifecycle = CancelControlLifecycle()
         transport.connection = self
 
     def __del__(self) -> None:

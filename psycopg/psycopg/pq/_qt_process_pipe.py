@@ -514,11 +514,13 @@ def PipeStreamHandle(pipe: _PipeHandle) -> PipeStream:
     return stream
 
 
-def connectPipe(address: str) -> PipeStream:
+def connectPipe(address: str, *, timeout: float = 10.0) -> PipeStream:
     if os.name != "nt":
         raise OSError("Windows named pipes are unavailable")
-    deadline = time.monotonic() + 10.0
+    deadline = time.monotonic() + timeout
     while True:
+        if time.monotonic() >= deadline:
+            raise socket.timeout("timed out connecting to qpsycopg named pipe")
         handle = _createFile(address, _GENERIC_READ | _GENERIC_WRITE, 0, None,
                              _OPEN_EXISTING, _FILE_FLAG_OVERLAPPED, None)
         if handle not in (None, _INVALID_HANDLE):
@@ -528,7 +530,8 @@ def connectPipe(address: str) -> PipeStream:
             raise _error(code)
         if time.monotonic() >= deadline:
             raise socket.timeout("timed out connecting to qpsycopg named pipe")
+        remaining = max(0.0, deadline - time.monotonic())
         if code == _ERROR_PIPE_BUSY:
-            _waitPipe(address, _POLL_MS)
+            _waitPipe(address, max(1, min(_POLL_MS, int(remaining * 1000))))
         else:
-            time.sleep(_POLL_MS / 1000)
+            time.sleep(min(_POLL_MS / 1000, remaining))

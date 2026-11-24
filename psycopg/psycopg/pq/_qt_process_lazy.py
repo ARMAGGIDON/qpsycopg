@@ -11,7 +11,6 @@ from typing import Any
 
 from .. import errors as e
 from . import _qt_process_protocol as _protocol
-from ._qt_process_cancel import CancelControlClient
 from ._qt_process_pipe import PipeListenerSocket
 from ._qt_process_protocol import FastExecuteFrame, Operation, Response, SendSnapshot
 from .pq_qt_process import PGresult, _SEND_MEMBERS, _Transport, _raiseRemote, _restore, _wire
@@ -102,37 +101,26 @@ def _patchConnectionHooks() -> None:
         return
 
     originalWait = module._waitProcessOwner
-    originalOpenCancel = module._openCancelControl
 
     def waitProcessOwner(pgconn: object) -> None:
         if getattr(pgconn, "_qpsycopgWorkerReleased", False):
             return
         originalWait(pgconn)
 
-    def cancelRemote(connection: Any, timeout: float) -> None:
-        pgconn = connection.pgconn
-        originalOpenCancel(pgconn)
-        control = getattr(pgconn._transport, "_cancelControl", None)
-        if control is None:
-            raise e.OperationalError("qpsycopg cancellation channel is not available")
-        control.cancel(timeout)
-
     # Don't create/destroy a cancellation thread for connect()/close() pairs
     # which never run a query. _request() opens it before the first send, while
-    # cancelRemote() keeps a correctness fallback for cancel-before-query.
+    # The shared connection cancellation path uses the same single-flight
+    # lifecycle for cancel-before-query. Only defer eager connect setup.
     module._openCancelControl = lambda pgconn: None
-    module._cancelRemote = cancelRemote
     module._waitProcessOwner = waitProcessOwner
     module._qpsycopgWorkerPoolPatched = True
 
 
 def _ensureCancelControl(transport: _Transport) -> None:
-    if getattr(transport, "_cancelControl", None) is not None:
-        return
     pgconn = transport.connection
     if pgconn is None:
-        return
-    transport._cancelControl = CancelControlClient.open(pgconn)
+        raise e.OperationalError("qpsycopg connection is closed")
+    pgconn._cancelLifecycle.ensure(pgconn)
 
 
 def _resetTransport(transport: _Transport) -> None:
@@ -227,26 +215,23 @@ def _finish(self: _pq.PGconn) -> None:
     self._handle = 0
     self._qpsycopgWorkerReleased = False
     transport = self._transport
-    if transport._attempt is not None:
-        # An explicit owner must not be recycled. Closing the worker itself
-        # is equivalent to releasing its libpq state; do not block on an RPC.
+    reusable = self._cancelLifecycle.retire(self)
+    if transport._attempt is not None or not reusable:
+        # A managed or uncertain generation must never be recycled.
         _discardTransport(transport)
         return
-    control = getattr(transport, "_cancelControl", None)
-    if control is not None:
-        try:
-            control.close()
-        finally:
-            transport._cancelControl = None
-    transport._pendingSend = None
-
+    if not transport.lock.acquire(blocking=False):
+        _discardTransport(transport)
+        return
     try:
+        transport._pendingSend = None
         _originalRequest(transport, Operation.CALL, 1, "finish")
+        # Only the acknowledged worker finish permits another PGconn generation.
+        self._qpsycopgWorkerReleased = _recycleTransport(transport)
     except Exception:
         _discardTransport(transport)
-        return
-
-    self._qpsycopgWorkerReleased = _recycleTransport(transport)
+    finally:
+        transport.lock.release()
 
 
 def _ensurePgconnOpen(self: _pq.PGconn) -> None:
@@ -353,7 +338,17 @@ def _request(
     args: tuple[Any, ...] = (),
     kwargs: tuple[tuple[str, Any], ...] = (),
 ) -> Any:
+    isSend = operation == Operation.CALL and objectId == 1 and member in _SEND_MEMBERS
+    # All first sends rendezvous BEFORE the SQL RPC lock. A cancellation
+    # initializer can therefore issue CONTROL_OPEN without an AB/BA cycle.
+    pgconn = self.connection if isSend else None
+    if isSend:
+        _ensureCancelControl(self)
     with self.lock:
+        if self.closed:
+            raise e.OperationalError("qpsycopg worker process is closed")
+        if isSend and (pgconn is None or self.connection is not pgconn or not pgconn._handle):
+            raise e.OperationalError("qpsycopg connection generation retired")
         pending = getattr(self, "_pendingSend", None)
         if pending is not None:
             sendObjectId, sendMember, sendArgs, sendKwargs = pending
@@ -365,8 +360,7 @@ def _request(
 
             _originalRequest(self, Operation.CALL, sendObjectId, sendMember, sendArgs, sendKwargs)
 
-        if operation == Operation.CALL and objectId == 1 and member in _SEND_MEMBERS:
-            _ensureCancelControl(self)
+        if isSend:
             self._clearQueryCache(objectId)
             self._statusCache = None
             self._transactionStatusCache = None

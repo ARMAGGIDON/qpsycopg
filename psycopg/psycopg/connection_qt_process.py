@@ -25,7 +25,8 @@ from ._connection_base import BaseConnection
 from ._conninfo_utils import gssapi_requested
 from .connection_async import _INTERRUPTED as _ASYNC_INTERRUPTED
 from .connection_async import AsyncConnection as _AsyncConnection
-from .pq._qt_process_cancel import CancelControlClient
+from .pq._qt_process_cancel import _remaining
+from .pq import ConnStatus
 from .pq.pq_qt_process import PGconn as QtPGconn
 from .pq.pq_qt_process import waitRemote
 from .pq._qt_process_owner import currentConnectAttempt
@@ -38,21 +39,25 @@ def _waitTime(interval: float, deadline: float) -> float:
 
 
 def _openCancelControl(pgconn: QtPGconn) -> None:
-    transport = pgconn._transport
-    if getattr(transport, "_cancelControl", None) is not None:
-        return
-    setattr(transport, "_cancelControl", CancelControlClient.open(pgconn))
+    pgconn._cancelLifecycle.ensure(pgconn)
 
 
 def _closeCancelControl(pgconn: QtPGconn) -> None:
+    pgconn._cancelLifecycle.retire(pgconn)
+
+
+def _shouldCancelRemote(connection: BaseConnection[Row]) -> bool:
+    # BaseConnection._should_cancel() reads pgconn.status, which can issue a
+    # normal RPC when the first send has invalidated the status cache.
+    pgconn = cast(QtPGconn, connection.pgconn)
     transport = pgconn._transport
-    control = getattr(transport, "_cancelControl", None)
-    if control is None:
-        return
-    try:
-        control.close()
-    finally:
-        setattr(transport, "_cancelControl", None)
+    if not pgconn._handle or transport.closed or transport._statusCache == ConnStatus.BAD:
+        return False
+    if connection._tpc and connection._tpc[1]:
+        raise e.ProgrammingError(
+            "cancel() cannot be used with a prepared two-phase transaction"
+        )
+    return True
 
 
 def _waitProcessOwner(pgconn: object) -> None:
@@ -105,10 +110,17 @@ def _waitRemoteConn(
 
 def _cancelRemote(connection: BaseConnection[Row], timeout: float) -> None:
     pgconn = cast(QtPGconn, connection.pgconn)
-    control = getattr(pgconn._transport, "_cancelControl", None)
-    if control is None:
-        raise e.OperationalError("qpsycopg cancellation channel is not available")
-    control.cancel(timeout)
+    if timeout <= 0:
+        raise ValueError("cancel timeout must be positive")
+    deadline = monotonic() + timeout
+    try:
+        control = pgconn._cancelLifecycle.ensure(pgconn, _remaining(deadline))
+    except TimeoutError as error:
+        raise e._WaitTimeout("cancellation control setup timed out") from error
+    try:
+        control.cancel(_remaining(deadline))
+    finally:
+        pgconn._cancelLifecycle.fail_if_closed(pgconn, control)
 
 
 async def _waitRemoteAsync(
@@ -249,10 +261,12 @@ class Connection(_Connection[Row]):
             super().close()
             return
 
-        pgconn = self.pgconn
-        _closeCancelControl(cast(QtPGconn, pgconn))
+        pgconn = cast(QtPGconn, self.pgconn)
+        _closeCancelControl(pgconn)
+        if pgconn._handle and not pgconn._transport.closed and pgconn._transport._statusCache != ConnStatus.BAD:
+            self._closed = True
         try:
-            super().close()
+            pgconn.finish()
         finally:
             _waitProcessOwner(pgconn)
 
@@ -284,7 +298,7 @@ class Connection(_Connection[Row]):
             raise
 
     def cancel_safe(self, *, timeout: float = 30.0) -> None:
-        if not self._should_cancel():
+        if not _shouldCancelRemote(self):
             return
         if capabilities.has_cancel_safe():
             try:
@@ -394,10 +408,12 @@ class AsyncConnection(_AsyncConnection[Row]):
             await super().close()
             return
 
-        pgconn = self.pgconn
-        await asyncio.to_thread(_closeCancelControl, cast(QtPGconn, pgconn))
+        pgconn = cast(QtPGconn, self.pgconn)
+        await asyncio.to_thread(_closeCancelControl, pgconn)
+        if pgconn._handle and not pgconn._transport.closed and pgconn._transport._statusCache != ConnStatus.BAD:
+            self._closed = True
         try:
-            await super().close()
+            await asyncio.to_thread(pgconn.finish)
         finally:
             await asyncio.to_thread(_waitProcessOwner, pgconn)
 
@@ -429,7 +445,7 @@ class AsyncConnection(_AsyncConnection[Row]):
             raise
 
     async def cancel_safe(self, *, timeout: float = 30.0) -> None:
-        if not self._should_cancel():
+        if not _shouldCancelRemote(self):
             return
         if capabilities.has_cancel_safe():
             try:

@@ -11,6 +11,7 @@ import socket
 import threading
 from time import monotonic
 from typing import Any
+from collections.abc import Callable
 
 from .. import errors as e
 from .. import pq
@@ -32,13 +33,25 @@ class CancelControlClient:
         self.closed = False
 
     @classmethod
-    def open(cls, pgconn: Any) -> CancelControlClient:
-        host, port, token = pgconn._call(CONTROL_OPEN)
-        sock = (connectPipe(host[5:]) if host.startswith("pipe:")
-                else socket.create_connection((host, int(port)), timeout=10.0))
+    def open(
+        cls, pgconn: Any, *, deadline: float | None = None,
+        request_open: Callable[[float], Any] | None = None,
+    ) -> CancelControlClient:
+        deadline = monotonic() + 10.0 if deadline is None else deadline
+        host, port, token = (
+            pgconn._call(CONTROL_OPEN) if request_open is None
+            else request_open(deadline)
+        )
+        remaining = _remaining(deadline)
+        sock = (connectPipe(host[5:], timeout=remaining) if host.startswith("pipe:")
+                else socket.create_connection((host, int(port)), timeout=remaining))
         try:
-            sock.settimeout(10.0)
+            sock.settimeout(_remaining(deadline))
             sendToken(sock, bytes(token))
+            # Publication requires the worker to have authenticated this peer.
+            sock.settimeout(_remaining(deadline))
+            if not secrets.compare_digest(recvToken(sock), bytes(token)):
+                raise e.OperationalError("qpsycopg cancellation authentication failed")
             sock.settimeout(None)
             return cls(sock)
         except BaseException:
@@ -48,7 +61,10 @@ class CancelControlClient:
     def cancel(self, timeout: float) -> None:
         if timeout <= 0:
             raise ValueError("cancel timeout must be positive")
-        with self.lock:
+        deadline = monotonic() + timeout
+        if not self.lock.acquire(timeout=timeout):
+            raise e._WaitTimeout("cancellation channel is busy")
+        try:
             if self.closed:
                 raise e.OperationalError("qpsycopg cancellation channel is closed")
             self.requestId += 1
@@ -57,14 +73,18 @@ class CancelControlClient:
                 Operation.CALL,
                 1,
                 CONTROL_CANCEL,
-                (timeout,),
+                (_remaining(deadline),),
             )
             try:
                 # The control socket has its own deadline, independent of SQL
                 # recv() and the QProcess owner command consumer.
-                self.sock.settimeout(timeout)
+                self.sock.settimeout(_remaining(deadline))
                 sendFrame(self.sock, request)
+                self.sock.settimeout(_remaining(deadline))
                 response = recvFrame(self.sock)
+            except (TimeoutError, e._WaitTimeout) as error:
+                self._markClosed()
+                raise e._WaitTimeout("cancellation response timed out") from error
             except (EOFError, OSError, ValueError) as error:
                 self._markClosed()
                 raise e.OperationalError("qpsycopg cancellation channel disconnected") from error
@@ -72,6 +92,30 @@ class CancelControlClient:
                 if not self.closed:
                     self.sock.settimeout(None)
             self._checkResponse(request, response)
+        finally:
+            self.lock.release()
+
+    def abort(self) -> bool:
+        """Retire without waiting for an in-flight cancel. Return idle/healthy."""
+        idle = self.lock.acquire(blocking=False)
+        healthy = idle and not self.closed
+        try:
+            self.closed = True
+            try:
+                if hasattr(self.sock, "abort"):
+                    self.sock.abort()
+                else:
+                    self.sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+            return healthy
+        finally:
+            if idle:
+                self.lock.release()
 
     def close(self) -> None:
         with self.lock:
@@ -104,6 +148,121 @@ class CancelControlClient:
             self.sock.close()
         except OSError:
             pass
+
+
+def _remaining(deadline: float) -> float:
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise e._WaitTimeout("cancellation deadline expired")
+    return remaining
+
+
+class CancelControlLifecycle:
+    """Single-flight control channel for one PGconn generation.
+
+    The condition never spans SQL RPC or IPC open. A first send must call
+    ensure() before taking the SQL RPC lock. READY readers never take it.
+    """
+
+    def __init__(self) -> None:
+        self.condition = threading.Condition()
+        self.state = "EMPTY"
+        self.client: CancelControlClient | None = None
+        self.reusable = True
+
+    @staticmethod
+    def _valid(pgconn: Any) -> bool:
+        transport = pgconn._transport
+        owner = transport.owner
+        return (
+            bool(pgconn._handle) and transport.connection is pgconn
+            and not transport.closed and not owner._killRequested
+            and not owner._closeRequested and not owner._exitEvent.is_set()
+        )
+
+    def ensure(self, pgconn: Any, timeout: float = 10.0) -> CancelControlClient:
+        if timeout <= 0:
+            raise e._WaitTimeout("cancellation initialization deadline expired")
+        deadline = monotonic() + timeout
+        transport = pgconn._transport
+        with self.condition:
+            while True:
+                if not self._valid(pgconn) or self.state in ("FAILED", "RETIRED"):
+                    raise e.OperationalError("qpsycopg cancellation generation retired")
+                if self.state == "READY":
+                    assert self.client is not None
+                    if not self.client.closed:
+                        return self.client
+                    # A disconnected channel cannot reconnect to a single-peer listener.
+                    self.state = "FAILED"
+                    self.reusable = False
+                    break
+                if self.state == "EMPTY":
+                    self.state = "OPENING"
+                    break
+                self.condition.wait(_remaining(deadline))
+            opening = self.state == "OPENING"
+
+        if not opening:
+            transport._markBroken()
+            raise e.OperationalError("qpsycopg cancellation channel disconnected")
+
+        client = None
+        try:
+            client = CancelControlClient.open(
+                pgconn, deadline=deadline, request_open=transport._requestCancelOpen,
+            )
+            with self.condition:
+                # Owner kill/exit is linearized with publication, never with SQL.
+                with transport.owner._stateLock:
+                    if self.state != "OPENING" or not self._valid(pgconn) or client.closed:
+                        raise e.OperationalError("qpsycopg cancellation publication revoked")
+                    _remaining(deadline)
+                    self.client = client
+                    transport._cancelControl = client
+                    self.state = "READY"
+                self.condition.notify_all()
+                return client
+        except BaseException:
+            if client is not None:
+                client.abort()
+            with self.condition:
+                if self.state != "RETIRED":
+                    self.state = "FAILED"
+                self.reusable = False
+                self.condition.notify_all()
+            # CONTROL_OPEN may have succeeded on the worker even if its reply
+            # or authentication failed. Never try a second open on that owner.
+            if transport.connection is pgconn:
+                transport._markBroken()
+            raise
+
+    def fail_if_closed(self, pgconn: Any, client: CancelControlClient) -> None:
+        # A normal close may have retired/recycled this generation between
+        # cancel() returning and its caller's finally. Never kill its successor.
+        with self.condition:
+            if self.state != "READY" or self.client is not client or not client.closed:
+                return
+            self.state = "FAILED"
+            self.reusable = False
+            self.condition.notify_all()
+        pgconn._transport._markBroken()
+
+    def retire(self, pgconn: Any) -> bool:
+        """Reject late publication and invalidate client before pool reuse."""
+        with self.condition:
+            if self.state == "RETIRED":
+                return self.reusable
+            if self.state in ("OPENING", "FAILED"):
+                self.reusable = False
+            self.state = "RETIRED"
+            client, self.client = self.client, None
+            if pgconn._transport.connection is pgconn:
+                pgconn._transport._cancelControl = None
+            if client is not None and not client.abort():
+                self.reusable = False
+            self.condition.notify_all()
+            return self.reusable
 
 
 class CancelControlServer:
@@ -149,6 +308,7 @@ class CancelControlServer:
             sock.settimeout(10.0)
             if not secrets.compare_digest(recvToken(sock), self.token):
                 raise e.OperationalError("qpsycopg cancellation authentication failed")
+            sendToken(sock, self.token)
             sock.settimeout(None)
 
             used = False

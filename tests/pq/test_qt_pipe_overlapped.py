@@ -736,43 +736,90 @@ def test_qp09_audit_repeated_pipe_io_and_resource_stability():
 )
 def test_qp09_audit_repeated_real_workers_and_exact_exit_proofs():
     """Repeated QProcess creation, normal close, forced kill and reconnect."""
+    import ctypes
     import gc
+    from ctypes import wintypes as wt
+
     import psutil
     import psycopg
+    from psycopg.pq import _qt_process_pipe as pipe
     from psycopg.pq._qt_process_owner import newConnectAttempt
+
+    # Retain the exact process object before termination, not a numeric PID.
+    # ExitProof can be published before the QProcess owner thread releases
+    # its process handle. PID presence alone cannot distinguish this from
+    # a running process or reuse of the same PID.
+    open_process = pipe._api(
+        pipe._kernel, "OpenProcess",
+        (wt.DWORD, wt.BOOL, wt.DWORD), wt.HANDLE,
+    )
+    get_exit_code = pipe._api(
+        pipe._kernel, "GetExitCodeProcess",
+        (wt.HANDLE, ctypes.POINTER(wt.DWORD)), wt.BOOL,
+    )
 
     proc = psutil.Process()
     baseline_children = {p.pid for p in proc.children(recursive=True)}
+    before = {"handles": proc.num_handles(), "threads": proc.num_threads(),
+              "rss_bytes": proc.memory_info().rss}
     iterations = int(os.environ.get("QPSYCOPG_QP09_WORKER_STRESS_LOOPS", "60"))
     proofs = 0
+    owner_threads_joined = 0
     for i in range(iterations):
         attempt = newConnectAttempt(timeout_s=12)
         with attempt:
             connection = psycopg.connect(os.environ["QPSYCOPG_OWNER_TEST_DSN"])
         owner = attempt.owner
-        assert owner is not None
+        assert owner is not None and owner._osPid is not None
         assert connection.pgconn._transport.ipcKind == "pipe"
+        witness = open_process(0x00101000, False, owner._osPid)
+        if not witness:
+            error = ctypes.WinError(ctypes.get_last_error())
+            connection.close()
+            raise error
         try:
             assert connection.execute("select 1").fetchone() == (1,)
         finally:
-            if i % 3 == 0:
+            try:
+                if i % 3 == 0:
+                    owner.requestKill(owner.ownerToken)
+                connection.close()
                 owner.requestKill(owner.ownerToken)
-            connection.close()
-            owner.requestKill(owner.ownerToken)
-            proof = owner.waitExit(owner.ownerToken, 10)
-            assert proof is not None
-            assert proof.owner_token == owner.ownerToken
-            assert proof.os_pid == owner._osPid
-            assert not psutil.pid_exists(proof.os_pid)
-            proofs += 1
+                proof = owner.waitExit(owner.ownerToken, 10)
+                assert proof is not None
+                assert proof.owner_token == owner.ownerToken
+                assert proof.os_pid == owner._osPid
+                assert pipe._waitEvent(witness, 10_000) == pipe._WAIT_OBJECT_0, (
+                    f"iteration {i}: OS process not signalled: {proof!r}"
+                )
+                exit_code = wt.DWORD()
+                assert get_exit_code(witness, ctypes.byref(exit_code))
+                assert exit_code.value == proof.exit_code, (
+                    f"iteration {i}: Win32 exit code {exit_code.value} "
+                    f"!= ExitProof {proof.exit_code}"
+                )
+                proofs += 1
+                owner.thread.join(10)
+                assert not owner.thread.is_alive(), (
+                    f"iteration {i}: owner thread did not settle"
+                )
+                owner_threads_joined += 1
+            finally:
+                pipe._closeHandle(witness)
 
     gc.collect()
     after_children = {p.pid for p in proc.children(recursive=True)}
+    after = {"handles": proc.num_handles(), "threads": proc.num_threads(),
+             "rss_bytes": proc.memory_info().rss}
     _evidence("qp09-final-worker-resource-stress.json", {
         "iterations": iterations, "exact_exit_proofs": proofs,
+        "owner_threads_joined": owner_threads_joined,
+        "method": "OpenProcess + WaitForSingleObject + GetExitCodeProcess",
         "baseline_child_pids": sorted(baseline_children),
         "remaining_child_pids": sorted(after_children),
+        "before": before, "after": after,
     })
+    assert proofs == owner_threads_joined == iterations
     assert after_children == baseline_children
 
 

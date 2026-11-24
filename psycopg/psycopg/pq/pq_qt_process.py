@@ -540,15 +540,9 @@ class _Transport:
         args: tuple[Any, ...] = (),
         kwargs: tuple[tuple[str, Any], ...] = (),
     ) -> Any:
-        isSend = operation == Operation.CALL and objectId == 1 and member in _SEND_MEMBERS
-        pgconn = self.connection if isSend else None
-        if pgconn is not None:
-            pgconn._cancelLifecycle.ensure(pgconn)
         with self.lock:
             if self.closed:
                 raise e.OperationalError("qpsycopg worker process is closed")
-            if isSend and (pgconn is None or self.connection is not pgconn or not pgconn._handle):
-                raise e.OperationalError("qpsycopg connection generation retired")
 
             if operation == Operation.CALL:
                 cached, value = self._cachedCall(objectId, member)

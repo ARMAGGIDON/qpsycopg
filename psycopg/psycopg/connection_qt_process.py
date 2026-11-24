@@ -120,9 +120,7 @@ def _cancelRemote(connection: BaseConnection[Row], timeout: float) -> None:
     try:
         control.cancel(_remaining(deadline))
     finally:
-        transport = pgconn._transport
-        if control.closed and transport.connection is pgconn:
-            transport._markBroken()
+        pgconn._cancelLifecycle.fail_if_closed(pgconn, control)
 
 
 async def _waitRemoteAsync(

@@ -263,7 +263,8 @@ class Connection(_Connection[Row]):
 
         pgconn = cast(QtPGconn, self.pgconn)
         _closeCancelControl(pgconn)
-        self._closed = True
+        if pgconn._handle and not pgconn._transport.closed and pgconn._transport._statusCache != ConnStatus.BAD:
+            self._closed = True
         try:
             pgconn.finish()
         finally:
@@ -409,7 +410,8 @@ class AsyncConnection(_AsyncConnection[Row]):
 
         pgconn = cast(QtPGconn, self.pgconn)
         await asyncio.to_thread(_closeCancelControl, pgconn)
-        self._closed = True
+        if pgconn._handle and not pgconn._transport.closed and pgconn._transport._statusCache != ConnStatus.BAD:
+            self._closed = True
         try:
             await asyncio.to_thread(pgconn.finish)
         finally:

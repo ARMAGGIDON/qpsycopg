@@ -6,21 +6,16 @@
 
 # -- Path setup --------------------------------------------------------------
 
-# If extensions (or modules to document with autodoc) are in another directory,
-# add these directories to sys.path here. If the directory is relative to the
-# documentation root, use os.path.abspath to make it absolute, like shown here.
-#
-# import os
-# import sys
-# sys.path.insert(0, os.path.abspath('.'))
-
 import sys
 from pathlib import Path
 
-import psycopg
-
-docs_dir = Path(__file__).parent
+docs_dir = Path(__file__).resolve().parent
+repo_dir = docs_dir.parent
+sys.path.insert(0, str(repo_dir / "psycopg"))
+sys.path.insert(0, str(repo_dir / "psycopg_pool"))
 sys.path.append(str(docs_dir / "lib"))
+
+import psycopg
 
 # -- Project information -----------------------------------------------------
 
@@ -32,9 +27,8 @@ release = psycopg.__version__
 
 # -- General configuration ---------------------------------------------------
 
-# Add any Sphinx extension module names here, as strings. They can be
-# extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
-# ones.
+# Add any Sphinx extension module names here, strings. They can be extensions
+# coming with Sphinx (named 'sphinx.ext.*') or your custom extensions.
 extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.intersphinx",
@@ -60,7 +54,7 @@ maximum_signature_line_length = 100
 
 # The announcement may be in the website but not shipped with the docs
 if (ann_file := (docs_dir / "../../templates/docs3-announcement.html")).exists():
-    with ann_file.open() as f:
+    with ann_file.open(encoding="utf-8") as f:
         announcement = f.read()
 else:
     announcement = ""
@@ -73,8 +67,7 @@ html_css_files = ["psycopg.css"]
 # list: from pygments.styles import STYLE_MAP; print(sorted(STYLE_MAP.keys()))
 pygments_style = "tango"
 
-# The theme to use for HTML and HTML Help pages.  See the documentation for
-# a list of builtin themes.
+# The theme to use for HTML output.
 html_theme = "furo"
 html_show_sphinx = True
 html_show_sourcelink = False
@@ -88,7 +81,7 @@ html_theme_options = {
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
-# so a file named "default.css" will overwrite the builtin "default.css".
+# so a file named "default.css" will overwrite the builtin static file.
 html_static_path = ["_static"]
 
 # The reST default role (used for this markup: `text`) to use for all documents.

@@ -38,8 +38,11 @@ def get_requires_for_build_wheel(config_settings: Any = None) -> list[str]:
 
 
 get_requires_for_build_sdist = get_requires_for_build_wheel
+get_requires_for_build_editable = get_requires_for_build_wheel
 
-# For the rest, behave like the rest of setuptoos.build_meta
+# For the rest, behave like the rest of setuptools.build_meta
 prepare_metadata_for_build_wheel = build_meta.prepare_metadata_for_build_wheel
+prepare_metadata_for_build_editable = build_meta.prepare_metadata_for_build_editable
 build_wheel = build_meta.build_wheel
 build_sdist = build_meta.build_sdist
+build_editable = build_meta.build_editable

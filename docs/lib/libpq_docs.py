@@ -105,7 +105,7 @@ class LibpqReader:
         logger.info("parsing libpq docs from %s", self.local_file)
         self.data = {}
         parser = LibpqParser(self.data, version=self.version)
-        with self.local_file.open("r") as f:
+        with self.local_file.open("r", encoding="utf-8") as f:
             parser.feed(f.read())
 
     def download(self):

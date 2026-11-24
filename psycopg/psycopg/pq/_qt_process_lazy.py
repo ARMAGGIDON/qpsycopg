@@ -1,0 +1,395 @@
+"""Lazy send coalescing and reusable workers for the qt-process transport."""
+
+from __future__ import annotations
+
+import atexit
+import os
+import socket
+import sys
+import threading
+from typing import Any
+
+from .. import errors as e
+from . import _qt_process_protocol as _protocol
+from ._qt_process_pipe import PipeListenerSocket
+from ._qt_process_protocol import FastExecuteFrame, Operation, Response, SendSnapshot
+from .pq_qt_process import PGresult, _SEND_MEMBERS, _Transport, _raiseRemote, _restore, _wire
+from . import pq_qt_process as _pq
+
+_FAST_EXECUTE = "qpsycopg_execute_pending"
+_WORKER_POOL_SIZE = 1
+_workerPool: list[_Transport] = []
+_workerPoolLock = threading.Lock()
+_originalRequest = _Transport.request
+_originalTransportClose = _Transport.close
+_originalPgconnCall = _pq.PGconn._call
+_originalPgconnGet = _pq.PGconn._get
+_originalPgconnSet = _pq.PGconn._set
+_originalPgconnStatus = _pq.PGconn.status.fget
+
+
+class _LoopbackSocketModule:
+    """Enable the Windows TCP loopback fast path before bind/accept."""
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(socket, name)
+
+    @staticmethod
+    def socket(*args: Any, **kwargs: Any) -> socket.socket:
+        sock = socket.socket(*args, **kwargs)
+        if sock.family == socket.AF_INET and sock.type == socket.SOCK_STREAM:
+            try:
+                sock.ioctl(socket.SIO_LOOPBACK_FAST_PATH, 1)
+            except OSError:
+                pass
+        return sock
+
+
+class _PipeSocketModule:
+    """Present a named-pipe listener through the socket API used by _Transport."""
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(socket, name)
+
+    @staticmethod
+    def socket(*args: Any, **kwargs: Any) -> Any:
+        family = args[0] if args else kwargs.get("family", socket.AF_INET)
+        sockType = args[1] if len(args) > 1 else kwargs.get("type", socket.SOCK_STREAM)
+        if family == socket.AF_INET and sockType == socket.SOCK_STREAM:
+            return PipeListenerSocket()
+        return socket.socket(*args, **kwargs)
+
+
+def _recvToken(sock: Any) -> bytes:
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+        pass
+    return bytes(_protocol._recvExact(sock, _protocol._TOKEN_SIZE))
+
+
+def _workerArguments(module: str, host: str, port: int, token: str) -> list[str]:
+    args = [host, str(port), token]
+    root = os.environ.get("PSYCOPG_PG_ROOT")
+    if sys.platform != "win32" or not root:
+        return ["-m", module, *args]
+
+    binDir = os.path.join(root, "bin")
+    code = (
+        "import os,runpy;"
+        f"_qpsycopg_dll_dir=os.add_dll_directory({binDir!r});"
+        f"runpy.run_module({module!r},run_name='__main__')"
+    )
+    return ["-c", code, *args]
+
+
+_originalOwnerRun = _pq._ProcessOwner._run
+
+
+def _ownerRun(self: Any) -> None:
+    # Retain pooled worker startup arguments while sharing lifecycle,
+    # kill-dispatch and OS-exit evidence with the ordinary owner path.
+    self._workerArguments = _workerArguments(
+        "psycopg.pq._qt_process_worker_pool", self.host, self.port, self.token
+    )
+    _originalOwnerRun(self)
+
+
+def _patchConnectionHooks() -> None:
+    module = sys.modules.get("psycopg.connection_qt_process")
+    if module is None or getattr(module, "_qpsycopgWorkerPoolPatched", False):
+        return
+
+    originalWait = module._waitProcessOwner
+
+    def waitProcessOwner(pgconn: object) -> None:
+        if getattr(pgconn, "_qpsycopgWorkerReleased", False):
+            return
+        originalWait(pgconn)
+
+    # Don't create/destroy a cancellation thread for connect()/close() pairs
+    # which never run a query. _request() opens it before the first send, while
+    # The shared connection cancellation path uses the same single-flight
+    # lifecycle for cancel-before-query. Only defer eager connect setup.
+    module._openCancelControl = lambda pgconn: None
+    module._waitProcessOwner = waitProcessOwner
+    module._qpsycopgWorkerPoolPatched = True
+
+
+def _ensureCancelControl(transport: _Transport) -> None:
+    pgconn = transport.connection
+    if pgconn is None:
+        raise e.OperationalError("qpsycopg connection is closed")
+    pgconn._cancelLifecycle.ensure(pgconn)
+
+
+def _resetTransport(transport: _Transport) -> None:
+    transport.connection = None
+    transport._clearCaches()
+    transport._statusCache = None
+    transport._transactionStatusCache = None
+    transport._clientEncodingCache = None
+    transport._pendingSend = None
+
+
+def _discardTransport(transport: _Transport) -> None:
+    try:
+        _originalTransportClose(transport)
+    except Exception:
+        pass
+
+
+def _acquireTransport() -> _Transport:
+    _patchConnectionHooks()
+    # A managed connection attempt must never adopt a pooled worker belonging
+    # to a previous session; owner/attempt identity remains one-to-one.
+    if _pq.currentConnectAttempt() is not None:
+        return _Transport()
+    with _workerPoolLock:
+        while _workerPool:
+            transport = _workerPool.pop()
+            if not transport.closed:
+                return transport
+    return _Transport()
+
+
+def _recycleTransport(transport: _Transport) -> bool:
+    if transport._attempt is not None:
+        _discardTransport(transport)
+        return False
+    if transport.closed:
+        return False
+    _resetTransport(transport)
+    with _workerPoolLock:
+        if len(_workerPool) < _WORKER_POOL_SIZE:
+            _workerPool.append(transport)
+            return True
+    _discardTransport(transport)
+    return False
+
+
+def _closeWorkerPool() -> None:
+    with _workerPoolLock:
+        transports = _workerPool[:]
+        _workerPool.clear()
+    for transport in transports:
+        _discardTransport(transport)
+        transport.owner.thread.join(2.0)
+
+
+def _connectStart(cls: type[_pq.PGconn], conninfo: bytes) -> _pq.PGconn:
+    transport = _acquireTransport()
+    try:
+        value = _originalRequest(transport, Operation.CONNECT_START, args=(conninfo,))
+        assert isinstance(value, cls)
+        return value
+    except BaseException:
+        _discardTransport(transport)
+        raise
+
+
+def _connect(cls: type[_pq.PGconn], conninfo: bytes) -> _pq.PGconn:
+    transport = _acquireTransport()
+    try:
+        value = _originalRequest(transport, Operation.CONNECT, args=(conninfo,))
+        assert isinstance(value, cls)
+        return value
+    except BaseException:
+        _discardTransport(transport)
+        raise
+
+
+def _ping(cls: type[_pq.PGconn], conninfo: bytes) -> int:
+    transport = _acquireTransport()
+    try:
+        return int(_originalRequest(transport, Operation.PING, args=(conninfo,)))
+    finally:
+        _recycleTransport(transport)
+
+
+def _finish(self: _pq.PGconn) -> None:
+    if not self._handle:
+        return
+
+    _pq._unregisterHandle(self._handle)
+    self._handle = 0
+    self._qpsycopgWorkerReleased = False
+    transport = self._transport
+    reusable = self._cancelLifecycle.retire(self)
+    if transport._attempt is not None or not reusable:
+        # A managed or uncertain generation must never be recycled.
+        _discardTransport(transport)
+        return
+    if not transport.lock.acquire(blocking=False):
+        _discardTransport(transport)
+        return
+    try:
+        transport._pendingSend = None
+        _originalRequest(transport, Operation.CALL, 1, "finish")
+        # Only the acknowledged worker finish permits another PGconn generation.
+        self._qpsycopgWorkerReleased = _recycleTransport(transport)
+    except Exception:
+        _discardTransport(transport)
+    finally:
+        transport.lock.release()
+
+
+def _ensurePgconnOpen(self: _pq.PGconn) -> None:
+    if not self._handle:
+        raise e.OperationalError("qpsycopg connection is closed")
+
+
+def _pgconnCall(self: _pq.PGconn, member: str, *args: Any, **kwargs: Any) -> Any:
+    _ensurePgconnOpen(self)
+    return _originalPgconnCall(self, member, *args, **kwargs)
+
+
+def _pgconnGet(self: _pq.PGconn, member: str) -> Any:
+    _ensurePgconnOpen(self)
+    return _originalPgconnGet(self, member)
+
+
+def _pgconnSet(self: _pq.PGconn, member: str, value: Any) -> None:
+    _ensurePgconnOpen(self)
+    _originalPgconnSet(self, member, value)
+
+
+def _pgconnStatus(self: _pq.PGconn) -> int:
+    if not self._handle:
+        return int(_pq.ConnStatus.BAD)
+    assert _originalPgconnStatus is not None
+    return int(_originalPgconnStatus(self))
+
+
+def _exchangeFastFrame(sock: Any, request: FastExecuteFrame) -> Any:
+    roundtrip = getattr(sock, "roundtrip_frame", None)
+    if roundtrip is None:
+        _pq.sendFrame(sock, request)
+        return _pq.recvFrame(sock)
+
+    wireValue, flags = _protocol._wireValue(request)
+    payload = _protocol._serialize(wireValue, flags)
+    framed = _protocol._HEADER.pack(flags | len(payload)) + payload
+    result = roundtrip(framed, _protocol._MAX_FRAME)
+    if result is None:
+        _protocol._sendPayload(sock, payload, flags)
+        return _pq.recvFrame(sock)
+
+    frame, responsePayload = result
+    responseFlags = frame & _protocol._FRAME_FLAGS
+    return _protocol._restoreWireValue(_protocol._deserialize(responsePayload, responseFlags), responseFlags)
+
+
+def _fastExecute(
+    self: _Transport,
+    timeout: Any,
+    sendMember: str,
+    sendArgs: tuple[Any, ...],
+    sendKwargs: tuple[tuple[str, Any], ...],
+) -> Any:
+    """Run the coalesced send/execute hot path with a compact wire message."""
+    if self.closed:
+        raise e.OperationalError("qpsycopg worker process is closed")
+
+    self.requestId += 1
+    request = FastExecuteFrame(
+        float(timeout), sendMember, _wire(sendArgs), tuple((name, _wire(value)) for name, value in sendKwargs)
+    )
+    try:
+        response = _exchangeFastFrame(self.sock, request)
+    except (EOFError, OSError, ValueError) as error:
+        self._markBroken()
+        raise e.OperationalError("qpsycopg worker process disconnected") from error
+
+    notices = ()
+    if isinstance(response, SendSnapshot):
+        value = response
+    elif isinstance(response, Response) and response.requestId == 0:
+        notices = response.notices
+        if response.error is not None:
+            self._clearQueryCache(1)
+            self._clearConnectionState()
+            _raiseRemote(response.error)
+        value = response.value
+        if not isinstance(value, SendSnapshot):
+            self._markBroken()
+            raise e.InternalError("missing fast execute response value")
+    else:
+        self._markBroken()
+        raise e.InternalError("invalid fast execute response from qpsycopg worker")
+
+    if self.connection is not None and self.connection.notice_handler:
+        for notice in notices:
+            self.connection.notice_handler(PGresult(notice))
+
+    self._updateConnectionState(value)
+    state = value.value[0] if isinstance(value.value, tuple) and value.value else None
+    if state != "done":
+        self._flushCache[1] = value.flush
+        self._busyCache[1] = value.busy
+    return _restore(value.value, self)
+
+
+def _request(
+    self: _Transport,
+    operation: Operation,
+    objectId: int = 0,
+    member: str = "",
+    args: tuple[Any, ...] = (),
+    kwargs: tuple[tuple[str, Any], ...] = (),
+) -> Any:
+    isSend = operation == Operation.CALL and objectId == 1 and member in _SEND_MEMBERS
+    # All first sends rendezvous BEFORE the SQL RPC lock. A cancellation
+    # initializer can therefore issue CONTROL_OPEN without an AB/BA cycle.
+    pgconn = self.connection if isSend else None
+    if isSend:
+        _ensureCancelControl(self)
+    with self.lock:
+        if self.closed:
+            raise e.OperationalError("qpsycopg worker process is closed")
+        if isSend and (pgconn is None or self.connection is not pgconn or not pgconn._handle):
+            raise e.OperationalError("qpsycopg connection generation retired")
+        pending = getattr(self, "_pendingSend", None)
+        if pending is not None:
+            sendObjectId, sendMember, sendArgs, sendKwargs = pending
+            self._pendingSend = None
+
+            if operation == Operation.CALL and objectId == sendObjectId == 1 and member == _FAST_EXECUTE and args:
+                self._clearQueryCache(objectId)
+                return _fastExecute(self, args[0], sendMember, sendArgs, sendKwargs)
+
+            _originalRequest(self, Operation.CALL, sendObjectId, sendMember, sendArgs, sendKwargs)
+
+        if isSend:
+            self._clearQueryCache(objectId)
+            self._statusCache = None
+            self._transactionStatusCache = None
+            self._pendingSend = (objectId, member, args, kwargs)
+            return None
+
+        return _originalRequest(self, operation, objectId, member, args, kwargs)
+
+
+_ipc = os.environ.get("QPSYCOPG_IPC", "pipe" if sys.platform == "win32" else "tcp").lower()
+if _ipc not in ("tcp", "pipe"):
+    raise e.InterfaceError(f"unknown QPSYCOPG_IPC value: {_ipc!r}")
+if _ipc == "pipe":
+    if sys.platform != "win32":
+        raise e.NotSupportedError("QPSYCOPG_IPC=pipe is currently Windows-only")
+    _pq.socket = _PipeSocketModule()
+    _pq.recvToken = _recvToken
+elif sys.platform == "win32" and hasattr(socket, "SIO_LOOPBACK_FAST_PATH"):
+    _pq.socket = _LoopbackSocketModule()
+    _pq.recvToken = _recvToken
+
+_pq._ProcessOwner._run = _ownerRun
+_pq.PGconn.connect_start = classmethod(_connectStart)
+_pq.PGconn.connect = classmethod(_connect)
+_pq.PGconn.ping = classmethod(_ping)
+_pq.PGconn.finish = _finish
+_pq.PGconn._call = _pgconnCall
+_pq.PGconn._get = _pgconnGet
+_pq.PGconn._set = _pgconnSet
+_pq.PGconn.status = property(_pgconnStatus)
+_Transport.request = _request  # type: ignore[method-assign]
+atexit.register(_closeWorkerPool)

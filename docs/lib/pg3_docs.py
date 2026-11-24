@@ -69,7 +69,7 @@ def recover_defined_module(m, skip_modules=()):
         modname = os.path.splitext(fn[len(mdir) + 1 :])[0].replace("/", ".")
         if (modname := f"{m.__name__}.{modname}") in skip_modules:
             continue
-        with open(fn) as f:
+        with open(fn, encoding="utf-8") as f:
             classnames = re.findall(r"^class\s+([^(:]+)", f.read(), re.M)
             for cls in classnames:
                 if (cls := deep_import(f"{modname}.{cls}")).__module__ != modname:

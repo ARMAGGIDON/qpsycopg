@@ -1,0 +1,422 @@
+Qt process multi-chat coordination
+==================================
+
+Purpose
+-------
+
+This document defines how multiple ChatGPT chats cooperate on the Qt-oriented
+qpsycopg work without relying on any one conversation context window.
+
+The repository is the authoritative project memory. ChatGPT Project memory is
+useful supporting context, but decisions, measurements and current work must be
+recoverable from the repository alone.
+
+Sources of truth
+----------------
+
+Use the following precedence when information conflicts:
+
+#. current branch code and HEAD;
+#. ``docs/qt-process-project-map.rst`` for current implementation direction;
+#. ``docs/qt-process-performance.rst`` for measured performance evidence and
+   rejected experiments;
+#. ``docs/qt-process.rst`` for intended behaviour and architecture;
+#. this file for collaboration protocol;
+#. conversation/project memory only as supporting context.
+
+A chat must not continue an old plan when the repository documents or branch
+state have moved on.
+
+Chat roles
+----------
+
+Coordinator / architecture reviewer
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Owns direction, not implementation throughput.
+
+Responsibilities:
+
+* inspect the current branch and handoff documents;
+* choose the next bounded problem;
+* compare competing proposals and benchmark evidence;
+* accept/reject architectural changes;
+* ensure accepted work is reflected in the repository documentation;
+* stop repeated experiments already recorded as rejected.
+
+This chat should remain relatively small. It should not become the primary
+implementation chat.
+
+Implementation / optimisation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Owns the currently accepted implementation path.
+
+Responsibilities:
+
+* continue from ``Immediate next work`` in the project map;
+* make code changes;
+* keep semantics intact;
+* run or request the narrowest useful validation first;
+* update documentation together with accepted changes;
+* record benchmark evidence instead of relying on intuition.
+
+This is the normal long-running working chat. When its context becomes saturated,
+it is replaced rather than treated as irreplaceable project memory.
+
+Upstream parity reviewer
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Owns comparison with upstream Psycopg quality and hot-path design.
+
+For any important optimisation it asks:
+
+* what does upstream do on this path;
+* why is that design cheap;
+* what extra allocation, copy, syscall, serialization or scheduling boundary is
+  introduced by qpsycopg;
+* whether the same invariant can be preserved through the Qt-oriented backend;
+* whether the proposed change reduces the real difference or only moves work.
+
+It may propose patches, but its primary output is a concrete implementation or
+measurement recommendation for the implementation chat.
+
+Adversarial reviewer / scout
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Exists to escape local optimisation plateaus and anchoring.
+
+It must not assume that the current implementation strategy is correct. It may
+challenge the current boundary, data flow or abstraction, but must preserve the
+required public semantics.
+
+Use a fresh scout when:
+
+* several accepted optimisations no longer materially improve the target metric;
+* profiling and end-to-end results disagree;
+* the active chat keeps proposing variants of already tested ideas;
+* a larger architectural alternative needs an independent evaluation.
+
+A scout starts from repository facts, constraints and measurements, not from a
+long transcript of another chat's reasoning.
+
+Documentation / history reviewer
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Used when implementation work has moved faster than the handoff documents.
+
+Responsibilities:
+
+* reconstruct what actually happened from commits, benchmarks and prior results;
+* update project map/performance documentation;
+* identify stale next-work instructions;
+* not continue runtime implementation unless explicitly reassigned.
+
+One writer at a time
+--------------------
+
+Only one normal implementation chat owns the active implementation path at a
+time.
+
+Other chats may inspect the same branch and propose changes, but they should not
+silently make competing runtime edits to the same branch.
+
+For competing experiments, prefer one of these forms:
+
+* separate temporary experiment branches;
+* independent commits from the same known base, suitable for cherry-pick/revert;
+* patch/proposal only, followed by one implementation owner applying the chosen
+  variant.
+
+Do not compare experiments performed sequentially on top of one another unless
+the interaction itself is intentional.
+
+Handoff contract
+----------------
+
+Before a working chat is retired, or before another chat takes ownership, the
+repository must contain enough state to resume without the old conversation.
+
+At minimum record:
+
+* branch and relevant HEAD/checkpoint;
+* accepted implementation state;
+* current blocker or next bounded task;
+* commands/tests that currently pass or fail;
+* latest meaningful benchmark result;
+* rejected experiments that are likely to be rediscovered;
+* any temporary environment requirement needed to reproduce the current test.
+
+The preferred locations are ``qt-process-project-map.rst`` and
+``qt-process-performance.rst`` rather than a chat-only summary.
+
+Resume protocol
+---------------
+
+A fresh implementation/optimisation chat should receive only a short bootstrap
+instruction. It must then recover the current state from the repository.
+
+Required reading order:
+
+#. ``docs/qt-process.rst``;
+#. ``docs/qt-process-project-map.rst``;
+#. ``docs/qt-process-performance.rst``;
+#. ``docs/qt-process-coordination.rst``;
+#. current branch HEAD/diff relevant to ``Immediate next work``.
+
+Then it should state, before making a substantial change:
+
+* what it believes the current blocker/target is;
+* what it will measure or change first;
+* which recorded experiments it will intentionally not repeat.
+
+If that summary contradicts the repository, fix the misunderstanding before
+continuing.
+
+Optimisation loop
+-----------------
+
+For ordinary optimisation work use this loop:
+
+#. establish the exact base revision;
+#. state one hypothesis about a measurable cost;
+#. make the smallest change that tests it;
+#. run the narrow semantic gate;
+#. run the relevant performance measurement;
+#. compare against a compatible baseline;
+#. accept, revise or reject;
+#. commit accepted work and update the relevant documentation.
+
+Do not accumulate multiple unrelated performance changes before measuring unless
+there is a strong dependency between them.
+
+Plateau / exploration protocol
+------------------------------
+
+When normal optimisation reaches a plateau, temporarily stop feeding the same
+reasoning back into the same chat.
+
+Create two or three independent scout chats from the same repository revision.
+Give all scouts the same factual packet:
+
+* target metric;
+* base revision;
+* constraints/invariants;
+* current benchmark result;
+* relevant profiler output;
+* rejected experiments.
+
+Do not give them each other's proposed explanations at first.
+
+Each scout returns:
+
+* suspected dominant cost;
+* mechanism;
+* proposed experiment/change;
+* expected observable result;
+* semantic risk;
+* estimated implementation scope.
+
+The coordinator selects zero or one candidate for implementation. Benchmark
+results, not voting between chats, decide whether the candidate survives.
+
+Context saturation
+------------------
+
+A long chat is disposable. Replace it when it starts to show one or more of these
+patterns:
+
+* repeatedly rediscovers already rejected experiments;
+* loses track of current branch/checkpoint state;
+* keeps extending one approach despite contrary measurements;
+* requires long transcript reminders to recover basic project facts;
+* produces increasingly broad changes for narrowly measured problems.
+
+Do not ask a saturated chat to generate the only handoff summary. Update the
+repository first, then start a fresh chat from repository state.
+
+Proactive context-risk and early handoff
+----------------------------------------
+
+Neither ChatGPT chat memory nor this protocol provides a reliable remaining-token
+counter. Never invent a context percentage, token balance or guaranteed number of
+remaining requests. All context-risk labels below are *operational heuristics*,
+not measurements of the model's available context window.
+
+Every role, including ``00 Coordinator``, must independently protect its own
+handoff buffer. Check context risk at substantial responses and *before* starting
+long investigations, large tool-output reviews or multi-file edits. Use these
+signals:
+
+* ``NORMAL``: current task, branch, decisions and evidence remain consistent
+  with repository state; the rolling handoff is up to date.
+* ``CAUTION``: a long or tool-heavy conversation, approximately 8-12 substantial
+  exchanges since the last handoff update, several experiments without a state
+  update, or increasing need to reconstruct earlier details. This is a prompt
+  to refresh handoff, **not** a claim that the window is nearly full.
+* ``HANDOFF NOW``: loss of a critical decision, inability to reconcile current
+  HEAD, repeated stale assumptions, contradictory recollection, or observed
+  platform context-limit/compression symptoms. Stop starting new substantial
+  work and hand off while adequate working context remains.
+
+Keep a small rolling **in-progress** recovery snapshot in the most relevant
+repository handoff document (normally ``qt-process-project-map.rst``, with
+measurements/attempts in the performance or optimisation log). Refresh it after
+each material experiment/decision and at least once per roughly 8-12 substantial
+exchanges during long work, even if no benchmark has been accepted yet. This is
+a conservative maintenance cadence rather than context usage telemetry. Avoid
+committing an identical snapshot or adding one for every trivial message.
+
+An in-progress snapshot is distinct from a completed milestone. Record:
+
+* role/current owner, working branch, base and observed HEAD;
+* exact unfinished task and why it was undertaken;
+* current hypothesis, findings, attempted/rejected approaches and open questions;
+* code/commits and any **uncommitted/local-only** changes that GitHub cannot see;
+* tests/benchmarks already run, results, failures, missing measurements;
+* the exact next reproducible command/action and any environmental prerequisites;
+* whether architectural decisions or runtime ownership remain pending.
+
+Do not claim that GitHub contains uncommitted local changes or unuploaded
+benchmark artifacts. If essential evidence is local-only, request that the user
+preserve/attach it and record its location or absence honestly.
+
+When ``CAUTION`` is reached, explicitly tell the user that a proactive snapshot
+was made (or what still needs to be recorded) and continue only if the state is
+recoverable. When ``HANDOFF NOW`` is reached, finish the smallest safe action,
+record the snapshot, and supply a short copy-ready bootstrap for a **new chat of
+the same role** (for example, ``11 Implementation — continuation 2``).
+The new chat reads repository state, verifies ownership and resumes; the old
+chat stops editing. No two implementation owners may edit the same active path
+concurrently.
+
+A context-risk replacement does not by itself require a coordinator milestone
+review or a new Critic. Escalate to ``00 Coordinator`` only for a significant
+completed checkpoint, architecture conflict or unresolved ownership decision.
+If the coordinator itself needs replacement, create a fresh coordinator chat
+and use the same repository-first recovery process.
+
+A chat cannot initiate another chat or notify the user while no message is being
+processed. Context checks and warnings occur during its responses. At the end
+of a substantial response add a concise ``CONTEXT`` notice only for ``CAUTION``
+or ``HANDOFF NOW``, including the actual next action; never state speculative
+remaining-token percentages.
+
+Mandatory milestone review
+--------------------------
+
+The coordinator independently reviews every **significant completed checkpoint**
+before the implementation owner begins the next *new* optimisation direction.
+This is an evidence and direction review, not a second implementation loop.
+
+A significant checkpoint includes:
+
+* a named, measured optimisation checkpoint (e.g. ``optimized01``) with an
+  explicit RETAIN/REVERT decision and committed benchmark/handoff evidence;
+* a material architecture or backend-boundary decision;
+* a major correctness/lifecycle change with broad semantic risk;
+* completion of a bounded investigation that materially changes the next
+  optimisation target or invalidates the existing plan.
+
+Ordinary implementation iterations do **not** require coordinator review:
+small commits, test fixes, narrow profiling steps, requests for benchmark
+artifacts, and intermediate hypotheses remain with the implementation owner.
+A checkpoint is not completed until the owner has analyzed the evidence,
+recorded the decision, and committed the relevant repository state.
+
+At the end of a significant completed checkpoint, the implementation chat must
+route to ``00 Coordinator``, naming the branch, checkpoint, HEAD, decision,
+updated documents and proposed next bounded target. It must provide a short
+ready-to-send message. The user should not have to infer when to switch chats.
+
+The coordinator then independently checks:
+
+* whether semantic tests and benchmark methodology support RETAIN/REVERT;
+* whether the observed changes exceed measurement noise and whether regressions
+  or gaps were accounted for;
+* whether code, benchmark log, project map and performance notes agree;
+* whether the proposed next bounded target follows the evidence;
+* whether independent Scout/Critic review is justified by plateau, conflicting
+  evidence or architectural risk (no automatic Scout on every checkpoint).
+
+The coordinator returns ``CONTINUE``, ``INVESTIGATE``, ``REVISE`` or
+``CREATE SCOUT`` and routes the next action to its actual owner, normally
+``10 Implementation — current``. It does not take runtime-edit ownership,
+repeat the benchmark by default or remain the next owner simply because it
+awaits future results.
+
+If the checkpoint evidence is incomplete, the implementation owner still owns
+its completion; do not route a merely pending benchmark as a finished milestone.
+For a critical blocker or contradictory architecture evidence, an earlier
+coordinator escalation is allowed and should state what remains unfinished.
+
+Explicit routing after completed work
+-------------------------------------
+
+The user must never have to infer which chat should receive the next action.
+After every completed bounded implementation stage, benchmark analysis,
+architectural decision or handoff, the owning chat must end with a short
+``ROUTING`` section.
+
+It must state:
+
+* whether the user should remain in the current chat;
+* ``Next owner`` -- the chat/role responsible for the next action;
+* ``Action`` -- the concrete next step;
+* whether another existing chat should be contacted;
+* whether a new role/scout chat should be created;
+* when another chat should explicitly **not** be contacted yet.
+
+If another chat becomes the next owner, provide a short ready-to-send message for
+that chat. If no cross-chat action is required, write ``Next owner: current chat``
+and say explicitly that the user should stay in the current chat.
+
+A role must finish its own bounded responsibility before routing work elsewhere.
+Do not hand off incomplete work merely to avoid finishing the current role's task.
+Coordinator review is mandatory after a significant completed checkpoint as
+specified above, even without a plateau. Outside those milestones, request
+coordinator or scout involvement only when the documented escalation criteria
+justify it; otherwise say explicitly that they are not needed yet.
+
+Project memory
+--------------
+
+Keep the chats in the same ChatGPT Project with project memory enabled. This is
+helpful for names, previous discussions and cross-chat context, but it is not a
+transaction log and must not replace repository documentation.
+
+A new chat should be able to operate correctly even if project memory retrieves
+nothing useful.
+
+Default bootstrap prompts
+-------------------------
+
+Implementation / optimisation chat::
+
+    Continue ARMAGGIDON/qpsycopg on branch feature/qt-process-pq.
+    You are the active implementation/optimisation owner.
+    First read docs/qt-process.rst, docs/qt-process-project-map.rst,
+    docs/qt-process-performance.rst and docs/qt-process-coordination.rst,
+    then inspect current HEAD. Continue only from the repository's current
+    Immediate next work. Preserve semantics and upstream-level code quality.
+    Do not repeat rejected experiments. Measure before accepting an optimisation,
+    and keep the relevant documentation updated with accepted work.
+
+Coordinator chat::
+
+    Review ARMAGGIDON/qpsycopg on branch feature/qt-process-pq as coordinator.
+    Read the four qt-process documents and current HEAD. Do not become the main
+    implementation worker. Identify the current bounded target, verify that the
+    active implementation direction still follows measured evidence, and decide
+    whether normal implementation should continue or independent scouts are
+    justified.
+
+Fresh adversarial scout::
+
+    Independently review the current qpsycopg Qt performance bottleneck from the
+    repository state. Read the four qt-process documents and current relevant
+    code, but do not assume the present implementation strategy is optimal.
+    Do not repeat experiments recorded as rejected. Return the strongest new
+    measurable hypothesis, why it differs from the current path, the smallest
+    experiment that could falsify it, semantic risks, and expected performance
+    signal. Do not make broad runtime changes unless specifically assigned.

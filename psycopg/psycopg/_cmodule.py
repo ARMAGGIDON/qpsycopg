@@ -28,8 +28,9 @@ elif pq.__impl__ == "binary":
     _psycopg = psycopg_binary._psycopg
     __version__ = psycopg_binary.__version__
 
-elif pq.__impl__ == "python":
-
+elif pq.__impl__ in ("python", "qt-process", "qt-thread"):
+    # qpsycopg proxy implementations expose a synthetic PGconn and therefore
+    # must use Python generators instead of C functions expecting local PGconn.
     _psycopg = None  # type: ignore[assignment]
 
 else:

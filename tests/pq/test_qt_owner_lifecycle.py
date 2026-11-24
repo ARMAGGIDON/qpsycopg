@@ -1,0 +1,215 @@
+"""Owner identity / bounded cancellation invariants (no DB required)."""
+
+from __future__ import annotations
+
+import time
+import socket
+import threading
+from types import SimpleNamespace
+from typing import cast
+from dataclasses import FrozenInstanceError
+
+import pytest
+
+# Upstream pool-integration jobs may run a published psycopg wheel without
+# the opt-in qpsycopg owner module. Their collection must not fail.
+_owner = pytest.importorskip("psycopg.pq._qt_process_owner")
+AttemptToken = _owner.AttemptToken
+ExitState = _owner.ExitState
+OwnerToken = _owner.OwnerToken
+cancelConnect = _owner.cancelConnect
+newConnectAttempt = _owner.newConnectAttempt
+
+
+def test_tokens_are_unique_immutable_and_distinct():
+    from dataclasses import is_dataclass
+
+    tokens = [OwnerToken() for _ in range(200)]
+    attempts = [AttemptToken() for _ in range(200)]
+    assert len(set(tokens)) == len(tokens)
+    assert len(set(attempts)) == len(attempts)
+    assert is_dataclass(tokens[0])
+    with pytest.raises(FrozenInstanceError):
+        setattr(tokens[0], "value", tokens[1].value)
+
+
+def test_early_registration_and_wrong_owner(monkeypatch):
+    pytest.importorskip("PySide6")
+    from psycopg.pq import pq_qt_process as qp
+
+    registered = []
+    blocked = threading.Event()
+
+    def fake_run(owner):
+        owner.started.set()
+        blocked.wait(1)
+
+    monkeypatch.setattr(qp._ProcessOwner, "_run", fake_run)
+    transport = SimpleNamespace(_abortConnect=lambda: None)
+    attempt = newConnectAttempt(
+        lambda attempt_token, owner_token, owner: registered.append(
+            (attempt_token, owner_token, owner, owner.thread.is_alive())
+        )
+    )
+    with attempt:
+        owner = qp._ProcessOwner(
+            "127.0.0.1", 1, "secret", attempt=attempt, transport=transport
+        )
+    try:
+        assert len(registered) == 1
+        attempt_token, owner_token, instance, was_alive = registered[0]
+        assert attempt_token == attempt.token and owner_token == owner.ownerToken
+        assert instance is owner and not was_alive  # Before QProcess.start().
+        with pytest.raises(ValueError):
+            owner.requestKill(OwnerToken())
+        with pytest.raises(ValueError):
+            owner.exitProof(OwnerToken())
+        assert owner.exitProof(owner_token) is None
+    finally:
+        blocked.set()
+        owner.thread.join(1)
+
+
+def test_queue_is_not_dispatch_or_os_exit(monkeypatch):
+    pytest.importorskip("PySide6")
+    from psycopg.pq import pq_qt_process as qp
+
+    hold = threading.Event()
+    monkeypatch.setattr(qp._ProcessOwner, "_run", lambda owner: hold.wait(1))
+    first = qp._ProcessOwner("127.0.0.1", 1, "first")
+    second = qp._ProcessOwner("127.0.0.1", 2, "second")
+    try:
+        receipt = first.requestKill(first.ownerToken)
+        assert receipt.state == ExitState.KILL_QUEUED
+        assert first.requestKill(first.ownerToken).state == ExitState.KILL_QUEUED
+        assert first.commands.qsize() == 1
+        assert second.receipt(second.ownerToken).state == ExitState.EXIT_UNCONFIRMED
+        assert first.waitExit(first.ownerToken, 0.01) is None
+        assert first.exitConfirmed() is False
+        with pytest.raises(ValueError):
+            first.requestKill(second.ownerToken)
+        assert second.commands.empty()
+    finally:
+        hold.set()
+        first.thread.join(1)
+        second.thread.join(1)
+
+
+def test_cancel_attempt_is_independent_of_blocked_owner(monkeypatch):
+    pytest.importorskip("PySide6")
+    from psycopg.pq import pq_qt_process as qp
+
+    blocked = threading.Event()
+    monkeypatch.setattr(qp._ProcessOwner, "_run", lambda _: blocked.wait(1))
+    interrupted = []
+    attempt = newConnectAttempt(timeout_s=2)
+    transport = SimpleNamespace(_abortConnect=lambda: interrupted.append(True))
+    with attempt:
+        owner = qp._ProcessOwner(
+            "127.0.0.1", 1, "secret", attempt=attempt, transport=transport
+        )
+    try:
+        start = time.monotonic()
+        receipt = cancelConnect(attempt.token)
+        assert time.monotonic() - start < 0.3
+        assert receipt is not None and receipt.state == ExitState.KILL_QUEUED
+        assert interrupted
+        with pytest.raises(RuntimeError, match="cancelled"):
+            attempt.check()
+        assert attempt.waitExit(0.01) is None
+        assert owner.requestKill(owner.ownerToken).state == ExitState.KILL_QUEUED
+        with pytest.raises(LookupError):
+            cancelConnect(AttemptToken())
+    finally:
+        blocked.set()
+        owner.thread.join(1)
+
+
+def test_close_does_not_wait_for_busy_transport_lock():
+    pytest.importorskip("PySide6")
+    from psycopg.pq import pq_qt_process as qp
+
+    entered = threading.Event()
+    release = threading.Event()
+    lock = threading.RLock()
+    calls = []
+
+    def hold_lock():
+        with lock:
+            entered.set()
+            release.wait(2)
+
+    thread = threading.Thread(target=hold_lock)
+    thread.start()
+    assert entered.wait(1)
+    transport = qp._Transport.__new__(qp._Transport)
+    transport.lock = lock
+    transport.closed = False
+    transport._listener = None
+    transport.sock = None
+    setattr(transport, "owner", SimpleNamespace(kill=lambda: calls.append("kill")))
+    try:
+        started = time.monotonic()
+        transport.close()
+        assert time.monotonic() - started < 0.3
+        assert transport.closed and calls == ["kill"]
+    finally:
+        release.set()
+        thread.join(1)
+
+
+def test_cancel_control_recv_deadline(monkeypatch):
+    from psycopg.pq import _qt_process_cancel as mod
+
+    class StalledSocket:
+        timeout = None
+        closed = False
+
+        def settimeout(self, value):
+            self.timeout = value
+
+        def close(self):
+            self.closed = True
+
+    sock = StalledSocket()
+    monkeypatch.setattr(mod, "sendFrame", lambda *_: None)
+
+    def blocked_recv(_):
+        assert 0 < sock.timeout <= 0.05
+        raise socket.timeout("simulated stalled recvFrame")
+
+    monkeypatch.setattr(mod, "recvFrame", blocked_recv)
+    control = mod.CancelControlClient(cast(socket.socket, sock))
+    from psycopg.errors import _WaitTimeout
+
+    with pytest.raises(_WaitTimeout, match="timed out"):
+        control.cancel(0.05)
+    assert control.closed and sock.closed
+    with pytest.raises(ValueError):
+        mod.CancelControlClient(cast(socket.socket, StalledSocket())).cancel(0)
+
+
+def test_attempt_token_cannot_be_reused():
+    attempt = newConnectAttempt()
+    with attempt:
+        assert not attempt.cancelled
+    with pytest.raises(RuntimeError, match="cannot be reused"):
+        with attempt:
+            pytest.fail("a single AttemptToken must not identify two sessions")
+
+
+def test_managed_attempt_context_is_thread_local():
+    assert newConnectAttempt().owner is None
+    attempts = []
+
+    def worker():
+        from psycopg.pq._qt_process_owner import currentConnectAttempt
+
+        with newConnectAttempt() as attempt:
+            attempts.append(currentConnectAttempt() is attempt)
+        attempts.append(currentConnectAttempt() is None)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join(2)
+    assert attempts == [True, True]

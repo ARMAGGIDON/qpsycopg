@@ -175,12 +175,14 @@ def test_cancel_control_recv_deadline(monkeypatch):
     monkeypatch.setattr(mod, "sendFrame", lambda *_: None)
 
     def blocked_recv(_):
-        assert sock.timeout == pytest.approx(0.05)
+        assert 0 < sock.timeout <= 0.05
         raise socket.timeout("simulated stalled recvFrame")
 
     monkeypatch.setattr(mod, "recvFrame", blocked_recv)
     control = mod.CancelControlClient(cast(socket.socket, sock))
-    with pytest.raises(Exception, match="disconnected"):
+    from psycopg.errors import _WaitTimeout
+
+    with pytest.raises(_WaitTimeout, match="timed out"):
         control.cancel(0.05)
     assert control.closed and sock.closed
     with pytest.raises(ValueError):
